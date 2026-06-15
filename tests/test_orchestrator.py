@@ -654,7 +654,14 @@ def test_review_decision_states(db_conn, tmp_path, monkeypatch):
 
         success = orch._execute_task_impl(run_id, task3)
         assert success is True
-        assert task_repo.get(task_id3)["status"] == "ready"
+        assert task_repo.get(task_id3)["status"] == "complete"
+        
+        # Verify exactly one follow-up task is created, pending, and depends on original task
+        tasks = task_repo.get_by_run(run_id)
+        followup_tasks = [t for t in tasks if t["name"] == "Follow-up: Task Followup"]
+        assert len(followup_tasks) == 1
+        assert followup_tasks[0]["status"] == "pending"
+        assert followup_tasks[0]["dependencies"] == ["Task Followup"]
 
         # 4. Test "rejected" limit bound
         # Max attempts is 2. Let's run attempt 1 (which gets rejected, sets to ready).

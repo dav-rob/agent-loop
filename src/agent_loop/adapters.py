@@ -19,13 +19,7 @@ def resolve_binary(binary_name: str, config: Optional[Any] = None) -> str:
     if path_resolved:
         return path_resolved
         
-    # 3. Fallbacks
-    fallbacks = {
-        "codex": "/usr/local/bin/codex",
-        "agy": "/Users/davidroberts/.local/bin/agy",
-        "antigravity-usage": "antigravity-usage"
-    }
-    return fallbacks.get(binary_name, binary_name)
+    raise FileNotFoundError(f"Could not resolve binary '{binary_name}' from configuration or PATH.")
 
 class AttemptResult:
     def __init__(

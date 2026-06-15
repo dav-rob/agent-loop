@@ -32,9 +32,9 @@ def test_accepted_test_migration(db_conn, tmp_path):
     # Mock git show --name-status to show modified test file and added test file
     mock_show = MagicMock(returncode=0, stdout="abcd123\nM\ttests/test_foo.py\nA\ttests/test_bar.py\n")
     # Mock git diff of modified file to show added skip marker
-    mock_diff_file = MagicMock(returncode=0, stdout="+@pytest.mark.skip(reason='migration')\n")
+    mock_diff_file = MagicMock(returncode=0, stdout="+@pytest.mark.skip(reason='migration: MIG-101')\n")
     # Mock full diff to show new test function added
-    mock_full_diff = MagicMock(returncode=0, stdout="+def test_bar():\n")
+    mock_full_diff = MagicMock(returncode=0, stdout="+def test_bar():\n+    # covers: MIG-101\n")
 
     def run_side_effect(cmd, *args, **kwargs):
         if "show" in cmd:

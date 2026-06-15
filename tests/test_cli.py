@@ -180,8 +180,33 @@ def test_cli_intake_and_approval(clean_workspace):
             mock_orch.plan_run.side_effect = mock_plan_run
             mock_orch_cls.return_value = mock_orch
 
-            with patch.object(sys, "argv", test_args):
-                main()
+            with patch("agent_loop.adapters.AgyAdapter") as mock_agy_adapter_cls:
+                mock_adapter_instance = MagicMock()
+                mock_agy_adapter_cls.return_value = mock_adapter_instance
+
+                from agent_loop.adapters import AttemptResult
+                mock_adapter_instance.run_attempt.return_value = AttemptResult(
+                    success=True,
+                    exit_code=0,
+                    output=(
+                        "UI Questions\n"
+                        "- Should this feel fast or thoughtful?\n"
+                        "- Should this feel like a tool or a guide?\n"
+                        "- Should people see everything immediately or should detail appear gradually?\n"
+                        "- What would make this feel wrong?\n"
+                        "- What apps do you like?\n"
+                        "- What apps do you dislike?\n"
+                    ),
+                    error=""
+                )
+
+                with patch.object(sys, "argv", test_args):
+                    main()
+
+                # Assert that AgyAdapter.run_attempt is called once and prompt starts with /brief
+                mock_adapter_instance.run_attempt.assert_called_once()
+                run_attempt_kwargs = mock_adapter_instance.run_attempt.call_args[1]
+                assert run_attempt_kwargs["prompt"].startswith("/brief")
 
             mock_orch.plan_run.assert_called_once()
             mock_orch.run_loop.assert_called_once()

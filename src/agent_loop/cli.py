@@ -45,6 +45,10 @@ def handle_start(args: argparse.Namespace, config: Config) -> None:
 
         # Make --intake effective in non-interactive mode
         if args.intake == "ui_lab":
+            is_ui_work = any(x in args.goal.lower() for x in ["ui", "interface", "ux", "web", "frontend", "front-end", "screen", "view", "page", "styling", "css", "html", "design", "layout"])
+            if not is_ui_work:
+                print("Error: UI Lab is only offered for UI goals.", file=sys.stderr)
+                sys.exit(1)
             intake_mode = "brainstorm_ui_lab"
         elif args.intake == "brainstorm":
             intake_mode = "brainstorm"
@@ -53,11 +57,39 @@ def handle_start(args: argparse.Namespace, config: Config) -> None:
         else:
             intake_mode = "non_interactive"
 
+        goal = args.goal
+        if intake_mode == "brainstorm_ui_lab":
+            brief_output = ""
+            try:
+                from agent_loop.adapters import AgyAdapter
+                routes = config.routes.get("planning", []) + config.routes.get("implementation", [])
+                selected_model = "Gemini 3.5 Flash (High)"
+                for r in routes:
+                    if r["provider"] == "agy":
+                        selected_model = r["model"]
+                        break
+                
+                adapter = AgyAdapter(config=config)
+                import tempfile
+                with tempfile.TemporaryDirectory() as tmpdir:
+                    tmp_path = Path(tmpdir)
+                    res = adapter.run_attempt(
+                        model=selected_model,
+                        prompt=f"/brief {args.goal}",
+                        workspace_path=tmp_path,
+                        attempt_logs_dir=tmp_path / "logs"
+                    )
+                    if res.success:
+                        brief_output = res.output
+            except Exception:
+                pass
+            goal = f"{args.goal}\n\nUI Lab Brief:\n{brief_output or 'Default Brief'}"
+
         cfg_snap = config.data.copy()
         cfg_snap["unattended_policy"] = args.unattended_policy
 
         run_id = run_repo.create(
-            goal=args.goal,
+            goal=goal,
             intake_mode=intake_mode,
             config_snapshot=cfg_snap
         )
@@ -75,6 +107,10 @@ def handle_start(args: argparse.Namespace, config: Config) -> None:
         # Make --intake effective in interactive mode
         if args.intake:
             if args.intake == "ui_lab":
+                is_ui_work = any(x in goal.lower() for x in ["ui", "interface", "ux", "web", "frontend", "front-end", "screen", "view", "page", "styling", "css", "html", "design", "layout"])
+                if not is_ui_work:
+                    print("Error: UI Lab is only offered for UI goals.", file=sys.stderr)
+                    sys.exit(1)
                 intake_mode = "brainstorm_ui_lab"
             elif args.intake == "autonomous":
                 intake_mode = "autonomous"
@@ -110,24 +146,69 @@ def handle_start(args: argparse.Namespace, config: Config) -> None:
                 goal = f"{goal}\nRefinement / Constraints: {extra_context}"
 
             if intake_mode == "brainstorm_ui_lab":
-                print("\n--- UI Lab Brief Questionnaire ---")
-                q1 = input("Should this feel fast or thoughtful? ").strip()
-                q2 = input("Should this feel like a tool or a guide? ").strip()
-                q3 = input("Should people see everything immediately or should detail appear gradually? ").strip()
-                q4 = input("What would make this feel wrong? ").strip()
-                q5 = input("What apps do you like? ").strip()
-                q6 = input("What apps do you dislike? ").strip()
+                import re
+                print("\nRunning UI Lab brief workflow...")
+                brief_output = ""
+                try:
+                    from agent_loop.adapters import AgyAdapter
+                    routes = config.routes.get("planning", []) + config.routes.get("implementation", [])
+                    selected_model = "Gemini 3.5 Flash (High)"
+                    for r in routes:
+                        if r["provider"] == "agy":
+                            selected_model = r["model"]
+                            break
+                    
+                    adapter = AgyAdapter(config=config)
+                    import tempfile
+                    with tempfile.TemporaryDirectory() as tmpdir:
+                        tmp_path = Path(tmpdir)
+                        res = adapter.run_attempt(
+                            model=selected_model,
+                            prompt=f"/brief {goal}",
+                            workspace_path=tmp_path,
+                            attempt_logs_dir=tmp_path / "logs"
+                        )
+                        if res.success:
+                            brief_output = res.output
+                except Exception as e:
+                    print(f"Warning: Could not invoke UI Lab brief workflow automatically: {e}")
                 
-                goal = (
-                    f"{goal}\n"
-                    f"UI Lab Brief:\n"
-                    f"- Fast/Thoughtful: {q1}\n"
-                    f"- Tool/Guide: {q2}\n"
-                    f"- Detail: {q3}\n"
-                    f"- Red Flags: {q4}\n"
-                    f"- Likes: {q5}\n"
-                    f"- Dislikes: {q6}"
-                )
+                # Parse questions
+                questions = []
+                if brief_output:
+                    in_q_section = False
+                    for line in brief_output.splitlines():
+                        line_strip = line.strip()
+                        if "UI Questions" in line_strip:
+                            in_q_section = True
+                            continue
+                        if in_q_section:
+                            if line_strip.startswith("###") or (line_strip.startswith("##") and not "UI Questions" in line_strip):
+                                in_q_section = False
+                                continue
+                            if line_strip.startswith(("-", "*")) or (line_strip and line_strip[0].isdigit()):
+                                q_text = re.sub(r"^[\-\*\d\.\s]+", "", line_strip).strip()
+                                if q_text.endswith("?"):
+                                    questions.append(q_text)
+                
+                if not questions:
+                    questions = [
+                        "Should this feel fast or thoughtful?",
+                        "Should this feel like a tool or a guide?",
+                        "Should people see everything immediately or should detail appear gradually?",
+                        "What would make this feel wrong?",
+                        "What apps do you like?",
+                        "What apps do you dislike?"
+                    ]
+                
+                print("\n--- UI Lab Brief Questionnaire ---")
+                answers = []
+                for q in questions:
+                    ans = input(f"{q} ").strip()
+                    answers.append(f"- {q}: {ans}")
+                
+                goal_refinement = f"\n\nUI Lab Brief:\n{brief_output or 'Default Brief'}\n\nUser Answers:\n" + "\n".join(answers)
+                goal = f"{goal}{goal_refinement}"
 
         cfg_snap = config.data.copy()
         cfg_snap["unattended_policy"] = "ask"
