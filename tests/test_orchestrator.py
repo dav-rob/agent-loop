@@ -234,3 +234,60 @@ def test_orchestrator_task_execution_loop(db_conn, tmp_path, monkeypatch):
         mock_merge.assert_called()
         mock_remove_wt.assert_called()
 
+def test_run_verification_success_and_failure(db_conn, tmp_path):
+    config = Config()
+    orch = Orchestrator(db_conn, config, plan_path=tmp_path / "plan.md", progress_path=tmp_path / "progress.md")
+    
+    worktree_dir = tmp_path / "wt"
+    worktree_dir.mkdir()
+    logs_dir = tmp_path / "logs"
+    logs_dir.mkdir()
+    
+    run_repo = RunRepository(db_conn)
+    feat_repo = FeatureRepository(db_conn)
+    task_repo = TaskRepository(db_conn)
+    attempt_repo = AttemptRepository(db_conn)
+    
+    run_id = run_repo.create("Test run", "autonomous")
+    feat_id = feat_repo.create(run_id, "Core", "low")
+    task_id = task_repo.create(run_id, feat_id, "Test task", "implementation", "low")
+    attempt_id_1 = attempt_repo.create(run_id, task_id, "impl", "codex", "gpt-5", "high", str(worktree_dir), None, str(logs_dir))
+    attempt_id_2 = attempt_repo.create(run_id, task_id, "impl", "codex", "gpt-5", "high", str(worktree_dir), None, str(logs_dir))
+    
+    # 1. Success command
+    success = orch.run_verification(
+        run_id=run_id,
+        task_id=task_id,
+        attempt_id=attempt_id_1,
+        command="echo hello",
+        worktree_dir=worktree_dir,
+        logs_dir=logs_dir
+    )
+    assert success is True
+    
+    test_runs = orch.test_run_repo.get_by_run(run_id)
+    assert len(test_runs) == 1
+    assert test_runs[0]["exit_status"] == 0
+    assert test_runs[0]["command"] == "echo hello"
+    out_path_data = json.loads(test_runs[0]["output_path"])
+    assert "stdout" in out_path_data
+    assert "stderr" in out_path_data
+    assert Path(out_path_data["stdout"]).exists()
+    assert Path(out_path_data["stderr"]).exists()
+    
+    # 2. Failure command
+    failure = orch.run_verification(
+        run_id=run_id,
+        task_id=task_id,
+        attempt_id=attempt_id_2,
+        command="exit 1",
+        worktree_dir=worktree_dir,
+        logs_dir=logs_dir
+    )
+    assert failure is False
+    test_runs = orch.test_run_repo.get_by_run(run_id)
+    assert len(test_runs) == 2
+    assert test_runs[1]["exit_status"] == 1
+
+
+

@@ -4,6 +4,7 @@ import re
 import time
 import urllib.request
 import sqlite3
+import subprocess
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -254,6 +255,11 @@ Return ONLY a valid JSON object matching the requested schema. Do not include ma
             self.notification_repo.update_delivery(notification_id, "failed", 1)
 
     def run_verification(self, run_id: int, task_id: int, attempt_id: int, command: str, worktree_dir: Path, logs_dir: Path) -> bool:
+        """Runs the verification command in the worktree directory.
+        
+        Note: Under trusted-host execution mode, commands executed via shell=True 
+        will run with the full permissions and privileges of the current user.
+        """
         start_time = time.time()
         test_out_file = logs_dir / "test_run_stdout.log"
         test_err_file = logs_dir / "test_run_stderr.log"
@@ -271,6 +277,11 @@ Return ONLY a valid JSON object matching the requested schema. Do not include ma
                 )
             duration = time.time() - start_time
             
+            output_json = json.dumps({
+                "stdout": str(test_out_file),
+                "stderr": str(test_err_file)
+            })
+            
             self.test_run_repo.create(
                 run_id=run_id,
                 task_id=task_id,
@@ -279,11 +290,15 @@ Return ONLY a valid JSON object matching the requested schema. Do not include ma
                 scope=None,
                 exit_status=process.returncode,
                 duration_seconds=duration,
-                output_path=str(test_out_file)
+                output_path=output_json
             )
             return process.returncode == 0
         except Exception as e:
             duration = time.time() - start_time
+            output_json = json.dumps({
+                "stdout": str(test_out_file),
+                "stderr": str(test_err_file)
+            })
             self.test_run_repo.create(
                 run_id=run_id,
                 task_id=task_id,
@@ -292,7 +307,7 @@ Return ONLY a valid JSON object matching the requested schema. Do not include ma
                 scope=None,
                 exit_status=-1,
                 duration_seconds=duration,
-                output_path=str(test_out_file)
+                output_path=output_json
             )
             with test_err_file.open("a") as err_f:
                 err_f.write(f"\nVerification failed with exception: {e}\n")
