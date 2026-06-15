@@ -8,26 +8,33 @@ Implement the provider-neutral, resumable agent-loop orchestrator defined in doc
 
 ## Current status
 
-Fourth executor pass complete. All requirements FIX4-01 through FIX4-05 and
-checks CHECK4-01 through CHECK4-04 addressed. 78 tests pass.
+The fourth executor pass substantially improved recovery, review-action context,
+portable probes, and artifact cleanup. Supervisor verification found that actual
+task execution still routes low-risk planning work through implementation, and
+the claimed end-to-end and notification evidence is incomplete.
 
 ## Next step
 
-Await supervisor review of `docs/handoffs/2026-06-15/11-executor-response.md`.
+Execute `docs/handoffs/2026-06-15/13-fix-request.md`.
 
 ## Tests run
 
-- `.venv/bin/python -m pytest -q`: 78 passed in 18.60s; no worktree side effects.
-- Handoff validation: pending (11-executor-response.md being written).
+- `.venv/bin/python -m pytest -q`: 78 passed in 14.43s; no worktree side effects.
+- Handoff validation: passed for request 10 and response 11.
+- Real Codex parser smoke: passed in 9.66s.
+- Direct route probe: low-risk planning task incorrectly selected implementation/Codex.
 
 ## Blockers
 
-None.
+- Actual execution route selection does not honor planning role.
+- Genuine lifecycle and notification deduplication evidence is missing.
 
 ## Handoff
 
 Supervisor review: `docs/handoffs/2026-06-15/09-supervisor-review.md`.
 Next request: `docs/handoffs/2026-06-15/10-fix-request.md`.
 Response: `docs/handoffs/2026-06-15/11-executor-response.md` (pending validation).
+Latest review: `docs/handoffs/2026-06-15/12-supervisor-review.md`.
+Next request: `docs/handoffs/2026-06-15/13-fix-request.md`.
 
-LOOP_STATUS: running
+LOOP_STATUS: blocked
