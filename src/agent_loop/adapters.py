@@ -96,6 +96,8 @@ class CodexAdapter(BaseAdapter):
         timeout_seconds: float = 600.0,
         reasoning_level: Optional[str] = None
     ) -> AttemptResult:
+        workspace_path = Path(workspace_path).resolve()
+        attempt_logs_dir = Path(attempt_logs_dir).resolve()
         attempt_logs_dir.mkdir(parents=True, exist_ok=True)
         
         # Write prompt manifest
@@ -106,7 +108,7 @@ class CodexAdapter(BaseAdapter):
         output_msg_file = attempt_logs_dir / "last_message.txt"
 
         # Build command: codex exec --json --cd <workspace> -m <model> -o <msg_file> "<prompt>"
-        # Use workspace-write sandbox and never ask for approval to prevent hangs and run securely
+        # Run under trusted-host model using danger-full-access and never ask for approval to prevent hangs
         cmd = [
             self.binary_path,
             "exec",
@@ -279,6 +281,8 @@ class AgyAdapter(BaseAdapter):
         timeout_seconds: float = 600.0,
         reasoning_level: Optional[str] = None
     ) -> AttemptResult:
+        workspace_path = Path(workspace_path).resolve()
+        attempt_logs_dir = Path(attempt_logs_dir).resolve()
         attempt_logs_dir.mkdir(parents=True, exist_ok=True)
 
         prompt_file = attempt_logs_dir / "prompt.txt"

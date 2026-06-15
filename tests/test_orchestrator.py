@@ -289,5 +289,84 @@ def test_run_verification_success_and_failure(db_conn, tmp_path):
     assert len(test_runs) == 2
     assert test_runs[1]["exit_status"] == 1
 
+def test_reviews_fail_closed(db_conn, tmp_path):
+    config = Config()
+    orch = Orchestrator(db_conn, config, plan_path=tmp_path / "plan.md", progress_path=tmp_path / "progress.md")
+    
+    run_repo = RunRepository(db_conn)
+    run_id = run_repo.create("Build engine", "autonomous")
+    
+    with patch("agent_loop.orchestrator.get_adapter") as mock_get_adapter:
+        mock_adapter = MagicMock()
+        mock_get_adapter.return_value = mock_adapter
+        
+        # Scenario 1: result.success = False
+        mock_adapter.run_attempt.return_value = AttemptResult(success=False, exit_code=1, output="", error="API Timeout")
+        approved = orch.run_agent_review(run_id, "task", 1, "Verify change")
+        assert approved is False
+        
+        reviews = orch.review_repo.get_by_run(run_id)
+        assert len(reviews) == 1
+        assert reviews[0]["decision"] == "rejected"
+        assert "timeout" in reviews[0]["findings"].lower() or "failed" in reviews[0]["findings"].lower()
+        
+        # Scenario 2: malformed JSON output
+        mock_adapter.run_attempt.return_value = AttemptResult(success=True, exit_code=0, output="This is not JSON", error="")
+        approved = orch.run_agent_review(run_id, "task", 2, "Verify change")
+        assert approved is False
+        
+        reviews = orch.review_repo.get_by_run(run_id)
+        assert len(reviews) == 2
+        assert reviews[1]["decision"] == "rejected"
+        assert "parse" in reviews[1]["findings"].lower() or "malformed" in reviews[1]["findings"].lower()
+        
+        # Scenario 3: valid rejection
+        mock_adapter.run_attempt.return_value = AttemptResult(success=True, exit_code=0, output='{"decision": "rejected", "findings": "Complexity too high"}', error="")
+        approved = orch.run_agent_review(run_id, "task", 3, "Verify change")
+        assert approved is False
+        
+        reviews = orch.review_repo.get_by_run(run_id)
+        assert len(reviews) == 3
+        assert reviews[2]["decision"] == "rejected"
+        assert reviews[2]["findings"] == "Complexity too high"
+
+        # Scenario 4: valid approval
+        mock_adapter.run_attempt.return_value = AttemptResult(success=True, exit_code=0, output='{"decision": "approved", "findings": "LGTM"}', error="")
+        approved = orch.run_agent_review(run_id, "task", 4, "Verify change")
+        assert approved is True
+        
+        reviews = orch.review_repo.get_by_run(run_id)
+        assert len(reviews) == 4
+        assert reviews[3]["decision"] == "approved"
+        assert reviews[3]["findings"] == "LGTM"
+
+def test_final_review_gating_success_and_failure(db_conn, tmp_path):
+    config = Config()
+    orch = Orchestrator(db_conn, config, plan_path=tmp_path / "plan.md", progress_path=tmp_path / "progress.md")
+    
+    run_repo = RunRepository(db_conn)
+    feat_repo = FeatureRepository(db_conn)
+    task_repo = TaskRepository(db_conn)
+    
+    run_id = run_repo.create("Test goal", "autonomous")
+    run_repo.update_status(run_id, "running")
+    feat_id = feat_repo.create(run_id, "Feature 1", "low")
+    task_id = task_repo.create(run_id, feat_id, "Task 1", "implementation", "low")
+    task_repo.update_status(task_id, "complete")
+    feat_repo.update_review_status(feat_id, "approved")
+    
+    # 1. Mock run_final_review to fail (rejection)
+    with patch.object(orch, "run_final_review", return_value=False) as mock_final:
+        orch.run_loop(run_id)
+        assert run_repo.get(run_id)["status"] == "blocked"
+        mock_final.assert_called_once()
+        
+    # 2. Reset run status to running, and mock run_final_review to succeed
+    run_repo.update_status(run_id, "running")
+    with patch.object(orch, "run_final_review", return_value=True) as mock_final:
+        orch.run_loop(run_id)
+        assert run_repo.get(run_id)["status"] == "complete"
+
+
 
 

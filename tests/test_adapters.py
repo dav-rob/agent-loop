@@ -91,6 +91,12 @@ def test_codex_run_attempt_success(tmp_path):
         assert res.output == "Hello world"
         assert res.token_usage == {"input": 100, "output": 200}
         assert res.quota_exhausted is False
+        
+        # Verify call args contains absolute workspace path for --cd
+        cmd_args = mock_subprocess.call_args[0][0]
+        cd_idx = cmd_args.index("--cd")
+        assert Path(cmd_args[cd_idx + 1]).is_absolute()
+        assert Path(cmd_args[cd_idx + 1]) == workspace.resolve()
 
 def test_codex_run_attempt_quota_exhausted(tmp_path):
     adapter = CodexAdapter()
@@ -142,12 +148,14 @@ def test_agy_run_attempt_success(tmp_path):
         assert res.output.strip() == "Hello from agy"
         assert res.quota_exhausted is False
         
-        # Verify call args contains add-dir and model
+        # Verify call args contains absolute workspace path for --add-dir
         cmd_args = mock_subprocess.call_args[0][0]
         assert "--model" in cmd_args
         assert "Gemini 3.5 Flash (High)" in cmd_args
         assert "--add-dir" in cmd_args
-        assert str(workspace) in cmd_args
+        add_dir_idx = cmd_args.index("--add-dir")
+        assert Path(cmd_args[add_dir_idx + 1]).is_absolute()
+        assert Path(cmd_args[add_dir_idx + 1]) == workspace.resolve()
         assert "--dangerously-skip-permissions" in cmd_args
 
 def test_agy_run_attempt_quota_exhausted(tmp_path):

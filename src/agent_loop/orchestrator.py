@@ -138,13 +138,13 @@ Return ONLY a valid JSON object matching the requested schema. Do not include ma
 
             try:
                 adapter = get_adapter(provider, self.config)
-                attempt_logs_dir = self.config.logs_dir / str(run_id) / "planning" / f"attempt_{provider}_{model}"
+                attempt_logs_dir = (self.config.logs_dir / str(run_id) / "planning" / f"attempt_{provider}_{model}").resolve()
                 attempt_logs_dir.mkdir(parents=True, exist_ok=True)
 
                 result: AttemptResult = adapter.run_attempt(
                     model=model,
                     prompt=planning_prompt,
-                    workspace_path=Path.cwd(),
+                    workspace_path=Path.cwd().resolve(),
                     attempt_logs_dir=attempt_logs_dir
                 )
 
@@ -376,8 +376,8 @@ Return ONLY a valid JSON object matching the requested schema. Do not include ma
             logs_path=None
         )
 
-        worktree_dir = Path("worktrees") / f"run-{run_id}-task-{task_id}-attempt-{attempt_id}"
-        logs_dir = self.config.logs_dir / str(run_id) / str(task_id) / str(attempt_id)
+        worktree_dir = (Path("worktrees") / f"run-{run_id}-task-{task_id}-attempt-{attempt_id}").resolve()
+        logs_dir = (self.config.logs_dir / str(run_id) / str(task_id) / str(attempt_id)).resolve()
         logs_dir.mkdir(parents=True, exist_ok=True)
 
         cursor = self.conn.cursor()
@@ -396,13 +396,17 @@ Return ONLY a valid JSON object matching the requested schema. Do not include ma
             self.task_repo.update_status(task_id, "ready")
             return False
 
+        previous_rejection = self.review_repo.get_latest_rejection("task", task_id)
         prompt = f"""
 Goal: {self.run_repo.get(run_id)['goal']}
 Task: {task['name']}
 Verification Command: {task['required_verification']}
 Scope: {json.dumps(task['scope'])}
-Please implement this task in the workspace. Run verification to confirm success before exiting.
 """
+        if previous_rejection:
+            prompt += f"\nPrevious attempt was rejected with the following findings:\n{previous_rejection}\n"
+            
+        prompt += "\nPlease implement this task in the workspace. Run verification to confirm success before exiting.\n"
 
         try:
             adapter = get_adapter(provider, self.config)
@@ -497,6 +501,11 @@ Please implement this task in the workspace. Run verification to confirm success
         review_logs_dir = self.config.logs_dir / str(run_id) / "reviews" / f"{subject_type}_{subject_id}"
         review_logs_dir.mkdir(parents=True, exist_ok=True)
         
+        evidence_paths = [
+            str(review_logs_dir / "stdout.log"),
+            str(review_logs_dir / "stderr.log")
+        ]
+        
         try:
             adapter = get_adapter(provider, self.config)
             prompt = f"""
@@ -519,16 +528,33 @@ Only return the raw JSON object. Do not include markdown wrappers.
                 attempt_logs_dir=review_logs_dir
             )
             
-            decision = "approved"
+            decision = "rejected"
             findings = "Diff checked"
+            
             if result.success:
+                # Clean and parse JSON
+                cleaned_output = result.output.strip()
+                if cleaned_output.startswith("```"):
+                    first_newline = cleaned_output.find("\n")
+                    if first_newline != -1:
+                        cleaned_output = cleaned_output[first_newline:].strip()
+                    if cleaned_output.endswith("```"):
+                        cleaned_output = cleaned_output[:-3].strip()
+                
                 try:
-                    data = json.loads(result.output)
-                    decision = data.get("decision", "approved")
-                    findings = data.get("findings", "Diff checked")
-                except Exception:
-                    decision = "approved" if "approved" in result.output.lower() else "rejected"
-                    findings = result.output
+                    data = json.loads(cleaned_output)
+                    if isinstance(data, dict) and "decision" in data and "findings" in data:
+                        dec_val = data["decision"]
+                        find_val = data["findings"]
+                        if dec_val in {"approved", "rejected", "follow_up", "assessment", "block"} and isinstance(find_val, str):
+                            decision = dec_val
+                            findings = find_val
+                        else:
+                            findings = f"Review output had invalid schema (decision={dec_val}, findings={type(find_val)}): {result.output}"
+                    else:
+                        findings = f"Review output not a dict or missing fields: {result.output}"
+                except Exception as je:
+                    findings = f"Failed to parse review JSON output: {je}. Raw output: {result.output}"
             else:
                 findings = f"Review prompt failed: {result.error}"
 
@@ -537,7 +563,9 @@ Only return the raw JSON object. Do not include markdown wrappers.
                 subject_type=subject_type,
                 subject_id=subject_id,
                 decision=decision,
-                findings=findings
+                reviewer_route=f"{provider}:{model}",
+                findings=findings,
+                evidence_paths=evidence_paths
             )
             return decision == "approved"
         except Exception as e:
@@ -545,10 +573,12 @@ Only return the raw JSON object. Do not include markdown wrappers.
                 run_id=run_id,
                 subject_type=subject_type,
                 subject_id=subject_id,
-                decision="approved",
-                findings=f"Review crashed: {e}"
+                decision="rejected",
+                reviewer_route=f"{provider}:{model}",
+                findings=f"Review crashed with exception: {e}",
+                evidence_paths=evidence_paths
             )
-            return True
+            return False
 
     def run_task_review(self, run_id: int, task_id: int, commit_sha: Optional[str]) -> bool:
         diff = "No commit SHA provided."
@@ -683,6 +713,8 @@ Only return the raw JSON object. Do not include markdown wrappers.
                             self.feature_repo.update_review_status(feature["id"], "approved")
                         else:
                             self.feature_repo.update_review_status(feature["id"], "rejected")
+                            self.run_repo.update_status(run_id, "blocked")
+                            self.notify(run_id, "blocked", f"Feature '{feature['name']}' review was rejected. Run is blocked.")
 
             ready_tasks = [t for t in tasks if t["status"] == "ready"]
             running_tasks = [t for t in tasks if t["status"] == "running"]
@@ -692,15 +724,26 @@ Only return the raw JSON object. Do not include markdown wrappers.
                 if blocked_tasks:
                     self.run_repo.update_status(run_id, "blocked")
                 elif all(t["status"] == "complete" for t in tasks):
+                    features = self.feature_repo.get_by_run(run_id)
+                    rejected_features = [f for f in features if f["review_status"] == "rejected"]
+                    if rejected_features:
+                        self.run_repo.update_status(run_id, "blocked")
+                        self.notify(run_id, "blocked", f"Feature(s) {[f['name'] for f in rejected_features]} were rejected. Run is blocked.")
+                        break
+
                     self.run_repo.update_status(run_id, "reviewing")
-                    self.run_final_review(run_id)
+                    final_approved = self.run_final_review(run_id)
                     
-                    migrations = self.test_migration_repo.get_by_run(run_id)
-                    has_pending = any(m["approval_status"] == "pending" for m in migrations)
-                    if has_pending:
-                        self.run_repo.update_status(run_id, "complete_pending_test_review")
+                    if final_approved:
+                        migrations = self.test_migration_repo.get_by_run(run_id)
+                        has_pending = any(m["approval_status"] == "pending" for m in migrations)
+                        if has_pending:
+                            self.run_repo.update_status(run_id, "complete_pending_test_review")
+                        else:
+                            self.run_repo.update_status(run_id, "complete")
                     else:
-                        self.run_repo.update_status(run_id, "complete")
+                        self.run_repo.update_status(run_id, "blocked")
+                        self.notify(run_id, "blocked", "Final review was rejected. Run is blocked.")
                 break
 
             max_workers = self.config.max_workers
