@@ -513,36 +513,27 @@ Return ONLY a valid JSON object matching the requested schema. Do not include ma
         if not worktree_dir.exists():
             return None
         try:
-            # Check git status to prove if the worktree is clean
-            res_status = subprocess.run(
-                ["git", "status", "--porcelain"],
-                cwd=worktree_dir,
-                capture_output=True,
-                text=True,
-                stdin=subprocess.DEVNULL,
-                check=True
-            )
-            if not res_status.stdout.strip():
-                # Proven clean!
-                return "CLEAN"
-
             # Stage all changes (tracked, untracked, text, binary)
-            subprocess.run(
+            res_add = subprocess.run(
                 ["git", "add", "-A"],
                 cwd=worktree_dir,
                 capture_output=True,
-                stdin=subprocess.DEVNULL,
-                check=True
+                stdin=subprocess.DEVNULL
             )
+            if res_add.returncode != 0:
+                return None
+
             # Capture the complete cached binary diff
-            res = subprocess.run(
+            res_diff = subprocess.run(
                 ["git", "diff", "--cached", "--binary"],
                 cwd=worktree_dir,
                 capture_output=True,
-                stdin=subprocess.DEVNULL,
-                check=True
+                stdin=subprocess.DEVNULL
             )
-            patch_bytes = res.stdout
+            if res_diff.returncode != 0:
+                return None
+
+            patch_bytes = res_diff.stdout
             if isinstance(patch_bytes, str):
                 patch_bytes = patch_bytes.encode("utf-8")
 
@@ -1509,7 +1500,7 @@ Only return the raw JSON object. Do not include markdown wrappers.
         for task in ready_tasks:
             attempts = [a for a in self.attempt_repo.get_by_run(run_id) if a["task_id"] == task["id"]]
             is_high_reasoning = (task["risk"] == "high") or (len(attempts) >= self.config.retry_policy["escalation_threshold"])
-            route_key = "planning" if is_high_reasoning else "implementation"
+            route_key = "planning" if (task["role"] == "planning" or is_high_reasoning) else "implementation"
             required_route_keys.add(route_key)
             
         # 2. Running tasks (they will need reviews, which require planning routes)
