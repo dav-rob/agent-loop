@@ -19,10 +19,10 @@ VALID_RUN_TRANSITIONS = {
 VALID_TASK_TRANSITIONS = {
     "pending": {"ready", "blocked", "cancelled"},
     "ready": {"running", "blocked", "cancelled"},
-    "running": {"reviewing", "failed", "cancelled"},
+    "running": {"reviewing", "failed", "cancelled", "blocked"},
     "reviewing": {"complete", "failed", "ready", "cancelled"},
     "complete": set(),
-    "failed": {"ready", "cancelled"},
+    "failed": {"ready", "blocked", "cancelled"},
     "blocked": {"ready", "cancelled"},
     "cancelled": set()
 }
@@ -87,6 +87,9 @@ class RunRepository:
             raise ValueError(f"Run {run_id} not found.")
 
         current_status = run["status"]
+        if current_status == new_status:
+            return
+
         if not force:
             allowed = VALID_RUN_TRANSITIONS.get(current_status, set())
             if new_status not in allowed:
@@ -238,6 +241,9 @@ class TaskRepository:
             raise ValueError(f"Task {task_id} not found.")
 
         current_status = task["status"]
+        if current_status == new_status:
+            return
+
         if not force:
             allowed = VALID_TASK_TRANSITIONS.get(current_status, set())
             if new_status not in allowed:

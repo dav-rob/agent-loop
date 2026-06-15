@@ -150,7 +150,7 @@ MIGRATIONS: List[str] = [
 def get_connection(db_path: Path) -> sqlite3.Connection:
     """Gets an SQLite connection and enables foreign key constraints."""
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(db_path)
+    conn = sqlite3.connect(db_path, check_same_thread=False)
     conn.execute("PRAGMA foreign_keys = ON;")
     return conn
 
@@ -167,22 +167,27 @@ def migrate(conn: sqlite3.Connection) -> None:
     )
     conn.commit()
 
-    cursor = conn.cursor()
-    cursor.execute("SELECT version FROM schema_migrations ORDER BY version ASC;")
-    applied = {row[0] for row in cursor.fetchall()}
+    old_isolation = conn.isolation_level
+    conn.isolation_level = None  # Disable python auto-transactions for explicit management
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT version FROM schema_migrations ORDER BY version ASC;")
+        applied = {row[0] for row in cursor.fetchall()}
 
-    for i, migration_sql in enumerate(MIGRATIONS, start=1):
-        if i not in applied:
-            try:
-                cursor.execute("BEGIN TRANSACTION;")
-                # Execute individual statements to preserve transaction boundary
-                statements = [stmt.strip() for stmt in migration_sql.split(";") if stmt.strip()]
-                for stmt in statements:
-                    cursor.execute(stmt)
-                cursor.execute(
-                    "INSERT INTO schema_migrations (version) VALUES (?);", (i,)
-                )
-                cursor.execute("COMMIT;")
-            except Exception as e:
-                cursor.execute("ROLLBACK;")
-                raise RuntimeError(f"Migration version {i} failed: {e}") from e
+        for i, migration_sql in enumerate(MIGRATIONS, start=1):
+            if i not in applied:
+                try:
+                    cursor.execute("BEGIN TRANSACTION;")
+                    # Execute individual statements to preserve transaction boundary
+                    statements = [stmt.strip() for stmt in migration_sql.split(";") if stmt.strip()]
+                    for stmt in statements:
+                        cursor.execute(stmt)
+                    cursor.execute(
+                        "INSERT INTO schema_migrations (version) VALUES (?);", (i,)
+                    )
+                    cursor.execute("COMMIT;")
+                except Exception as e:
+                    cursor.execute("ROLLBACK;")
+                    raise RuntimeError(f"Migration version {i} failed: {e}") from e
+    finally:
+        conn.isolation_level = old_isolation
