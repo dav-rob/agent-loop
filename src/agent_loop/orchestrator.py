@@ -89,9 +89,11 @@ def validate_dag(features: List[Dict[str, Any]], tasks: List[Dict[str, Any]]) ->
 
 
 class Orchestrator:
-    def __init__(self, conn: sqlite3.Connection, config: Config):
+    def __init__(self, conn: sqlite3.Connection, config: Config, plan_path: Path = None, progress_path: Path = None):
         self.conn = conn
         self.config = config
+        self.plan_path = plan_path or Path("plan.md")
+        self.progress_path = progress_path or Path("progress.md")
         self.run_repo = RunRepository(conn)
         self.feature_repo = FeatureRepository(conn)
         self.task_repo = TaskRepository(conn)
@@ -109,7 +111,7 @@ class Orchestrator:
             raise ValueError(f"Run {run_id} not found.")
 
         self.run_repo.update_status(run_id, "planning")
-        render_progress_md(self.conn, run_id, Path("progress.md"))
+        render_progress_md(self.conn, run_id, self.progress_path)
 
         routes = self.config.routes.get("planning", [])
         
@@ -128,7 +130,7 @@ Return ONLY a valid JSON object matching the requested schema. Do not include ma
             provider = route["provider"]
             model = route["model"]
 
-            p_state = self.provider_repo.get(provider)
+            p_state = self.provider_repo.get(provider, model)
             if p_state and not p_state["availability"]:
                 # Simple availability skip
                 continue
@@ -149,6 +151,7 @@ Return ONLY a valid JSON object matching the requested schema. Do not include ma
                     if result.quota_exhausted:
                         self.provider_repo.save(
                             provider=provider,
+                            model=model,
                             capability_snapshot={"models": [model]},
                             availability=False,
                             quota_limit_reset=result.quota_reset
@@ -201,8 +204,8 @@ Return ONLY a valid JSON object matching the requested schema. Do not include ma
                 else:
                     self.run_repo.update_status(run_id, "awaiting_plan_approval")
 
-                render_plan_md(self.conn, run_id, Path("plan.md"))
-                render_progress_md(self.conn, run_id, Path("progress.md"))
+                render_plan_md(self.conn, run_id, self.plan_path)
+                render_progress_md(self.conn, run_id, self.progress_path)
                 return True
 
             except Exception as e:
@@ -210,7 +213,7 @@ Return ONLY a valid JSON object matching the requested schema. Do not include ma
                 continue
 
         self.run_repo.update_status(run_id, "blocked")
-        render_progress_md(self.conn, run_id, Path("progress.md"))
+        render_progress_md(self.conn, run_id, self.progress_path)
         return False
 
     def notify(self, run_id: int, event: str, message: str) -> None:
@@ -253,7 +256,7 @@ Return ONLY a valid JSON object matching the requested schema. Do not include ma
     def execute_task(self, run_id: int, task: Dict[str, Any]) -> bool:
         task_id = task["id"]
         self.task_repo.update_status(task_id, "running")
-        render_progress_md(self.conn, run_id, Path("progress.md"))
+        render_progress_md(self.conn, run_id, self.progress_path)
 
         # Decide route based on task risk/attempts count
         attempts = [a for a in self.attempt_repo.get_by_run(run_id) if a["task_id"] == task_id]
@@ -265,7 +268,7 @@ Return ONLY a valid JSON object matching the requested schema. Do not include ma
         # Find first available route
         selected_route = None
         for r in routes:
-            p_state = self.provider_repo.get(r["provider"])
+            p_state = self.provider_repo.get(r["provider"], r["model"])
             if not p_state or p_state["availability"]:
                 selected_route = r
                 break
@@ -360,8 +363,10 @@ Please implement this task in the workspace. Run verification to confirm success
                     else:
                         # Conflict! Create integration task
                         self.create_integration_task(run_id, task, branch_name)
+                        self.task_repo.update_status(task_id, "failed")
                         self.task_repo.update_status(task_id, "ready")
                 else:
+                    self.task_repo.update_status(task_id, "failed")
                     self.task_repo.update_status(task_id, "ready")
 
                 # Remove worktree
@@ -371,11 +376,13 @@ Please implement this task in the workspace. Run verification to confirm success
                 if result.quota_exhausted:
                     self.provider_repo.save(
                         provider=provider,
+                        model=model,
                         capability_snapshot={"models": [model]},
                         availability=False,
                         quota_limit_reset=result.quota_reset
                     )
                     self.attempt_repo.update_outcome(attempt_id, "abandoned")
+                    self.task_repo.update_status(task_id, "failed")
                     self.task_repo.update_status(task_id, "ready")
                 else:
                     self.attempt_repo.update_outcome(attempt_id, "failed")
@@ -383,6 +390,7 @@ Please implement this task in the workspace. Run verification to confirm success
                         self.task_repo.update_status(task_id, "blocked")
                         self.notify(run_id, "blocked", f"Task {task['name']} failed {self.config.retry_policy['max_attempts']} times.")
                     else:
+                        self.task_repo.update_status(task_id, "failed")
                         self.task_repo.update_status(task_id, "ready")
 
                 remove_worktree(Path.cwd(), worktree_dir)
@@ -390,6 +398,7 @@ Please implement this task in the workspace. Run verification to confirm success
 
         except Exception:
             self.attempt_repo.update_outcome(attempt_id, "failed")
+            self.task_repo.update_status(task_id, "failed")
             self.task_repo.update_status(task_id, "ready")
             remove_worktree(Path.cwd(), worktree_dir)
             return False
@@ -470,6 +479,6 @@ Please implement this task in the workspace. Run verification to confirm success
                 # No slot or no tasks, sleep/wait
                 break
 
-            render_plan_md(self.conn, run_id, Path("plan.md"))
-            render_progress_md(self.conn, run_id, Path("progress.md"))
+            render_plan_md(self.conn, run_id, self.plan_path)
+            render_progress_md(self.conn, run_id, self.progress_path)
             time.sleep(0.5)

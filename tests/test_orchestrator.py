@@ -89,7 +89,7 @@ def test_orchestrator_planning_success(db_conn, tmp_path):
         error=""
     )
 
-    orch = Orchestrator(db_conn, config)
+    orch = Orchestrator(db_conn, config, plan_path=tmp_path / "plan.md", progress_path=tmp_path / "progress.md")
     
     with patch("agent_loop.orchestrator.get_adapter") as mock_get_adapter:
         mock_adapter = MagicMock()
@@ -145,7 +145,7 @@ def test_orchestrator_planning_route_failover(db_conn, tmp_path):
     }
     mock_success = AttemptResult(success=True, exit_code=0, output=json.dumps(plan_json), error="")
 
-    orch = Orchestrator(db_conn, config)
+    orch = Orchestrator(db_conn, config, plan_path=tmp_path / "plan.md", progress_path=tmp_path / "progress.md")
     
     with patch("agent_loop.orchestrator.get_adapter") as mock_get_adapter:
         mock_codex = MagicMock()
@@ -169,7 +169,7 @@ def test_orchestrator_planning_route_failover(db_conn, tmp_path):
         assert run["status"] == "awaiting_plan_approval"
 
         # Verify codex marked unavailable in DB
-        p_state = orch.provider_repo.get("codex")
+        p_state = orch.provider_repo.get("codex", "gpt-5.5")
         assert p_state["availability"] is False
 
 def test_orchestrator_task_execution_loop(db_conn, tmp_path, monkeypatch):
@@ -210,7 +210,7 @@ def test_orchestrator_task_execution_loop(db_conn, tmp_path, monkeypatch):
         }
     }
     config = Config(config_data)
-    orch = Orchestrator(db_conn, config)
+    orch = Orchestrator(db_conn, config, plan_path=tmp_path / "plan.md", progress_path=tmp_path / "progress.md")
 
     # Mock success run for Codex adapter
     mock_success = AttemptResult(success=True, exit_code=0, output="Completed task", error="")
