@@ -8,6 +8,10 @@ Use this file to record learnings, so that agents do not have to repeat work alr
 - Markdown views (`plan.md` and `progress.md`) are generated directly from DB state.
 - `agy` CLI requires passing `stdin=subprocess.DEVNULL` to run non-interactively without hanging.
 - Codex CLI supports `--json` output and structured schema constraints via `--output-schema`.
+- Transactional DDL in Python's `sqlite3` requires setting `isolation_level = None` temporarily to prevent Python's wrapper from executing implicit commits before DDL statements.
+- Subprocess execution for sandbox environments (like Codex and Agy) must explicitly pass `cwd=workspace_path` to prevent writes from leaking into the parent workspace.
+- Multi-threaded status updates on a single SQLite connection require `check_same_thread=False` during connection setup.
+- Task scheduling conflicts are avoided by checking overlaps between the `files` array in tasks' `scope` metadata.
 
 ## Useful commands
 
