@@ -854,6 +854,10 @@ Scope: {json.dumps(task['scope'])}
                             self.task_repo.update_status(task_id, "complete")
                             if is_integration and "original_task_id" in scope_data:
                                 self.task_repo.update_status(scope_data["original_task_id"], "complete", force=True)
+                            
+                            is_assessment = isinstance(scope_data, dict) and "original_task_id" in scope_data and task["name"].startswith("Architectural Assessment:")
+                            if is_assessment and "original_task_id" in scope_data:
+                                self.task_repo.update_status(scope_data["original_task_id"], "ready", force=True)
                     else:
                         with self.db_lock:
                             try:
@@ -904,6 +908,14 @@ Scope: {json.dumps(task['scope'])}
                         self.notify(run_id, "blocked", f"Task '{task['name']}' was explicitly blocked by reviewer: {findings}")
 
                     elif decision == "assessment":
+                        orig_scope = json.loads(task["scope"]) if isinstance(task["scope"], str) else (task["scope"] or {})
+                        assessment_scope = {
+                            "original_task_id": task["id"],
+                            "original_task_name": task["name"],
+                            "original_task_scope": orig_scope,
+                            "reviewer_findings": findings,
+                            "files": orig_scope.get("files", [])
+                        }
                         with self.db_lock:
                             self.task_repo.update_status(task_id, "blocked")
                             self.task_repo.create(
@@ -911,13 +923,23 @@ Scope: {json.dumps(task['scope'])}
                                 feature_id=task["feature_id"],
                                 name=f"Architectural Assessment: {task['name']}",
                                 role="planning",
-                                risk="high"
+                                risk="high",
+                                scope=assessment_scope,
+                                required_verification=task.get("required_verification")
                             )
                         self.notify(run_id, "blocked", f"Task '{task['name']}' requires operator assessment. Created Architectural Assessment task.")
 
                     elif decision == "follow_up":
                         with self.git_lock:
                             merged, conflicting_files = merge_branch(Path.cwd(), branch_name, "main")
+                        orig_scope = json.loads(task["scope"]) if isinstance(task["scope"], str) else (task["scope"] or {})
+                        followup_scope = {
+                            "original_task_id": task["id"],
+                            "original_task_name": task["name"],
+                            "original_task_scope": orig_scope,
+                            "reviewer_findings": findings,
+                            "files": orig_scope.get("files", [])
+                        }
                         if merged:
                             with self.db_lock:
                                 self.task_repo.update_status(task_id, "complete")
@@ -927,7 +949,9 @@ Scope: {json.dumps(task['scope'])}
                                     name=f"Follow-up: {task['name']}",
                                     role=task["role"],
                                     risk=task["risk"],
-                                    dependencies=[task["name"]]
+                                    scope=followup_scope,
+                                    dependencies=[task["name"]],
+                                    required_verification=task.get("required_verification")
                                 )
                             self.notify(run_id, "running", f"Task '{task['name']}' completed with follow-up work.")
                         else:
@@ -960,7 +984,9 @@ Scope: {json.dumps(task['scope'])}
                                     name=f"Follow-up: {task['name']}",
                                     role=task["role"],
                                     risk=task["risk"],
-                                    dependencies=[task["name"]]
+                                    scope=followup_scope,
+                                    dependencies=[task["name"]],
+                                    required_verification=task.get("required_verification")
                                 )
                             self.notify(run_id, "blocked", f"Task '{task['name']}' merge conflict. Created integration and follow-up tasks.")
 
@@ -1264,7 +1290,7 @@ Only return the raw JSON object. Do not include markdown wrappers.
                 name=f"Resolve merge conflict on {task['name']}",
                 role="planning",
                 risk="high",
-                scope=json.dumps(integration_scope),
+                scope=integration_scope,
                 dependencies=[],
                 required_verification=task["required_verification"]
             )

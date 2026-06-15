@@ -814,3 +814,93 @@ def test_safe_preservation_failures(db_conn, tmp_path, monkeypatch):
     assert attempt["outcome"] == "running"
     assert attempt["worktree_path"] == str(wt_dir)
 
+
+def test_architectural_assessment_resolution(db_conn, tmp_path, monkeypatch):
+    config = Config()
+    config.data["retry_policy"] = {"max_attempts": 2, "escalation_threshold": 2}
+    orch = Orchestrator(db_conn, config, plan_path=tmp_path / "plan.md", progress_path=tmp_path / "progress.md")
+
+    run_repo = RunRepository(db_conn)
+    feat_repo = FeatureRepository(db_conn)
+    task_repo = TaskRepository(db_conn)
+
+    run_id = run_repo.create("Assessment resolution test", "autonomous")
+    feat_id = feat_repo.create(run_id, "Feat 1", "low")
+
+    # Mocks for git operations
+    mock_create_wt = MagicMock()
+    mock_commit = MagicMock(return_value="mock_sha_abc")
+    mock_merge = MagicMock(return_value=(True, []))
+    mock_remove_wt = MagicMock()
+
+    monkeypatch.setattr("agent_loop.orchestrator.create_worktree", mock_create_wt)
+    monkeypatch.setattr("agent_loop.orchestrator.commit_changes", mock_commit)
+    monkeypatch.setattr("agent_loop.orchestrator.merge_branch", mock_merge)
+    monkeypatch.setattr("agent_loop.orchestrator.remove_worktree", mock_remove_wt)
+    monkeypatch.setattr(orch, "run_verification", lambda *args, **kwargs: True)
+
+    with patch("agent_loop.orchestrator.get_adapter") as mock_get_adapter:
+        mock_adapter = MagicMock()
+        mock_get_adapter.return_value = mock_adapter
+
+        # 1. Start with a task
+        task_id = task_repo.create(
+            run_id=run_id,
+            feature_id=feat_id,
+            name="Task Orig",
+            role="implementation",
+            risk="low",
+            scope={"files": ["src/main.py"]},
+            required_verification="pytest tests/test_main.py"
+        )
+        task_repo.update_status(task_id, "ready")
+        task = task_repo.get(task_id)
+
+        # First attempt of original task returns success but reviewer returns "assessment"
+        mock_adapter.run_attempt.side_effect = [
+            AttemptResult(success=True, exit_code=0, output="done", error=""),
+            AttemptResult(success=True, exit_code=0, output='{"decision": "assessment", "findings": "Change interface design"}', error="")
+        ]
+
+        success = orch._execute_task_impl(run_id, task)
+        assert success is True
+
+        # Check original task is now blocked
+        assert task_repo.get(task_id)["status"] == "blocked"
+
+        # Check that Architectural Assessment task is created and has detailed scope
+        tasks = task_repo.get_by_run(run_id)
+        assess_task = [t for t in tasks if t["name"] == "Architectural Assessment: Task Orig"]
+        assert len(assess_task) == 1
+        
+        # Verify role and risk
+        assert assess_task[0]["role"] == "planning"
+        assert assess_task[0]["risk"] == "high"
+        assert assess_task[0]["status"] == "pending" # Newly created tasks are pending until loop schedules
+        assert assess_task[0]["required_verification"] == "pytest tests/test_main.py"
+        
+        scope_data = json.loads(assess_task[0]["scope"]) if isinstance(assess_task[0]["scope"], str) else assess_task[0]["scope"]
+        assert scope_data["original_task_id"] == task_id
+        assert scope_data["original_task_name"] == "Task Orig"
+        assert scope_data["reviewer_findings"] == "Change interface design"
+        assert scope_data["files"] == ["src/main.py"]
+
+        # Set the assessment task to ready
+        task_repo.update_status(assess_task[0]["id"], "ready")
+
+        # Execute the assessment task: should succeed and reviewer approves it
+        mock_adapter.run_attempt.side_effect = [
+            AttemptResult(success=True, exit_code=0, output="assessment done", error=""),
+            AttemptResult(success=True, exit_code=0, output='{"decision": "approved", "findings": "Approved assessment"}', error="")
+        ]
+
+        success2 = orch._execute_task_impl(run_id, task_repo.get(assess_task[0]["id"]))
+        assert success2 is True
+
+        # Check assessment task is now complete
+        assert task_repo.get(assess_task[0]["id"])["status"] == "complete"
+
+        # Check that the original blocked task status has transitioned back to "ready"!
+        assert task_repo.get(task_id)["status"] == "ready"
+
+
