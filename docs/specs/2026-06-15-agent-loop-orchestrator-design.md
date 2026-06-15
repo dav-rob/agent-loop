@@ -117,7 +117,7 @@ Codex and `agy` implement one adapter contract:
 
 Capabilities must be detected at runtime. The orchestrator must not trust static skill metadata because locally installed CLI versions and model catalogs change.
 
-Codex execution uses `codex exec`, JSONL output where available, explicit workspace configuration, and model reasoning settings. Antigravity execution uses `agy --print`, an explicit `--add-dir`, a sufficient print timeout, a dedicated log file, and configured permissions or sandbox behavior.
+Codex execution uses `codex exec`, JSONL output where available, explicit workspace configuration, and model reasoning settings. Antigravity execution uses `agy --print`, an explicit `--add-dir`, a sufficient print timeout, a dedicated log file, and configured permissions or trusted-host behavior.
 
 `agy` does not currently provide the same structured streaming and quota information as Codex. Its adapter must report unavailable data as unknown rather than inventing usage or reset times.
 

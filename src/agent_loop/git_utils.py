@@ -56,14 +56,22 @@ def commit_changes(worktree_path: Path, message: str) -> Optional[str]:
     res_sha = run_git(["rev-parse", "HEAD"], worktree_path)
     return res_sha.stdout.strip()
 
-def merge_branch(repo_path: Path, source_branch: str, target_branch: str) -> bool:
+def merge_branch(repo_path: Path, source_branch: str, target_branch: str) -> tuple[bool, list[str]]:
     # Checkout target branch
     run_git(["checkout", target_branch], repo_path)
     try:
         # Merge source_branch
         run_git(["merge", "--no-ff", "-m", f"Merge branch {source_branch}", source_branch], repo_path)
-        return True
-    except subprocess.CalledProcessError:
+        return True, []
+    except subprocess.CalledProcessError as e:
+        # Extract conflicting files
+        import re
+        conflicting_files = []
+        combined = (e.stdout or "") + "\n" + (e.stderr or "")
+        for line in combined.splitlines():
+            match = re.search(r"CONFLICT.*in\s+(.+)$", line)
+            if match:
+                conflicting_files.append(match.group(1).strip())
         # Merge conflict occurred, abort the merge
         run_git(["merge", "--abort"], repo_path)
-        return False
+        return False, conflicting_files

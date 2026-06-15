@@ -7,7 +7,8 @@ from agent_loop.repositories import (
     TaskRepository,
     AttemptRepository,
     TestRunRepository,
-    ProviderStateRepository
+    ProviderStateRepository,
+    TestMigrationRepository
 )
 
 def render_plan_md(conn: sqlite3.Connection, run_id: int, dest_path: Path) -> None:
@@ -34,16 +35,7 @@ def render_plan_md(conn: sqlite3.Connection, run_id: int, dest_path: Path) -> No
     lines.append("> This file is a human-readable summary. Full task metadata, dependencies, attempts, and evidence are stored in the agent-loop SQLite database. Run `agent-loop plan --details` to inspect them.")
     lines.append("")
     
-    # Calculate overall risk
-    risk_levels = [f["risk"] for f in features] + [t["risk"] for t in tasks]
-    overall_risk = "low"
-    if "high" in risk_levels:
-        overall_risk = "high"
-    elif "medium" in risk_levels:
-        overall_risk = "medium"
-    
-    lines.append(f"## Risk Level: {overall_risk.upper()}")
-    lines.append("")
+
     
     lines.append("## Features")
     lines.append("")
@@ -97,6 +89,20 @@ def render_progress_md(conn: sqlite3.Connection, run_id: int, dest_path: Path) -
     provider_rows = cursor.fetchall()
 
     lines = []
+    
+    migrations = TestMigrationRepository(conn).get_by_run(run_id)
+    if migrations:
+        lines.append("## TEST BASELINE CHANGES")
+        lines.append("")
+        for m in migrations:
+            lines.append(f"- **Old Test:** `{m['old_test_path']}`")
+            lines.append(f"  - **Replacement:** `{m['replacement_test_path']}`")
+            lines.append(f"  - **Rationale:** {m['rationale']}")
+            lines.append(f"  - **Status:** {m['approval_status']}")
+        lines.append("")
+        lines.append("---")
+        lines.append("")
+
     lines.append("# progress.md")
     lines.append("")
     lines.append("Use this file to monitor progress as the agent loops through tasks to achieve its goal.")

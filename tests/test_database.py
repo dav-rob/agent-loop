@@ -174,3 +174,73 @@ def test_decision_repository(db_conn):
     assert len(decs) == 1
     assert decs[0]["summary"] == "Use in-memory sqlite"
     assert decs[0]["is_autonomous"] is True
+
+def test_migration_v1_to_v2():
+    # 1. Create a fresh in-memory connection
+    conn = get_connection(Path(":memory:"))
+    # Manually create schema_migrations and run migration 1 only
+    conn.execute(
+        """
+        CREATE TABLE schema_migrations (
+            version INTEGER PRIMARY KEY,
+            applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        """
+    )
+    from agent_loop.database import MIGRATIONS
+    # Split statement by statement as done in migrate() to match execution context
+    for stmt in MIGRATIONS[0].split(";"):
+        if stmt.strip():
+            conn.execute(stmt)
+    conn.execute("INSERT INTO schema_migrations (version) VALUES (1);")
+    conn.commit()
+
+    # Verify migration 1 is applied, and has old provider_state schema
+    cursor = conn.cursor()
+    cursor.execute("INSERT INTO provider_state (provider, availability) VALUES ('codex', 1);")
+    conn.commit()
+
+    # Now, run migrate(conn) which should detect version 2 and apply it
+    migrate(conn)
+
+    # Verify provider_state was upgraded to compound key (provider, model)
+    cursor.execute("SELECT provider, model, availability FROM provider_state;")
+    rows = cursor.fetchall()
+    assert len(rows) == 1
+    assert rows[0][0] == "codex"
+    assert rows[0][1] == ""  # Migrated default
+    assert rows[0][2] == 1
+
+    # Check that schema_migrations has version 2
+    cursor.execute("SELECT version FROM schema_migrations ORDER BY version ASC;")
+    versions = {row[0] for row in cursor.fetchall()}
+    assert 1 in versions
+    assert 2 in versions
+    conn.close()
+
+def test_failed_migration_rollback(monkeypatch):
+    # Setup connection with existing migrations applied
+    conn = get_connection(Path(":memory:"))
+    migrate(conn)
+
+    # Now, temporarily inject a broken migration
+    from agent_loop.database import MIGRATIONS
+    original_migrations = MIGRATIONS.copy()
+    broken_ver = len(original_migrations) + 1
+    monkeypatch.setattr("agent_loop.database.MIGRATIONS", original_migrations + ["CREATE TABLE table_three (id INTEGER PRIMARY KEY); INVALID SQL;"])
+
+    # Trying to migrate should raise RuntimeError
+    with pytest.raises(RuntimeError, match=f"Migration version {broken_ver} failed"):
+        migrate(conn)
+
+    # Verify that the broken version is NOT in schema_migrations
+    cursor = conn.cursor()
+    cursor.execute("SELECT version FROM schema_migrations;")
+    versions = {row[0] for row in cursor.fetchall()}
+    assert broken_ver not in versions
+
+    # Verify that table_three was rolled back and does not exist
+    cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='table_three';")
+    assert cursor.fetchone() is None
+    conn.close()
+

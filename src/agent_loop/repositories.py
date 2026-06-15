@@ -9,8 +9,8 @@ VALID_RUN_TRANSITIONS = {
     "running": {"waiting_for_quota", "blocked", "reviewing", "cancelled", "failed"},
     "waiting_for_quota": {"running", "blocked", "cancelled"},
     "blocked": {"running", "cancelled"},
-    "reviewing": {"complete_pending_test_review", "complete", "failed", "running", "cancelled"},
-    "complete_pending_test_review": {"complete", "failed", "cancelled"},
+    "reviewing": {"complete_pending_test_review", "complete", "failed", "running", "cancelled", "blocked"},
+    "complete_pending_test_review": {"complete", "failed", "cancelled", "blocked"},
     "complete": set(),
     "failed": set(),
     "cancelled": set()
@@ -20,7 +20,7 @@ VALID_TASK_TRANSITIONS = {
     "pending": {"ready", "blocked", "cancelled"},
     "ready": {"running", "blocked", "cancelled"},
     "running": {"reviewing", "failed", "cancelled", "blocked"},
-    "reviewing": {"complete", "failed", "ready", "cancelled"},
+    "reviewing": {"complete", "failed", "ready", "cancelled", "blocked"},
     "complete": set(),
     "failed": {"ready", "blocked", "cancelled"},
     "blocked": {"ready", "cancelled"},
@@ -258,14 +258,14 @@ class AttemptRepository:
     def __init__(self, conn: sqlite3.Connection):
         self.conn = conn
 
-    def create(self, run_id: int, task_id: int, route: Optional[str] = None, provider: Optional[str] = None, model: Optional[str] = None, reasoning_level: Optional[str] = None, worktree_path: Optional[str] = None, commit_sha: Optional[str] = None, logs_path: Optional[str] = None) -> int:
+    def create(self, run_id: int, task_id: int, route: Optional[str] = None, provider: Optional[str] = None, model: Optional[str] = None, reasoning_level: Optional[str] = None, worktree_path: Optional[str] = None, commit_sha: Optional[str] = None, logs_path: Optional[str] = None, patch_path: Optional[str] = None) -> int:
         cursor = self.conn.cursor()
         cursor.execute(
             """
-            INSERT INTO attempts (run_id, task_id, route, provider, model, reasoning_level, worktree_path, commit_sha, logs_path, outcome)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+            INSERT INTO attempts (run_id, task_id, route, provider, model, reasoning_level, worktree_path, commit_sha, logs_path, patch_path, outcome)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
             """,
-            (run_id, task_id, route, provider, model, reasoning_level, worktree_path, commit_sha, logs_path, "running")
+            (run_id, task_id, route, provider, model, reasoning_level, worktree_path, commit_sha, logs_path, patch_path, "running")
         )
         self.conn.commit()
         return cursor.lastrowid
@@ -274,7 +274,7 @@ class AttemptRepository:
         cursor = self.conn.cursor()
         cursor.execute(
             """
-            SELECT id, run_id, task_id, route, provider, model, reasoning_level, worktree_path, commit_sha, logs_path, outcome, created_at, updated_at
+            SELECT id, run_id, task_id, route, provider, model, reasoning_level, worktree_path, commit_sha, logs_path, outcome, created_at, updated_at, patch_path
             FROM attempts WHERE id = ?;
             """,
             (attempt_id,)
@@ -295,14 +295,15 @@ class AttemptRepository:
             "logs_path": row[9],
             "outcome": row[10],
             "created_at": row[11],
-            "updated_at": row[12]
+            "updated_at": row[12],
+            "patch_path": row[13]
         }
 
     def get_by_run(self, run_id: int) -> List[Dict[str, Any]]:
         cursor = self.conn.cursor()
         cursor.execute(
             """
-            SELECT id, run_id, task_id, route, provider, model, reasoning_level, worktree_path, commit_sha, logs_path, outcome, created_at, updated_at
+            SELECT id, run_id, task_id, route, provider, model, reasoning_level, worktree_path, commit_sha, logs_path, outcome, created_at, updated_at, patch_path
             FROM attempts WHERE run_id = ?;
             """,
             (run_id,)
@@ -321,25 +322,24 @@ class AttemptRepository:
                 "logs_path": row[9],
                 "outcome": row[10],
                 "created_at": row[11],
-                "updated_at": row[12]
+                "updated_at": row[12],
+                "patch_path": row[13]
             }
             for row in cursor.fetchall()
         ]
 
-    def update_outcome(self, attempt_id: int, outcome: str, commit_sha: Optional[str] = None) -> None:
+    def update_outcome(self, attempt_id: int, outcome: str, commit_sha: Optional[str] = None, patch_path: Optional[str] = None) -> None:
         if outcome not in {"running", "completed", "failed", "abandoned"}:
             raise ValueError(f"Invalid attempt outcome: {outcome}")
         cursor = self.conn.cursor()
-        if commit_sha:
-            cursor.execute(
-                "UPDATE attempts SET outcome = ?, commit_sha = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?;",
-                (outcome, commit_sha, attempt_id)
-            )
-        else:
-            cursor.execute(
-                "UPDATE attempts SET outcome = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?;",
-                (outcome, attempt_id)
-            )
+        cursor.execute(
+            """
+            UPDATE attempts 
+            SET outcome = ?, commit_sha = ?, patch_path = ?, updated_at = CURRENT_TIMESTAMP 
+            WHERE id = ?;
+            """,
+            (outcome, commit_sha or None, patch_path or None, attempt_id)
+        )
         self.conn.commit()
 
 
@@ -424,6 +424,19 @@ class ReviewRepository:
             for row in cursor.fetchall()
         ]
 
+    def get_latest_rejection(self, subject_type: str, subject_id: int) -> Optional[str]:
+        cursor = self.conn.cursor()
+        cursor.execute(
+            """
+            SELECT findings FROM reviews 
+            WHERE subject_type = ? AND subject_id = ? AND decision = 'rejected' 
+            ORDER BY id DESC LIMIT 1;
+            """,
+            (subject_type, subject_id)
+        )
+        row = cursor.fetchone()
+        return row[0] if row else None
+
 
 class ProviderStateRepository:
     def __init__(self, conn: sqlite3.Connection):
@@ -432,7 +445,7 @@ class ProviderStateRepository:
     def get(self, provider: str, model: str) -> Optional[Dict[str, Any]]:
         cursor = self.conn.cursor()
         cursor.execute(
-            "SELECT provider, model, capability_snapshot, availability, quota_limit_reset, last_probe FROM provider_state WHERE provider = ? AND model = ?;",
+            "SELECT provider, model, capability_snapshot, availability, quota_state, quota_limit_reset, last_probe FROM provider_state WHERE provider = ? AND model = ?;",
             (provider, model)
         )
         row = cursor.fetchone()
@@ -443,25 +456,27 @@ class ProviderStateRepository:
             "model": row[1],
             "capability_snapshot": json.loads(row[2]) if row[2] else {},
             "availability": bool(row[3]),
-            "quota_limit_reset": row[4],
-            "last_probe": row[5]
+            "quota_state": row[4],
+            "quota_limit_reset": row[5],
+            "last_probe": row[6]
         }
 
-    def save(self, provider: str, model: str, capability_snapshot: Dict[str, Any], availability: bool, quota_limit_reset: Optional[str] = None, last_probe: Optional[str] = None) -> None:
+    def save(self, provider: str, model: str, capability_snapshot: Dict[str, Any], availability: bool, quota_state: str = "available", quota_limit_reset: Optional[str] = None, last_probe: Optional[str] = None) -> None:
         cap_str = json.dumps(capability_snapshot)
         avail_int = 1 if availability else 0
         cursor = self.conn.cursor()
         cursor.execute(
             """
-            INSERT INTO provider_state (provider, model, capability_snapshot, availability, quota_limit_reset, last_probe)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO provider_state (provider, model, capability_snapshot, availability, quota_state, quota_limit_reset, last_probe)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(provider, model) DO UPDATE SET
                 capability_snapshot = excluded.capability_snapshot,
                 availability = excluded.availability,
+                quota_state = excluded.quota_state,
                 quota_limit_reset = excluded.quota_limit_reset,
                 last_probe = excluded.last_probe;
             """,
-            (provider, model, cap_str, avail_int, quota_limit_reset, last_probe)
+            (provider, model, cap_str, avail_int, quota_state, quota_limit_reset, last_probe)
         )
         self.conn.commit()
 
@@ -552,22 +567,46 @@ class TestMigrationRepository:
     def __init__(self, conn: sqlite3.Connection):
         self.conn = conn
 
-    def create(self, run_id: int, task_id: Optional[int], old_test_path: str, replacement_test_path: str, rationale: str, evidence: Optional[str] = None) -> int:
+    def create(self, run_id: int, task_id: Optional[int], old_test_path: str, replacement_test_path: str, rationale: str, evidence: Optional[str] = None, previous_behavior: Optional[str] = None, replacement_behavior: Optional[str] = None, commit_sha: Optional[str] = None) -> int:
         cursor = self.conn.cursor()
         cursor.execute(
             """
-            INSERT INTO test_migrations (run_id, task_id, old_test_path, replacement_test_path, rationale, evidence, approval_status)
-            VALUES (?, ?, ?, ?, ?, ?, 'pending');
+            INSERT INTO test_migrations (run_id, task_id, old_test_path, replacement_test_path, rationale, evidence, approval_status, previous_behavior, replacement_behavior, commit_sha)
+            VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?);
             """,
-            (run_id, task_id, old_test_path, replacement_test_path, rationale, evidence)
+            (run_id, task_id, old_test_path, replacement_test_path, rationale, evidence, previous_behavior, replacement_behavior, commit_sha)
         )
         self.conn.commit()
         return cursor.lastrowid
 
+    def get(self, migration_id: int) -> Optional[Dict[str, Any]]:
+        cursor = self.conn.cursor()
+        cursor.execute(
+            "SELECT id, run_id, task_id, old_test_path, replacement_test_path, rationale, evidence, approval_status, created_at, previous_behavior, replacement_behavior, commit_sha FROM test_migrations WHERE id = ?;",
+            (migration_id,)
+        )
+        row = cursor.fetchone()
+        if not row:
+            return None
+        return {
+            "id": row[0],
+            "run_id": row[1],
+            "task_id": row[2],
+            "old_test_path": row[3],
+            "replacement_test_path": row[4],
+            "rationale": row[5],
+            "evidence": row[6],
+            "approval_status": row[7],
+            "created_at": row[8],
+            "previous_behavior": row[9],
+            "replacement_behavior": row[10],
+            "commit_sha": row[11]
+        }
+
     def get_by_run(self, run_id: int) -> List[Dict[str, Any]]:
         cursor = self.conn.cursor()
         cursor.execute(
-            "SELECT id, run_id, task_id, old_test_path, replacement_test_path, rationale, evidence, approval_status, created_at FROM test_migrations WHERE run_id = ?;",
+            "SELECT id, run_id, task_id, old_test_path, replacement_test_path, rationale, evidence, approval_status, created_at, previous_behavior, replacement_behavior, commit_sha FROM test_migrations WHERE run_id = ?;",
             (run_id,)
         )
         return [
@@ -580,7 +619,10 @@ class TestMigrationRepository:
                 "rationale": row[5],
                 "evidence": row[6],
                 "approval_status": row[7],
-                "created_at": row[8]
+                "created_at": row[8],
+                "previous_behavior": row[9],
+                "replacement_behavior": row[10],
+                "commit_sha": row[11]
             }
             for row in cursor.fetchall()
         ]

@@ -55,7 +55,7 @@ def test_markdown_rendering(db_conn, tmp_path):
     assert "Establish baseline package structure" in plan_content
     assert "Foundation" in plan_content
     assert "Init repo" in plan_content
-    assert "Risk Level: LOW" in plan_content
+    assert "Risk: LOW" in plan_content
     assert "[ ] Init repo" in plan_content
 
     # Verify progress.md

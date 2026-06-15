@@ -2,8 +2,30 @@ import os
 import re
 import json
 import subprocess
+import shutil
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+def resolve_binary(binary_name: str, config: Optional[Any] = None) -> str:
+    # 1. Config override
+    if config:
+        config_key = f"{binary_name.replace('-', '_')}_path"
+        override = config.data.get(config_key)
+        if override:
+            return str(override)
+            
+    # 2. PATH check
+    path_resolved = shutil.which(binary_name)
+    if path_resolved:
+        return path_resolved
+        
+    # 3. Fallbacks
+    fallbacks = {
+        "codex": "/usr/local/bin/codex",
+        "agy": "/Users/davidroberts/.local/bin/agy",
+        "antigravity-usage": "antigravity-usage"
+    }
+    return fallbacks.get(binary_name, binary_name)
 
 class AttemptResult:
     def __init__(
@@ -14,7 +36,10 @@ class AttemptResult:
         error: str,
         token_usage: Optional[Dict[str, int]] = None,
         quota_reset: Optional[str] = None,
-        quota_exhausted: bool = False
+        quota_exhausted: bool = False,
+        auth_required: bool = False,
+        transient_failure: bool = False,
+        unavailable: bool = False
     ):
         self.success = success
         self.exit_code = exit_code
@@ -23,6 +48,9 @@ class AttemptResult:
         self.token_usage = token_usage or {}
         self.quota_reset = quota_reset
         self.quota_exhausted = quota_exhausted
+        self.auth_required = auth_required
+        self.transient_failure = transient_failure
+        self.unavailable = unavailable
 
 
 def redact_secrets(text: str) -> str:
@@ -63,8 +91,8 @@ class BaseAdapter:
 
 
 class CodexAdapter(BaseAdapter):
-    def __init__(self, binary_path: str = "/usr/local/bin/codex"):
-        self.binary_path = binary_path
+    def __init__(self, binary_path: Optional[str] = None, config: Optional[Any] = None):
+        self.binary_path = binary_path or resolve_binary("codex", config)
 
     def discover_capabilities(self) -> Dict[str, Any]:
         try:
@@ -115,12 +143,11 @@ class CodexAdapter(BaseAdapter):
             "--json",
             "--cd", str(workspace_path),
             "-m", model,
-            "-s", "danger-full-access",
-            "-a", "never",
+            "--dangerously-bypass-approvals-and-sandbox",
             "-o", str(output_msg_file)
         ]
         if reasoning_level:
-            cmd += ["-c", f"reasoning_level={reasoning_level}"]
+            cmd += ["-c", f"model_reasoning_effort={reasoning_level}"]
         
         # Check if plan_schema.json exists in package dir to pass to Codex planning route
         schema_path = Path(__file__).parent / "plan_schema.json"
@@ -202,7 +229,19 @@ class CodexAdapter(BaseAdapter):
             if any(q in lowered_all for q in ["insufficient_quota", "rate_limit_exceeded", "rate limit", "quota exceeded", "status code 429"]):
                 quota_exhausted = True
 
-            success = (process.returncode == 0) and not quota_exhausted
+            auth_required = False
+            if any(a in lowered_all for a in ["login required", "unauthenticated", "missing credentials", "expired credentials", "expired token", "authentication required", "not logged in", "run antigravity-usage login", "run agy login"]):
+                auth_required = True
+
+            transient_failure = False
+            if any(x in lowered_all for x in ["connection reset", "connection refused", "502 bad gateway", "503 service unavailable", "504 gateway timeout", "temporary error", "timeout"]):
+                transient_failure = True
+                
+            unavailable = False
+            if any(x in lowered_all for x in ["model not found", "model unavailable", "unsupported model", "invalid model", "does not exist", "404 not found", "model not supported"]):
+                unavailable = True
+
+            success = (process.returncode == 0) and not quota_exhausted and not auth_required and not transient_failure and not unavailable
 
             return AttemptResult(
                 success=success,
@@ -211,7 +250,10 @@ class CodexAdapter(BaseAdapter):
                 error=stderr_content,
                 token_usage=token_usage,
                 quota_reset=quota_reset,
-                quota_exhausted=quota_exhausted
+                quota_exhausted=quota_exhausted,
+                auth_required=auth_required,
+                transient_failure=transient_failure,
+                unavailable=unavailable
             )
 
         except subprocess.TimeoutExpired as te:
@@ -220,15 +262,20 @@ class CodexAdapter(BaseAdapter):
                 exit_code=-1,
                 output="",
                 error=f"Timeout expired after {timeout_seconds} seconds.",
-                quota_exhausted=False
+                quota_exhausted=False,
+                transient_failure=True
             )
         except Exception as ex:
+            # Check if exception represents transient/network failure
+            err_msg = str(ex).lower()
+            is_transient = any(x in err_msg for x in ["connection", "timeout", "network", "http"])
             return AttemptResult(
                 success=False,
                 exit_code=-1,
                 output="",
                 error=str(ex),
-                quota_exhausted=False
+                quota_exhausted=False,
+                transient_failure=is_transient
             )
 
     def probe_availability(self) -> bool:
@@ -237,8 +284,8 @@ class CodexAdapter(BaseAdapter):
 
 
 class AgyAdapter(BaseAdapter):
-    def __init__(self, binary_path: str = "/Users/davidroberts/.local/bin/agy"):
-        self.binary_path = binary_path
+    def __init__(self, binary_path: Optional[str] = None, config: Optional[Any] = None):
+        self.binary_path = binary_path or resolve_binary("agy", config)
 
     def discover_capabilities(self) -> Dict[str, Any]:
         try:
@@ -296,6 +343,7 @@ class AgyAdapter(BaseAdapter):
         cmd = [
             self.binary_path,
             "--print",
+            "--print-timeout", str(int(timeout_seconds)),
             "--dangerously-skip-permissions",
             "--model", model,
             "--log-file", str(agy_log_file),
@@ -342,7 +390,19 @@ class AgyAdapter(BaseAdapter):
             if reset_match:
                 quota_reset = reset_match.group(1).strip()
 
-            success = (process.returncode == 0) and not quota_exhausted
+            auth_required = False
+            if any(a in lowered_all for a in ["login required", "unauthenticated", "missing credentials", "expired credentials", "expired token", "authentication required", "not logged in", "run antigravity-usage login", "run agy login"]):
+                auth_required = True
+
+            transient_failure = False
+            if any(x in lowered_all for x in ["connection reset", "connection refused", "502 bad gateway", "503 service unavailable", "504 gateway timeout", "temporary error", "timeout"]):
+                transient_failure = True
+                
+            unavailable = False
+            if any(x in lowered_all for x in ["model not found", "model unavailable", "unsupported model", "invalid model", "does not exist", "404 not found", "model not supported"]):
+                unavailable = True
+
+            success = (process.returncode == 0) and not quota_exhausted and not auth_required and not transient_failure and not unavailable
 
             return AttemptResult(
                 success=success,
@@ -351,7 +411,10 @@ class AgyAdapter(BaseAdapter):
                 error=stderr_content,
                 token_usage={}, # agy doesn't report token usage
                 quota_reset=quota_reset,
-                quota_exhausted=quota_exhausted
+                quota_exhausted=quota_exhausted,
+                auth_required=auth_required,
+                transient_failure=transient_failure,
+                unavailable=unavailable
             )
 
         except subprocess.TimeoutExpired as te:
@@ -360,15 +423,19 @@ class AgyAdapter(BaseAdapter):
                 exit_code=-1,
                 output="",
                 error=f"Timeout expired after {timeout_seconds} seconds.",
-                quota_exhausted=False
+                quota_exhausted=False,
+                transient_failure=True
             )
         except Exception as ex:
+            err_msg = str(ex).lower()
+            is_transient = any(x in err_msg for x in ["connection", "timeout", "network", "http"])
             return AttemptResult(
                 success=False,
                 exit_code=-1,
                 output="",
                 error=str(ex),
-                quota_exhausted=False
+                quota_exhausted=False,
+                transient_failure=is_transient
             )
 
     def probe_availability(self) -> bool:
@@ -376,11 +443,10 @@ class AgyAdapter(BaseAdapter):
         return cap["installed"]
 
 
-def get_adapter(provider_name: str, config: Optional[Config] = None) -> BaseAdapter:
+def get_adapter(provider_name: str, config: Optional[Any] = None) -> BaseAdapter:
     if provider_name == "codex":
-        # Check config for custom binary override if needed
-        return CodexAdapter()
+        return CodexAdapter(config=config)
     elif provider_name == "agy":
-        return AgyAdapter()
+        return AgyAdapter(config=config)
     else:
         raise ValueError(f"Unknown provider: {provider_name}")

@@ -176,7 +176,7 @@ def test_orchestrator_task_execution_loop(db_conn, tmp_path, monkeypatch):
     # Setup mock git functions in orchestrator
     mock_create_wt = MagicMock()
     mock_commit = MagicMock(return_value="mock_sha_123")
-    mock_merge = MagicMock(return_value=True)
+    mock_merge = MagicMock(return_value=(True, []))
     mock_remove_wt = MagicMock()
 
     monkeypatch.setattr("agent_loop.orchestrator.create_worktree", mock_create_wt)
@@ -206,14 +206,15 @@ def test_orchestrator_task_execution_loop(db_conn, tmp_path, monkeypatch):
         "max_workers": 2,
         "retry_policy": {"max_attempts": 3, "escalation_threshold": 2},
         "routes": {
-            "implementation": [{"provider": "codex", "model": "gpt-5.4-mini"}]
+            "implementation": [{"provider": "codex", "model": "gpt-5.4-mini"}],
+            "planning": [{"provider": "codex", "model": "gpt-5.4-mini"}]
         }
     }
     config = Config(config_data)
     orch = Orchestrator(db_conn, config, plan_path=tmp_path / "plan.md", progress_path=tmp_path / "progress.md")
 
     # Mock success run for Codex adapter
-    mock_success = AttemptResult(success=True, exit_code=0, output='{"decision": "approved"}', error="")
+    mock_success = AttemptResult(success=True, exit_code=0, output='{"decision": "approved", "findings": "LGTM"}', error="")
     
     with patch("agent_loop.orchestrator.get_adapter") as mock_get_adapter:
         mock_adapter = MagicMock()
@@ -302,8 +303,8 @@ def test_reviews_fail_closed(db_conn, tmp_path):
         
         # Scenario 1: result.success = False
         mock_adapter.run_attempt.return_value = AttemptResult(success=False, exit_code=1, output="", error="API Timeout")
-        approved = orch.run_agent_review(run_id, "task", 1, "Verify change")
-        assert approved is False
+        decision = orch.run_agent_review(run_id, "task", 1, "Verify change")
+        assert decision == "rejected"
         
         reviews = orch.review_repo.get_by_run(run_id)
         assert len(reviews) == 1
@@ -312,8 +313,8 @@ def test_reviews_fail_closed(db_conn, tmp_path):
         
         # Scenario 2: malformed JSON output
         mock_adapter.run_attempt.return_value = AttemptResult(success=True, exit_code=0, output="This is not JSON", error="")
-        approved = orch.run_agent_review(run_id, "task", 2, "Verify change")
-        assert approved is False
+        decision = orch.run_agent_review(run_id, "task", 2, "Verify change")
+        assert decision == "rejected"
         
         reviews = orch.review_repo.get_by_run(run_id)
         assert len(reviews) == 2
@@ -322,8 +323,8 @@ def test_reviews_fail_closed(db_conn, tmp_path):
         
         # Scenario 3: valid rejection
         mock_adapter.run_attempt.return_value = AttemptResult(success=True, exit_code=0, output='{"decision": "rejected", "findings": "Complexity too high"}', error="")
-        approved = orch.run_agent_review(run_id, "task", 3, "Verify change")
-        assert approved is False
+        decision = orch.run_agent_review(run_id, "task", 3, "Verify change")
+        assert decision == "rejected"
         
         reviews = orch.review_repo.get_by_run(run_id)
         assert len(reviews) == 3
@@ -332,8 +333,8 @@ def test_reviews_fail_closed(db_conn, tmp_path):
 
         # Scenario 4: valid approval
         mock_adapter.run_attempt.return_value = AttemptResult(success=True, exit_code=0, output='{"decision": "approved", "findings": "LGTM"}', error="")
-        approved = orch.run_agent_review(run_id, "task", 4, "Verify change")
-        assert approved is True
+        decision = orch.run_agent_review(run_id, "task", 4, "Verify change")
+        assert decision == "approved"
         
         reviews = orch.review_repo.get_by_run(run_id)
         assert len(reviews) == 4
@@ -353,7 +354,7 @@ def test_final_review_gating_success_and_failure(db_conn, tmp_path):
     run_repo.update_status(run_id, "running")
     feat_id = feat_repo.create(run_id, "Feature 1", "low")
     task_id = task_repo.create(run_id, feat_id, "Task 1", "implementation", "low")
-    task_repo.update_status(task_id, "complete")
+    task_repo.update_status(task_id, "complete", force=True)
     feat_repo.update_review_status(feat_id, "approved")
     
     # 1. Mock run_final_review to fail (rejection)
@@ -381,7 +382,7 @@ def test_parallel_workers_safe_concurrency(db_conn, tmp_path, monkeypatch):
         time.sleep(0.1)  # ensure overlap would happen if not locked
         end = time.time()
         merge_times.append((start, end))
-        return True
+        return True, []
 
     monkeypatch.setattr("agent_loop.orchestrator.create_worktree", mock_create_wt)
     monkeypatch.setattr("agent_loop.orchestrator.commit_changes", mock_commit)
@@ -409,7 +410,8 @@ def test_parallel_workers_safe_concurrency(db_conn, tmp_path, monkeypatch):
         "max_workers": 2,
         "retry_policy": {"max_attempts": 3, "escalation_threshold": 2},
         "routes": {
-            "implementation": [{"provider": "codex", "model": "gpt-5.4-mini"}]
+            "implementation": [{"provider": "codex", "model": "gpt-5.4-mini"}],
+            "planning": [{"provider": "codex", "model": "gpt-5.4-mini"}]
         }
     }
     config = Config(config_data)
@@ -421,7 +423,8 @@ def test_parallel_workers_safe_concurrency(db_conn, tmp_path, monkeypatch):
         start = time.time()
         time.sleep(0.2)  # force execution overlap
         end = time.time()
-        task_execution_times.append((start, end))
+        if "Agent Loop Reviewer" not in prompt:
+            task_execution_times.append((start, end))
         return AttemptResult(success=True, exit_code=0, output='{"decision": "approved", "findings": "LGTM"}', error="")
 
     with patch("agent_loop.orchestrator.get_adapter") as mock_get_adapter:
@@ -499,6 +502,249 @@ def test_interrupted_attempt_recovery(db_conn, tmp_path):
     assert attempt_repo.get(att_id_3)["outcome"] == "abandoned"
     # Task should now be blocked!
     assert task_repo.get(task_id)["status"] == "blocked"
+
+def test_merge_conflict_integration_lifecycle(db_conn, tmp_path, monkeypatch):
+    mock_create_wt = MagicMock()
+    mock_commit = MagicMock(return_value="mock_sha_123")
+    mock_remove_wt = MagicMock()
+
+    monkeypatch.setattr("agent_loop.orchestrator.create_worktree", mock_create_wt)
+    monkeypatch.setattr("agent_loop.orchestrator.commit_changes", mock_commit)
+    monkeypatch.setattr("agent_loop.orchestrator.remove_worktree", mock_remove_wt)
+
+    run_repo = RunRepository(db_conn)
+    feat_repo = FeatureRepository(db_conn)
+    task_repo = TaskRepository(db_conn)
+
+    run_id = run_repo.create("Merge conflict task run", "autonomous")
+    run_repo.update_status(run_id, "planning")
+    run_repo.update_status(run_id, "running")
+    feat_id = feat_repo.create(run_id, "Feature 1", "low")
+    task_id = task_repo.create(run_id, feat_id, "Task 1", "implementation", "low")
+    task_repo.update_status(task_id, "ready")
+
+    config_data = {
+        "db_path": ":memory:",
+        "logs_dir": str(tmp_path / "logs"),
+        "max_workers": 1,
+        "retry_policy": {"max_attempts": 3, "escalation_threshold": 2},
+        "routes": {
+            "implementation": [{"provider": "codex", "model": "gpt-5.4-mini"}],
+            "planning": [{"provider": "codex", "model": "gpt-5.5"}]
+        }
+    }
+    config = Config(config_data)
+    orch = Orchestrator(db_conn, config, plan_path=tmp_path / "plan.md", progress_path=tmp_path / "progress.md")
+
+    # 1. First execution fails with merge conflict
+    mock_merge_fail = MagicMock(return_value=(False, ["conflict_file.py"]))
+    monkeypatch.setattr("agent_loop.orchestrator.merge_branch", mock_merge_fail)
+
+    mock_impl_result = AttemptResult(success=True, exit_code=0, output='{"decision": "approved", "findings": "LGTM"}', error="")
+
+    with patch("agent_loop.orchestrator.get_adapter") as mock_get_adapter:
+        mock_adapter = MagicMock()
+        mock_adapter.run_attempt.return_value = mock_impl_result
+        mock_get_adapter.return_value = mock_adapter
+
+        # Run execute_task for original task
+        task = task_repo.get(task_id)
+        success = orch.execute_task(run_id, task)
+        assert success is True
+
+    # Original task must now be blocked
+    assert task_repo.get(task_id)["status"] == "blocked"
+
+    # Integration task should be created
+    tasks = task_repo.get_by_run(run_id)
+    integration_task = next(t for t in tasks if "Resolve merge conflict" in t["name"])
+    assert integration_task is not None
+    assert integration_task["status"] == "pending"
+
+    scope_data = json.loads(integration_task["scope"])
+    assert scope_data["original_task_id"] == task_id
+    assert "conflict_file.py" in scope_data["conflicting_files"]
+
+    # 2. Now run integration task and let it succeed
+    mock_merge_success = MagicMock(return_value=(True, []))
+    monkeypatch.setattr("agent_loop.orchestrator.merge_branch", mock_merge_success)
+
+    # Make the integration task ready
+    task_repo.update_status(integration_task["id"], "ready")
+
+    with patch("agent_loop.orchestrator.get_adapter") as mock_get_adapter:
+        mock_adapter = MagicMock()
+        mock_adapter.run_attempt.return_value = mock_impl_result
+        mock_get_adapter.return_value = mock_adapter
+
+        success2 = orch.execute_task(run_id, integration_task)
+        assert success2 is True
+
+    # Both integration and original task must now be complete
+    assert task_repo.get(integration_task["id"])["status"] == "complete"
+    assert task_repo.get(task_id)["status"] == "complete"
+
+
+def test_review_decision_states(db_conn, tmp_path, monkeypatch):
+    config = Config()
+    config.data["retry_policy"] = {"max_attempts": 2, "escalation_threshold": 2}
+    orch = Orchestrator(db_conn, config, plan_path=tmp_path / "plan.md", progress_path=tmp_path / "progress.md")
+
+    run_repo = RunRepository(db_conn)
+    feat_repo = FeatureRepository(db_conn)
+    task_repo = TaskRepository(db_conn)
+    attempt_repo = AttemptRepository(db_conn)
+
+    run_id = run_repo.create("Review decision test", "autonomous")
+    feat_id = feat_repo.create(run_id, "Feat 1", "low")
+
+    # Mocks for git
+    mock_create_wt = MagicMock()
+    mock_commit = MagicMock(return_value="mock_sha_123")
+    mock_merge = MagicMock(return_value=(True, []))
+    mock_remove_wt = MagicMock()
+
+    monkeypatch.setattr("agent_loop.orchestrator.create_worktree", mock_create_wt)
+    monkeypatch.setattr("agent_loop.orchestrator.commit_changes", mock_commit)
+    monkeypatch.setattr("agent_loop.orchestrator.merge_branch", mock_merge)
+    monkeypatch.setattr("agent_loop.orchestrator.remove_worktree", mock_remove_wt)
+
+    with patch("agent_loop.orchestrator.get_adapter") as mock_get_adapter:
+        mock_adapter = MagicMock()
+        mock_get_adapter.return_value = mock_adapter
+
+        # 1. Test "block" decision
+        task_id = task_repo.create(run_id, feat_id, "Task Block", "implementation", "low", required_verification="")
+        task_repo.update_status(task_id, "ready")
+        task = task_repo.get(task_id)
+
+        # First attempt (adapter returns success, reviewer returns "block")
+        mock_adapter.run_attempt.side_effect = [
+            AttemptResult(success=True, exit_code=0, output="done", error=""), # Implementation
+            AttemptResult(success=True, exit_code=0, output='{"decision": "block", "findings": "Not allowed"}', error="") # Reviewer
+        ]
+
+        success = orch._execute_task_impl(run_id, task)
+        assert success is True
+        assert task_repo.get(task_id)["status"] == "blocked"
+
+        # 2. Test "assessment" decision
+        task_id2 = task_repo.create(run_id, feat_id, "Task Assess", "implementation", "low", required_verification="")
+        task_repo.update_status(task_id2, "ready")
+        task2 = task_repo.get(task_id2)
+
+        mock_adapter.run_attempt.side_effect = [
+            AttemptResult(success=True, exit_code=0, output="done", error=""),
+            AttemptResult(success=True, exit_code=0, output='{"decision": "assessment", "findings": "Needs manual check"}', error="")
+        ]
+
+        success = orch._execute_task_impl(run_id, task2)
+        assert success is True
+        assert task_repo.get(task_id2)["status"] == "blocked"
+
+        # 3. Test "follow_up" under limit
+        task_id3 = task_repo.create(run_id, feat_id, "Task Followup", "implementation", "low", required_verification="")
+        task_repo.update_status(task_id3, "ready")
+        task3 = task_repo.get(task_id3)
+
+        mock_adapter.run_attempt.side_effect = [
+            AttemptResult(success=True, exit_code=0, output="done", error=""),
+            AttemptResult(success=True, exit_code=0, output='{"decision": "follow_up", "findings": "Clarify X"}', error="")
+        ]
+
+        success = orch._execute_task_impl(run_id, task3)
+        assert success is True
+        assert task_repo.get(task_id3)["status"] == "ready"
+
+        # 4. Test "rejected" limit bound
+        # Max attempts is 2. Let's run attempt 1 (which gets rejected, sets to ready).
+        # Then run attempt 2 (which gets rejected, sets to blocked).
+        task_id4 = task_repo.create(run_id, feat_id, "Task Max Rejects", "implementation", "low", required_verification="")
+        task_repo.update_status(task_id4, "ready")
+        task4 = task_repo.get(task_id4)
+
+        # Attempt 1
+        mock_adapter.run_attempt.side_effect = [
+            AttemptResult(success=True, exit_code=0, output="done 1", error=""),
+            AttemptResult(success=True, exit_code=0, output='{"decision": "rejected", "findings": "Bad code 1"}', error="")
+        ]
+        success = orch._execute_task_impl(run_id, task4)
+        assert success is True
+        assert task_repo.get(task_id4)["status"] == "ready"
+
+        # Attempt 2
+        mock_adapter.run_attempt.side_effect = [
+            AttemptResult(success=True, exit_code=0, output="done 2", error=""),
+            AttemptResult(success=True, exit_code=0, output='{"decision": "rejected", "findings": "Bad code 2"}', error="")
+        ]
+        success = orch._execute_task_impl(run_id, task4)
+        assert success is True
+        assert task_repo.get(task_id4)["status"] == "blocked"
+
+
+def test_preserve_partial_work_on_recovery(db_conn, tmp_path, monkeypatch):
+    config = Config()
+    orch = Orchestrator(db_conn, config, plan_path=tmp_path / "plan.md", progress_path=tmp_path / "progress.md")
+
+    run_repo = RunRepository(db_conn)
+    feat_repo = FeatureRepository(db_conn)
+    task_repo = TaskRepository(db_conn)
+    attempt_repo = AttemptRepository(db_conn)
+
+    run_id = run_repo.create("Recovery test", "autonomous")
+    feat_id = feat_repo.create(run_id, "Feat 1", "low")
+    task_id = task_repo.create(run_id, feat_id, "Task 1", "implementation", "low")
+
+    # Create an attempt marked 'running'
+    wt_dir = tmp_path / "wt_run"
+    wt_dir.mkdir(parents=True, exist_ok=True)
+    logs_dir = tmp_path / "logs"
+    logs_dir.mkdir(parents=True, exist_ok=True)
+
+    attempt_id = attempt_repo.create(
+        run_id=run_id,
+        task_id=task_id,
+        route="implementation",
+        provider="codex",
+        model="gpt-5.4-mini",
+        worktree_path=str(wt_dir),
+        logs_path=str(logs_dir)
+    )
+
+    # Simulate some uncommitted changes in the worktree
+    # Let's mock subprocess.run inside _preserve_uncommitted_changes to return a dummy diff
+    dummy_diff = "diff --git a/file.py b/file.py\n+new line"
+    mock_run = MagicMock()
+    mock_run.returncode = 0
+    mock_run.stdout = dummy_diff
+
+    def run_side_effect(cmd, *args, **kwargs):
+        if "diff" in cmd:
+            return mock_run
+        # Mock status porcelain empty
+        mock_status = MagicMock(returncode=0, stdout="")
+        return mock_status
+
+    # We also mock remove_worktree to verify it got called
+    mock_remove_wt = MagicMock()
+    monkeypatch.setattr("agent_loop.orchestrator.remove_worktree", mock_remove_wt)
+
+    with patch("subprocess.run", side_effect=run_side_effect):
+        # Trigger recovery
+        orch.reconcile_interrupted_run(run_id)
+
+    # Verify remove_worktree was called
+    mock_remove_wt.assert_called_once()
+
+    # Verify that patch file was written and is inspectable
+    # Patch path is stored in the database for the attempt
+    attempt = attempt_repo.get(attempt_id)
+    assert attempt["outcome"] == "abandoned"
+    assert attempt["patch_path"] is not None
+
+    patch_file = Path(attempt["patch_path"])
+    assert patch_file.exists()
+    assert patch_file.read_text() == dummy_diff
 
 
 

@@ -43,7 +43,7 @@ def test_git_operations(tmp_path):
     assert not wt_path.exists()
     
     # Merge branch into main
-    merge_success = merge_branch(repo_path, "feature/task-1", "main")
+    merge_success, _ = merge_branch(repo_path, "feature/task-1", "main")
     assert merge_success is True
     
     # Verify file is merged into main repo
@@ -68,8 +68,10 @@ def test_git_merge_conflict(tmp_path):
     commit_changes(wt2, "Edit README on branch 2")
     remove_worktree(repo_path, wt2)
     
-    # Merge branch-1 into main: succeeds
-    assert merge_branch(repo_path, "branch-1", "main") is True
+    success1, _ = merge_branch(repo_path, "branch-1", "main")
+    assert success1 is True
     
     # Merge branch-2 into main: conflicts
-    assert merge_branch(repo_path, "branch-2", "main") is False
+    success2, conflicting_files = merge_branch(repo_path, "branch-2", "main")
+    assert success2 is False
+    assert "README.md" in conflicting_files

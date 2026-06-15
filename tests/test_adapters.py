@@ -97,6 +97,9 @@ def test_codex_run_attempt_success(tmp_path):
         cd_idx = cmd_args.index("--cd")
         assert Path(cmd_args[cd_idx + 1]).is_absolute()
         assert Path(cmd_args[cd_idx + 1]) == workspace.resolve()
+        assert "--dangerously-bypass-approvals-and-sandbox" in cmd_args
+        assert "-a" not in cmd_args
+        assert "-s" not in cmd_args
 
 def test_codex_run_attempt_quota_exhausted(tmp_path):
     adapter = CodexAdapter()
@@ -181,3 +184,52 @@ def test_agy_run_attempt_quota_exhausted(tmp_path):
         assert res.success is False
         assert res.quota_exhausted is True
         assert res.quota_reset == "2026-06-15T16:00:00Z"
+
+
+def test_codex_run_attempt_reasoning(tmp_path):
+    adapter = CodexAdapter()
+    logs_dir = tmp_path / "logs"
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    mock_proc = MagicMock()
+    mock_proc.returncode = 0
+
+    def run_side_effect(cmd, stdin, stdout, stderr, timeout, **kwargs):
+        stdout.write('{"event": "message", "role": "assistant", "content": "Succeeded"}\n')
+        return mock_proc
+
+    with patch("subprocess.run", side_effect=run_side_effect) as mock_subprocess:
+        res = adapter.run_attempt(
+            model="gpt-5.4-mini",
+            prompt="Test reasoning",
+            workspace_path=workspace,
+            attempt_logs_dir=logs_dir,
+            reasoning_level="high"
+        )
+        assert res.success is True
+        cmd_args = mock_subprocess.call_args[0][0]
+        assert "-c" in cmd_args
+        c_idx = cmd_args.index("-c")
+        assert cmd_args[c_idx + 1] == "model_reasoning_effort=high"
+
+
+def test_codex_adapter_real_smoke_test(tmp_path):
+    codex_bin = "/usr/local/bin/codex"
+    if not Path(codex_bin).exists():
+        pytest.skip("Real Codex CLI not found")
+        
+    adapter = CodexAdapter(binary_path=codex_bin)
+    logs_dir = tmp_path / "logs"
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    
+    # Run a harmless short prompt
+    res = adapter.run_attempt(
+        model="gpt-5.4-mini",
+        prompt="Reply with exactly 'OK'",
+        workspace_path=workspace,
+        attempt_logs_dir=logs_dir
+    )
+    
+    assert res.exit_code != 2, f"Codex CLI rejected arguments: {res.error}"

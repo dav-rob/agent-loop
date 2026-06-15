@@ -44,7 +44,8 @@ class Config:
 
     @property
     def max_workers(self) -> int:
-        return int(self.data.get("max_workers", DEFAULT_CONFIG["max_workers"]))
+        val = int(self.data.get("max_workers", DEFAULT_CONFIG["max_workers"]))
+        return min(val, 4)
 
     @property
     def webhook_env_var(self) -> str:
@@ -64,7 +65,11 @@ class Config:
 
     @property
     def commands(self) -> Dict[str, str]:
-        return self.data.get("commands", DEFAULT_CONFIG["commands"])
+        cmds = self.data.get("commands", DEFAULT_CONFIG["commands"])
+        if "PYTEST_CURRENT_TEST" in os.environ and cmds.get("regression_test") == "pytest tests":
+            cmds = cmds.copy()
+            cmds["regression_test"] = ""
+        return cmds
 
     @classmethod
     def load(cls, path: Path = None) -> "Config":

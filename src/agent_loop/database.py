@@ -154,17 +154,28 @@ MIGRATIONS: List[str] = [
         model TEXT NOT NULL,
         capability_snapshot TEXT,
         availability INTEGER NOT NULL DEFAULT 1,
+        quota_state TEXT NOT NULL DEFAULT 'available',
         quota_limit_reset TIMESTAMP,
         last_probe TIMESTAMP,
         PRIMARY KEY (provider, model)
     );
 
     -- Insert existing data conservatively
-    INSERT INTO provider_state (provider, model, capability_snapshot, availability, quota_limit_reset, last_probe)
-    SELECT provider, '', capability_snapshot, availability, quota_limit_reset, last_probe FROM provider_state_old;
+    INSERT INTO provider_state (provider, model, capability_snapshot, availability, quota_state, quota_limit_reset, last_probe)
+    SELECT provider, '', capability_snapshot, availability, 'available', quota_limit_reset, last_probe FROM provider_state_old;
 
     -- Drop the old table
     DROP TABLE provider_state_old;
+    """,
+    # Version 3 migration: add patch_path to attempts table
+    """
+    ALTER TABLE attempts ADD COLUMN patch_path TEXT;
+    """,
+    # Version 4 migration: add previous_behavior, replacement_behavior, and commit_sha to test_migrations table
+    """
+    ALTER TABLE test_migrations ADD COLUMN previous_behavior TEXT;
+    ALTER TABLE test_migrations ADD COLUMN replacement_behavior TEXT;
+    ALTER TABLE test_migrations ADD COLUMN commit_sha TEXT;
     """
 ]
 

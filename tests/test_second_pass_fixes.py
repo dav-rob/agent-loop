@@ -1,0 +1,335 @@
+import json
+import sqlite3
+import datetime
+import os
+import subprocess
+from pathlib import Path
+from unittest.mock import patch, MagicMock
+import pytest
+
+from agent_loop.config import Config
+from agent_loop.database import get_connection, migrate
+from agent_loop.repositories import (
+    RunRepository,
+    FeatureRepository,
+    TaskRepository,
+    AttemptRepository,
+    TestMigrationRepository,
+    ProviderStateRepository,
+    NotificationRepository,
+    TestRunRepository
+)
+from agent_loop.orchestrator import Orchestrator
+from agent_loop.adapters import resolve_binary, get_adapter, CodexAdapter, AgyAdapter, AttemptResult
+from agent_loop.cli import handle_migration
+
+@pytest.fixture
+def db_conn():
+    conn = get_connection(Path(":memory:"))
+    migrate(conn)
+    yield conn
+    conn.close()
+
+# FIX-04: Gate completion on broader regression verification
+def test_regression_gating(db_conn, tmp_path):
+    config = Config({
+        "db_path": ":memory:",
+        "logs_dir": str(tmp_path / "logs"),
+        "commands": {
+            "regression_test": "exit 0"
+        }
+    })
+    orch = Orchestrator(db_conn, config, plan_path=tmp_path / "plan.md", progress_path=tmp_path / "progress.md")
+    
+    run_repo = RunRepository(db_conn)
+    feat_repo = FeatureRepository(db_conn)
+    task_repo = TaskRepository(db_conn)
+    
+    run_id = run_repo.create("Test goal", "autonomous")
+    run_repo.update_status(run_id, "planning")
+    run_repo.update_status(run_id, "running")
+    feat_id = feat_repo.create(run_id, "Feature 1", "low")
+    task_id = task_repo.create(run_id, feat_id, "Task 1", "implementation", "low")
+    task_repo.update_status(task_id, "complete", force=True)
+    feat_repo.update_review_status(feat_id, "approved")
+    
+    # 1. Regression test succeeds
+    with patch.object(orch, "run_final_review", return_value=True):
+        with patch("subprocess.run", return_value=MagicMock(returncode=0)) as mock_run:
+            orch.run_loop(run_id)
+            mock_run.assert_called_once()
+            assert run_repo.get(run_id)["status"] == "complete"
+            
+    # Check that test run was recorded
+    tr_repo = TestRunRepository(db_conn)
+    test_runs = tr_repo.get_by_run(run_id)
+    assert len(test_runs) == 1
+    assert test_runs[0]["command"] == "exit 0"
+    assert test_runs[0]["exit_status"] == 0
+    assert test_runs[0]["task_id"] is None
+    assert test_runs[0]["attempt_id"] is None
+
+    # 2. Regression test fails
+    run_id2 = run_repo.create("Test goal 2", "autonomous")
+    run_repo.update_status(run_id2, "planning")
+    run_repo.update_status(run_id2, "running")
+    feat_id2 = feat_repo.create(run_id2, "Feature 1", "low")
+    task_id2 = task_repo.create(run_id2, feat_id2, "Task 1", "implementation", "low")
+    task_repo.update_status(task_id2, "complete", force=True)
+    feat_repo.update_review_status(feat_id2, "approved")
+
+    config2 = Config({
+        "db_path": ":memory:",
+        "logs_dir": str(tmp_path / "logs"),
+        "commands": {
+            "regression_test": "exit 1"
+        }
+    })
+    orch2 = Orchestrator(db_conn, config2, plan_path=tmp_path / "plan.md", progress_path=tmp_path / "progress.md")
+    
+    with patch.object(orch2, "run_final_review", return_value=True):
+        with patch("subprocess.run", return_value=MagicMock(returncode=1)) as mock_run:
+            orch2.run_loop(run_id2)
+            assert run_repo.get(run_id2)["status"] == "failed"
+            test_runs2 = tr_repo.get_by_run(run_id2)
+            assert len(test_runs2) == 1
+            assert test_runs2[0]["exit_status"] == 1
+
+# FIX-05: Complete the quota state machine across all active routes
+def test_quota_state_machine_new_states(db_conn, tmp_path):
+    config = Config({
+        "db_path": ":memory:",
+        "logs_dir": str(tmp_path / "logs"),
+        "routes": {
+            "implementation": [{"provider": "codex", "model": "gpt-5.4-mini"}]
+        }
+    })
+    
+    p_repo = ProviderStateRepository(db_conn)
+    # Save a route as transient_failure
+    p_repo.save("codex", "gpt-5.4-mini", {}, False, "transient_failure")
+    
+    run_repo = RunRepository(db_conn)
+    run_id = run_repo.create("Quota sleep test", "autonomous")
+    run_repo.update_status(run_id, "planning")
+    run_repo.update_status(run_id, "running")
+    
+    # Ready tasks requiring implementation route
+    feat_repo = FeatureRepository(db_conn)
+    task_repo = TaskRepository(db_conn)
+    feat_id = feat_repo.create(run_id, "Feature 1", "low")
+    task_id = task_repo.create(run_id, feat_id, "Task 1", "implementation", "low")
+    task_repo.update_status(task_id, "ready")
+    
+    fake_now = datetime.datetime.fromisoformat("2026-06-15T16:00:00+00:00")
+    sleep_calls = []
+    
+    orch = Orchestrator(
+        db_conn,
+        config,
+        plan_path=tmp_path / "plan.md",
+        progress_path=tmp_path / "progress.md",
+        get_now=lambda: fake_now,
+        sleep_func=lambda secs: sleep_calls.append(secs)
+    )
+    
+    # Verify get_required_routes resolves implementation route
+    req = orch.get_required_routes(run_id)
+    assert len(req) == 1
+    assert req[0]["provider"] == "codex"
+    assert req[0]["model"] == "gpt-5.4-mini"
+
+    # Mock refresh_provider_quotas to make it available
+    def mock_refresh(provider, force_refresh=False):
+        p_repo.save("codex", "gpt-5.4-mini", {}, True, "available")
+        
+    with patch.object(orch, "refresh_provider_quotas", side_effect=mock_refresh):
+        orch.check_and_recover_quotas(run_id, req)
+        
+    assert len(sleep_calls) == 1
+    assert sleep_calls[0] == 60.0 # Default fallback sleep
+    assert run_repo.get(run_id)["status"] == "running"
+
+# FIX-06: Complete the test-migration approval workflow
+def test_test_migration_strict_policy(db_conn, tmp_path):
+    config = Config()
+    orch = Orchestrator(db_conn, config, plan_path=tmp_path / "plan.md", progress_path=tmp_path / "progress.md")
+
+    run_repo = RunRepository(db_conn)
+    feat_repo = FeatureRepository(db_conn)
+    task_repo = TaskRepository(db_conn)
+
+    run_id = run_repo.create("Migration test", "autonomous")
+    feat_id = feat_repo.create(run_id, "Feat 1", "low")
+    task_id = task_repo.create(run_id, feat_id, "Task 1", "implementation", "low")
+
+    # 1. Success case: skip reason has migration: MIG-101 and covers: MIG-101 in added test
+    mock_show = MagicMock(returncode=0, stdout="abcd123\nM\ttests/test_foo.py\nA\ttests/test_bar.py\n")
+    mock_diff_file = MagicMock(returncode=0, stdout="+@pytest.mark.skip(reason='migration: MIG-101')\n+def test_foo():\n")
+    mock_full_diff = MagicMock(returncode=0, stdout="+def test_bar():\n+    # covers: MIG-101\n")
+
+    def run_side_effect(cmd, *args, **kwargs):
+        if "show" in cmd: return mock_show
+        if "--" in cmd: return mock_diff_file
+        return mock_full_diff
+
+    with patch("subprocess.run", side_effect=run_side_effect):
+        orch.detect_and_record_test_migrations(run_id, task_id, "abcd123")
+
+    migs = orch.test_migration_repo.get_by_run(run_id)
+    assert len(migs) == 1
+    assert migs[0]["old_test_path"] == "tests/test_foo.py"
+    assert migs[0]["replacement_test_path"] == "tests/test_bar.py"
+    assert migs[0]["approval_status"] == "pending"
+    assert migs[0]["previous_behavior"] == "def test_foo():"
+    assert migs[0]["replacement_behavior"] == "def test_bar():"
+    assert migs[0]["commit_sha"] == "abcd123"
+
+    # 2. Reject case: skip reason has migration: MIG-102 but no covers tag in replacement
+    mock_diff_file2 = MagicMock(returncode=0, stdout="+@pytest.mark.skip(reason='migration: MIG-102')\n")
+    mock_full_diff2 = MagicMock(returncode=0, stdout="+def test_bar():\n")
+    
+    def run_side_effect2(cmd, *args, **kwargs):
+        if "show" in cmd: return mock_show
+        if "--" in cmd: return mock_diff_file2
+        return mock_full_diff2
+        
+    with patch("subprocess.run", side_effect=run_side_effect2):
+        orch.detect_and_record_test_migrations(run_id, task_id, "abcd124")
+        
+    migs = orch.test_migration_repo.get_by_run(run_id)
+    assert len(migs) == 2
+    assert migs[1]["approval_status"] == "rejected"
+    assert "missing covering evidence" in migs[1]["rationale"]
+
+def test_migration_cli_commands(db_conn, tmp_path):
+    config = Config({
+        "db_path": ":memory:",
+        "logs_dir": str(tmp_path / "logs")
+    })
+    
+    run_repo = RunRepository(db_conn)
+    migration_repo = TestMigrationRepository(db_conn)
+    
+    run_id = run_repo.create("Test run", "autonomous")
+    run_repo.update_status(run_id, "planning")
+    run_repo.update_status(run_id, "running")
+    # Set run status to complete_pending_test_review
+    run_repo.update_status(run_id, "reviewing")
+    run_repo.update_status(run_id, "complete_pending_test_review")
+    
+    mig_id = migration_repo.create(
+        run_id=run_id,
+        task_id=None,
+        old_test_path="tests/test_old.py",
+        replacement_test_path="tests/test_new.py",
+        rationale="skip reason",
+        evidence="evidence",
+        previous_behavior="def test_old():",
+        replacement_behavior="def test_new():",
+        commit_sha="sha123"
+    )
+    
+    class MockConnectionWrapper:
+        def __init__(self, conn):
+            self.conn = conn
+        def __getattr__(self, name):
+            return getattr(self.conn, name)
+        def close(self):
+            pass
+
+    wrapper = MockConnectionWrapper(db_conn)
+    # Mock get_db and cli handle_migration for "approve"
+    with patch("agent_loop.cli.get_db", return_value=wrapper):
+        args = MagicMock(migration_id=mig_id, action="approve")
+        handle_migration(args, config)
+        
+    assert migration_repo.get(mig_id)["approval_status"] == "approved"
+    assert run_repo.get(run_id)["status"] == "complete"
+    
+    # Test reject command
+    run_id2 = run_repo.create("Test run 2", "autonomous")
+    run_repo.update_status(run_id2, "planning")
+    run_repo.update_status(run_id2, "running")
+    run_repo.update_status(run_id2, "reviewing")
+    run_repo.update_status(run_id2, "complete_pending_test_review")
+    
+    mig_id2 = migration_repo.create(
+        run_id=run_id2,
+        task_id=None,
+        old_test_path="tests/test_old.py",
+        replacement_test_path="tests/test_new.py",
+        rationale="skip reason",
+        evidence="evidence"
+    )
+    
+    wrapper2 = MockConnectionWrapper(db_conn)
+    with patch("agent_loop.cli.get_db", return_value=wrapper2):
+        args = MagicMock(migration_id=mig_id2, action="reject")
+        handle_migration(args, config)
+        
+    assert migration_repo.get(mig_id2)["approval_status"] == "rejected"
+    assert run_repo.get(run_id2)["status"] == "blocked"
+
+# FIX-07: Provide operational quota and lifecycle notifications
+def test_rich_quota_notifications(db_conn, tmp_path, monkeypatch):
+    monkeypatch.setenv("TEST_WEBHOOK_URL", "https://hooks.slack.com/services/SECRET_WEBHOOK_TOKEN")
+    monkeypatch.setenv("TEST_OAUTH_TOKEN", "SECRET_OAUTH_TOKEN")
+    config = Config({
+        "db_path": ":memory:",
+        "logs_dir": str(tmp_path / "logs"),
+        "webhook_env_var": "TEST_WEBHOOK_URL"
+    })
+    
+    run_repo = RunRepository(db_conn)
+    run_id = run_repo.create("Test goal", "autonomous")
+    orch = Orchestrator(db_conn, config, plan_path=tmp_path / "plan.md", progress_path=tmp_path / "progress.md")
+    
+    # Set up mock urllib request to capture payload
+    mock_urlopen = MagicMock()
+    with patch("urllib.request.urlopen", mock_urlopen):
+        # Trigger auth_required alert notification
+        orch.notify(run_id, "quota_alert:codex:gpt-5.5:auth_required", "OAuth token: SECRET_OAUTH_TOKEN is required. See webhook: https://hooks.slack.com/services/SECRET_WEBHOOK_TOKEN")
+        
+    assert mock_urlopen.called
+    req_arg = mock_urlopen.call_args[0][0]
+    payload = json.loads(req_arg.data.decode("utf-8"))
+    text = payload["text"]
+    
+    # Verify secrets are redacted from notification payload
+    assert "SECRET_WEBHOOK_TOKEN" not in text
+    assert "SECRET_OAUTH_TOKEN" not in text
+    assert "[REDACTED]" in text
+
+# FIX-09: Make provider execution portable and timeout-aware
+def test_portable_binaries(tmp_path):
+    config = Config({
+        "codex_path": "/custom/path/to/codex",
+        "agy_path": "/custom/path/to/agy"
+    })
+    
+    # 1. Custom config paths
+    assert resolve_binary("codex", config) == "/custom/path/to/codex"
+    assert resolve_binary("agy", config) == "/custom/path/to/agy"
+    
+    # 2. PATH resolution fallback
+    with patch("shutil.which", return_value="/usr/bin/codex") as mock_which:
+        assert resolve_binary("codex") == "/usr/bin/codex"
+        mock_which.assert_called_with("codex")
+        
+    # 3. Standard locations fallback
+    with patch("shutil.which", return_value=None):
+        assert resolve_binary("codex") == "/usr/local/bin/codex"
+        assert resolve_binary("agy") == "/Users/davidroberts/.local/bin/agy"
+
+def test_agy_print_timeout_construction(tmp_path):
+    # Verify that agy adapter passes --print-timeout
+    adapter = AgyAdapter(binary_path="/custom/agy")
+    with patch("subprocess.run", return_value=MagicMock(returncode=0)) as mock_run:
+        with patch("pathlib.Path.exists", return_value=True):
+            with patch("pathlib.Path.read_text", return_value="{}"):
+                adapter.run_attempt("my-model", "hello", tmp_path, tmp_path, timeout_seconds=123.0)
+                
+    cmd_args = mock_run.call_args[0][0]
+    assert "--print-timeout" in cmd_args
+    assert "123" in cmd_args

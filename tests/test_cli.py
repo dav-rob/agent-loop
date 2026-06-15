@@ -129,15 +129,98 @@ def test_cli_resume(clean_workspace):
 
     # Test 'agent-loop resume'
     test_args = ["agent-loop", "resume", str(run_id)]
-    with patch("agent_loop.cli.Orchestrator") as mock_orch_cls:
-        mock_orch = MagicMock()
-        mock_orch_cls.return_value = mock_orch
+    with patch("agent_loop.cli.Orchestrator.run_loop") as mock_run_loop:
         with patch.object(sys, "argv", test_args):
             main()
-        mock_orch.run_loop.assert_called_once()
+        mock_run_loop.assert_called_once()
 
     # Verify attempt is now marked abandoned
     conn = get_connection(db_path)
     attempt_repo = AttemptRepository(conn)
     assert attempt_repo.get(attempt_id)["outcome"] == "abandoned"
+    conn.close()
+
+
+def test_cli_intake_and_approval(clean_workspace):
+    # Test interactive wizard with brainstorm_ui_lab intake and plan approval
+    test_args = ["agent-loop", "start"]
+
+    # Simulating interactive inputs:
+    # 1. Broad goal: "Design a nice portal"
+    # 2. Choice of intake mode: "2" (Brainstorm with UI Lab)
+    # 3. Refinement: "Must look sleek"
+    # 4. UI styling: "Dark neon"
+    # 5. UI pages: "Dashboard, settings"
+    # 6. Plan approval: "y"
+    user_inputs = [
+        "Design a nice portal",
+        "2",
+        "Must look sleek",
+        "fast",
+        "tool",
+        "immediately",
+        "slow",
+        "Dark neon",
+        "disliked_app",
+        "y"
+    ]
+    input_generator = (val for val in user_inputs)
+
+    def mock_plan_run(run_id):
+        db_path = Path(".agent-loop.db")
+        conn = get_connection(db_path)
+        RunRepository(conn).update_status(run_id, "planning")
+        RunRepository(conn).update_status(run_id, "awaiting_plan_approval")
+        conn.close()
+        return True
+
+    with patch("builtins.input", side_effect=lambda *args, **kwargs: next(input_generator)):
+        with patch("agent_loop.cli.Orchestrator") as mock_orch_cls:
+            mock_orch = MagicMock()
+            mock_orch.plan_run.side_effect = mock_plan_run
+            mock_orch_cls.return_value = mock_orch
+
+            with patch.object(sys, "argv", test_args):
+                main()
+
+            mock_orch.plan_run.assert_called_once()
+            mock_orch.run_loop.assert_called_once()
+
+    # Verify db status and goal refinement
+    db_path = Path(".agent-loop.db")
+    conn = get_connection(db_path)
+    run_repo = RunRepository(conn)
+    runs = run_repo.list_all()
+    assert len(runs) == 1
+    assert "Must look sleek" in runs[0]["goal"]
+    assert "Dark neon" in runs[0]["goal"]
+    assert runs[0]["intake_mode"] == "brainstorm_ui_lab"
+    assert runs[0]["status"] == "running" # Transitioned by 'y' approval
+    conn.close()
+
+
+def test_cli_approve_command(clean_workspace):
+    # Test the standalone approve subcommand
+    db_path = Path(".agent-loop.db")
+    conn = get_connection(db_path)
+    migrate(conn)
+    run_repo = RunRepository(conn)
+    run_id = run_repo.create("Approve command test", "brainstorm")
+    run_repo.update_status(run_id, "planning")
+    run_repo.update_status(run_id, "awaiting_plan_approval")
+    conn.close()
+
+    test_args = ["agent-loop", "approve", str(run_id)]
+    with patch("agent_loop.cli.Orchestrator") as mock_orch_cls:
+        mock_orch = MagicMock()
+        mock_orch_cls.return_value = mock_orch
+
+        with patch.object(sys, "argv", test_args):
+            main()
+
+        mock_orch.run_loop.assert_called_once_with(run_id)
+
+    conn = get_connection(db_path)
+    run_repo = RunRepository(conn)
+    assert run_repo.get(run_id)["status"] == "running"
     conn.close()
