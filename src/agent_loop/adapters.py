@@ -113,10 +113,9 @@ class CodexAdapter(BaseAdapter):
             "--json",
             "--cd", str(workspace_path),
             "-m", model,
-            "-s", "workspace-write",
+            "-s", "danger-full-access",
             "-a", "never",
-            "-o", str(output_msg_file),
-            "-c", f"sandbox_workspace_write.writable_roots=[\"{workspace_path.resolve()}\"]"
+            "-o", str(output_msg_file)
         ]
         if reasoning_level:
             cmd += ["-c", f"reasoning_level={reasoning_level}"]
@@ -289,11 +288,10 @@ class AgyAdapter(BaseAdapter):
         stdout_file = attempt_logs_dir / "stdout.log"
         stderr_file = attempt_logs_dir / "stderr.log"
 
-        # Build command: agy --print --sandbox --dangerously-skip-permissions --model <model> --log-file <log_file> --add-dir <workspace> "<prompt>"
+        # Build command: agy --print --dangerously-skip-permissions --model <model> --log-file <log_file> --add-dir <workspace> "<prompt>"
         cmd = [
             self.binary_path,
             "--print",
-            "--sandbox",
             "--dangerously-skip-permissions",
             "--model", model,
             "--log-file", str(agy_log_file),
