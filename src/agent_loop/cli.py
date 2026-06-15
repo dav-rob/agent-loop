@@ -306,6 +306,9 @@ def main() -> None:
     args = parser.parse_args()
     config = Config.load(args.config)
 
+    if config.execution_mode == "trusted-host":
+        print("Trusted-host execution: commands can access anything available to the current user.")
+
     if args.command == "start":
         handle_start(args, config)
     elif args.command == "resume":
