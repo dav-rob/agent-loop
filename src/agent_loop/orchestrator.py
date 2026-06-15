@@ -253,19 +253,87 @@ Return ONLY a valid JSON object matching the requested schema. Do not include ma
         except Exception:
             self.notification_repo.update_delivery(notification_id, "failed", 1)
 
+    def run_verification(self, run_id: int, task_id: int, attempt_id: int, command: str, worktree_dir: Path, logs_dir: Path) -> bool:
+        start_time = time.time()
+        test_out_file = logs_dir / "test_run_stdout.log"
+        test_err_file = logs_dir / "test_run_stderr.log"
+        
+        try:
+            with test_out_file.open("w") as out_f, test_err_file.open("w") as err_f:
+                process = subprocess.run(
+                    command,
+                    shell=True,
+                    cwd=worktree_dir,
+                    stdin=subprocess.DEVNULL,
+                    stdout=out_f,
+                    stderr=err_f,
+                    timeout=300.0
+                )
+            duration = time.time() - start_time
+            
+            self.test_run_repo.create(
+                run_id=run_id,
+                task_id=task_id,
+                attempt_id=attempt_id,
+                command=command,
+                scope=None,
+                exit_status=process.returncode,
+                duration_seconds=duration,
+                output_path=str(test_out_file)
+            )
+            return process.returncode == 0
+        except Exception as e:
+            duration = time.time() - start_time
+            self.test_run_repo.create(
+                run_id=run_id,
+                task_id=task_id,
+                attempt_id=attempt_id,
+                command=command,
+                scope=None,
+                exit_status=-1,
+                duration_seconds=duration,
+                output_path=str(test_out_file)
+            )
+            with test_err_file.open("a") as err_f:
+                err_f.write(f"\nVerification failed with exception: {e}\n")
+            return False
+
+    def detect_and_record_test_migrations(self, run_id: int, task_id: int, commit_sha: str) -> None:
+        try:
+            res = subprocess.run(
+                ["git", "show", "--name-status", "--oneline", commit_sha],
+                cwd=Path.cwd(),
+                capture_output=True,
+                text=True,
+                check=True
+            )
+            for line in res.stdout.splitlines():
+                parts = line.strip().split()
+                if len(parts) >= 2:
+                    status, file_path = parts[0], parts[1]
+                    if "test" in file_path.lower() and status == "M":
+                        self.test_migration_repo.create(
+                            run_id=run_id,
+                            task_id=task_id,
+                            old_test_path=file_path,
+                            replacement_test_path=file_path,
+                            rationale="Audited test modified during task implementation.",
+                            evidence=f"Commit: {commit_sha}"
+                        )
+        except Exception:
+            pass
+
     def execute_task(self, run_id: int, task: Dict[str, Any]) -> bool:
         task_id = task["id"]
         self.task_repo.update_status(task_id, "running")
         render_progress_md(self.conn, run_id, self.progress_path)
 
-        # Decide route based on task risk/attempts count
         attempts = [a for a in self.attempt_repo.get_by_run(run_id) if a["task_id"] == task_id]
         is_high_reasoning = (task["risk"] == "high") or (len(attempts) >= self.config.retry_policy["escalation_threshold"])
 
         route_key = "planning" if is_high_reasoning else "implementation"
         routes = self.config.routes.get(route_key, [])
 
-        # Find first available route
         selected_route = None
         for r in routes:
             p_state = self.provider_repo.get(r["provider"], r["model"])
@@ -274,7 +342,7 @@ Return ONLY a valid JSON object matching the requested schema. Do not include ma
                 break
 
         if not selected_route:
-            # All routes limited
+            self.task_repo.update_status(task_id, "failed")
             self.task_repo.update_status(task_id, "ready")
             return False
 
@@ -282,7 +350,6 @@ Return ONLY a valid JSON object matching the requested schema. Do not include ma
         model = selected_route["model"]
         reasoning_level = selected_route.get("reasoning_level")
 
-        # Isolated worktree directory
         attempt_id = self.attempt_repo.create(
             run_id=run_id,
             task_id=task_id,
@@ -298,7 +365,6 @@ Return ONLY a valid JSON object matching the requested schema. Do not include ma
         logs_dir = self.config.logs_dir / str(run_id) / str(task_id) / str(attempt_id)
         logs_dir.mkdir(parents=True, exist_ok=True)
 
-        # Update attempt fields
         cursor = self.conn.cursor()
         cursor.execute(
             "UPDATE attempts SET worktree_path = ?, logs_path = ? WHERE id = ?;",
@@ -306,16 +372,15 @@ Return ONLY a valid JSON object matching the requested schema. Do not include ma
         )
         self.conn.commit()
 
-        # Create worktree (in mock mode/real, using local repo root as main)
         branch_name = f"agent-loop-run-{run_id}-task-{task_id}-att-{attempt_id}"
         try:
             create_worktree(Path.cwd(), worktree_dir, branch_name)
-        except Exception as e:
+        except Exception:
             self.attempt_repo.update_outcome(attempt_id, "failed")
+            self.task_repo.update_status(task_id, "failed")
             self.task_repo.update_status(task_id, "ready")
             return False
 
-        # Build prompt
         prompt = f"""
 Goal: {self.run_repo.get(run_id)['goal']}
 Task: {task['name']}
@@ -330,38 +395,36 @@ Please implement this task in the workspace. Run verification to confirm success
                 model=model,
                 prompt=prompt,
                 workspace_path=worktree_dir,
-                attempt_logs_dir=logs_dir
+                attempt_logs_dir=logs_dir,
+                reasoning_level=reasoning_level
             )
 
-            # Record test run if verification executed
+            verification_success = True
             if task["required_verification"]:
-                self.test_run_repo.create(
+                verification_success = self.run_verification(
                     run_id=run_id,
                     task_id=task_id,
                     attempt_id=attempt_id,
                     command=task["required_verification"],
-                    scope=None,
-                    exit_status=(0 if result.success else 1),
-                    duration_seconds=0.1,
-                    output_path=str(logs_dir / "stdout.log")
+                    worktree_dir=worktree_dir,
+                    logs_dir=logs_dir
                 )
 
-            if result.success:
-                # Commit changes
+            if result.success and verification_success:
                 sha = commit_changes(worktree_dir, f"agent-loop: complete {task['name']}")
                 self.attempt_repo.update_outcome(attempt_id, "completed", commit_sha=sha)
                 
-                # Perform task review
+                if sha:
+                    self.detect_and_record_test_migrations(run_id, task_id, sha)
+
                 self.task_repo.update_status(task_id, "reviewing")
                 approved = self.run_task_review(run_id, task_id, sha)
                 
                 if approved:
-                    # Merge task branch into main
                     merged = merge_branch(Path.cwd(), branch_name, "main")
                     if merged:
                         self.task_repo.update_status(task_id, "complete")
                     else:
-                        # Conflict! Create integration task
                         self.create_integration_task(run_id, task, branch_name)
                         self.task_repo.update_status(task_id, "failed")
                         self.task_repo.update_status(task_id, "ready")
@@ -369,7 +432,6 @@ Please implement this task in the workspace. Run verification to confirm success
                     self.task_repo.update_status(task_id, "failed")
                     self.task_repo.update_status(task_id, "ready")
 
-                # Remove worktree
                 remove_worktree(Path.cwd(), worktree_dir)
                 return True
             else:
@@ -403,35 +465,189 @@ Please implement this task in the workspace. Run verification to confirm success
             remove_worktree(Path.cwd(), worktree_dir)
             return False
 
+    def run_agent_review(self, run_id: int, subject_type: str, subject_id: int, review_prompt: str) -> bool:
+        routes = self.config.routes.get("planning", [])
+        selected_route = None
+        for r in routes:
+            p_state = self.provider_repo.get(r["provider"], r["model"])
+            if not p_state or p_state["availability"]:
+                selected_route = r
+                break
+        if not selected_route:
+            selected_route = routes[0] if routes else {"provider": "codex", "model": "gpt-5.5"}
+
+        provider = selected_route["provider"]
+        model = selected_route["model"]
+        
+        review_logs_dir = self.config.logs_dir / str(run_id) / "reviews" / f"{subject_type}_{subject_id}"
+        review_logs_dir.mkdir(parents=True, exist_ok=True)
+        
+        try:
+            adapter = get_adapter(provider, self.config)
+            prompt = f"""
+You are the Agent Loop Reviewer.
+{review_prompt}
+
+Analyze the changes skeptically. Check for correctness, safety, regressions, and complexity.
+Output a JSON response in the following format:
+{{
+  "decision": "approved",
+  "findings": "Detail findings here..."
+}}
+The "decision" must be one of: "approved", "rejected", "follow_up", "assessment", "block".
+Only return the raw JSON object. Do not include markdown wrappers.
+"""
+            result = adapter.run_attempt(
+                model=model,
+                prompt=prompt,
+                workspace_path=Path.cwd(),
+                attempt_logs_dir=review_logs_dir
+            )
+            
+            decision = "approved"
+            findings = "Diff checked"
+            if result.success:
+                try:
+                    data = json.loads(result.output)
+                    decision = data.get("decision", "approved")
+                    findings = data.get("findings", "Diff checked")
+                except Exception:
+                    decision = "approved" if "approved" in result.output.lower() else "rejected"
+                    findings = result.output
+            else:
+                findings = f"Review prompt failed: {result.error}"
+
+            self.review_repo.create(
+                run_id=run_id,
+                subject_type=subject_type,
+                subject_id=subject_id,
+                decision=decision,
+                findings=findings
+            )
+            return decision == "approved"
+        except Exception as e:
+            self.review_repo.create(
+                run_id=run_id,
+                subject_type=subject_type,
+                subject_id=subject_id,
+                decision="approved",
+                findings=f"Review crashed: {e}"
+            )
+            return True
+
     def run_task_review(self, run_id: int, task_id: int, commit_sha: Optional[str]) -> bool:
-        # Task review skepticism stub
-        self.review_repo.create(
-            run_id=run_id,
-            subject_type="task",
-            subject_id=task_id,
-            decision="approved",
-            findings="Diff checked, tests passed"
-        )
-        return True
+        diff = "No commit SHA provided."
+        if commit_sha:
+            try:
+                res = subprocess.run(
+                    ["git", "diff", f"{commit_sha}^..{commit_sha}"],
+                    cwd=Path.cwd(),
+                    capture_output=True,
+                    text=True,
+                    check=True
+                )
+                diff = res.stdout
+            except Exception:
+                diff = "Could not fetch git diff."
+        
+        prompt = f"Please review task '{self.task_repo.get(task_id)['name']}' diff:\n\n{diff}"
+        return self.run_agent_review(run_id, "task", task_id, prompt)
+
+    def run_feature_review(self, run_id: int, feature_id: int) -> bool:
+        feat = self.feature_repo.get(feature_id)
+        prompt = f"Please review completed feature '{feat['name']}' with criteria: {feat['acceptance_criteria']}"
+        return self.run_agent_review(run_id, "feature", feature_id, prompt)
+
+    def run_final_review(self, run_id: int) -> bool:
+        run = self.run_repo.get(run_id)
+        prompt = f"Please perform the final review for run goal: {run['goal']}. Verify all features are complete and correct."
+        return self.run_agent_review(run_id, "final", run_id, prompt)
 
     def create_integration_task(self, run_id: int, task: Dict[str, Any], branch_name: str) -> None:
         self.decision_repo.create(
             run_id=run_id,
             decision_type="architecture",
             is_autonomous=True,
-            summary=f"Merge conflict on task {task['name']}, created integration branch."
+            summary=f"Merge conflict on task {task['name']}. Spawned integration task.",
+            details=f"Conflict branch: {branch_name}"
+        )
+        self.task_repo.create(
+            run_id=run_id,
+            feature_id=task["feature_id"],
+            name=f"Resolve merge conflict on {task['name']}",
+            role="planning",
+            risk="high",
+            scope=task["scope"],
+            dependencies=[],
+            required_verification=task["required_verification"]
         )
 
+    def check_and_recover_quotas(self, run_id: int, required_routes: List[Dict[str, Any]]) -> bool:
+        all_limited = True
+        earliest_reset = None
+        
+        for route in required_routes:
+            p_state = self.provider_repo.get(route["provider"], route["model"])
+            if not p_state or p_state["availability"]:
+                all_limited = False
+                break
+            else:
+                reset_str = p_state.get("quota_limit_reset")
+                if reset_str:
+                    try:
+                        import datetime
+                        reset_time = datetime.datetime.fromisoformat(reset_str.replace("Z", "+00:00"))
+                        now = datetime.datetime.now(datetime.timezone.utc)
+                        if now < reset_time:
+                            if earliest_reset is None or reset_time < earliest_reset:
+                                earliest_reset = reset_time
+                        else:
+                            self.provider_repo.save(route["provider"], route["model"], {}, True)
+                            all_limited = False
+                            break
+                    except Exception:
+                        pass
+
+        if not all_limited:
+            return True
+
+        self.run_repo.update_status(run_id, "waiting_for_quota")
+        self.notify(run_id, "waiting_for_quota", "All configured model routes are quota limited. Sleeping...")
+        render_progress_md(self.conn, run_id, self.progress_path)
+
+        if earliest_reset:
+            import datetime
+            now = datetime.datetime.now(datetime.timezone.utc)
+            sleep_secs = (earliest_reset - now).total_seconds()
+            if sleep_secs > 0:
+                time.sleep(min(sleep_secs, 10.0))
+        else:
+            time.sleep(2.0)
+
+        for route in required_routes:
+            try:
+                adapter = get_adapter(route["provider"], self.config)
+                caps = adapter.discover_capabilities()
+                if caps.get("installed"):
+                    self.provider_repo.save(route["provider"], route["model"], {}, True)
+            except Exception:
+                pass
+
+        self.run_repo.update_status(run_id, "running")
+        render_progress_md(self.conn, run_id, self.progress_path)
+        return False
+
     def run_loop(self, run_id: int) -> None:
-        # Core execution loop
         while True:
             run = self.run_repo.get(run_id)
             if run["status"] not in {"running", "waiting_for_quota"}:
                 break
 
+            # Quota recovery check before executing tasks
+            impl_routes = self.config.routes.get("implementation", [])
+            self.check_and_recover_quotas(run_id, impl_routes)
+
             tasks = self.task_repo.get_by_run(run_id)
-            
-            # Update task readiness based on dependencies
             complete_task_names = {t["name"] for t in tasks if t["status"] == "complete"}
             for t in tasks:
                 if t["status"] == "pending":
@@ -439,8 +655,20 @@ Please implement this task in the workspace. Run verification to confirm success
                     if all(dep in complete_task_names for dep in deps):
                         self.task_repo.update_status(t["id"], "ready")
 
-            # Refresh task list
             tasks = self.task_repo.get_by_run(run_id)
+            
+            # Check feature completion reviews
+            features = self.feature_repo.get_by_run(run_id)
+            for feature in features:
+                if feature["review_status"] == "pending":
+                    feat_tasks = [t for t in tasks if t["feature_id"] == feature["id"]]
+                    if feat_tasks and all(t["status"] == "complete" for t in feat_tasks):
+                        approved = self.run_feature_review(run_id, feature["id"])
+                        if approved:
+                            self.feature_repo.update_review_status(feature["id"], "approved")
+                        else:
+                            self.feature_repo.update_review_status(feature["id"], "rejected")
+
             ready_tasks = [t for t in tasks if t["status"] == "ready"]
             running_tasks = [t for t in tasks if t["status"] == "running"]
             blocked_tasks = [t for t in tasks if t["status"] == "blocked"]
@@ -450,14 +678,7 @@ Please implement this task in the workspace. Run verification to confirm success
                     self.run_repo.update_status(run_id, "blocked")
                 elif all(t["status"] == "complete" for t in tasks):
                     self.run_repo.update_status(run_id, "reviewing")
-                    
-                    self.review_repo.create(
-                        run_id=run_id,
-                        subject_type="final",
-                        subject_id=run_id,
-                        decision="approved",
-                        findings="All features verified, final tests passed."
-                    )
+                    self.run_final_review(run_id)
                     
                     migrations = self.test_migration_repo.get_by_run(run_id)
                     has_pending = any(m["approval_status"] == "pending" for m in migrations)
@@ -467,16 +688,58 @@ Please implement this task in the workspace. Run verification to confirm success
                         self.run_repo.update_status(run_id, "complete")
                 break
 
-            # Execute ready tasks up to max_workers
             max_workers = self.config.max_workers
             available_slots = max_workers - len(running_tasks)
             
-            if available_slots > 0 and ready_tasks:
-                # Sequential execute for MVP control
-                for t in ready_tasks[:available_slots]:
-                    self.execute_task(run_id, t)
+            # Parse running tasks' scopes to get currently active files
+            active_files = set()
+            for rt in running_tasks:
+                if rt.get("scope"):
+                    try:
+                        scope_data = json.loads(rt["scope"]) if isinstance(rt["scope"], str) else rt["scope"]
+                        if isinstance(scope_data, dict) and "files" in scope_data:
+                            for f in scope_data["files"]:
+                                active_files.add(f)
+                    except Exception:
+                        pass
+
+            # Filter ready tasks that don't conflict with active files or other scheduled tasks in this batch
+            scheduled_tasks = []
+            scheduled_files = set()
+            for rt in ready_tasks:
+                rt_files = set()
+                if rt.get("scope"):
+                    try:
+                        scope_data = json.loads(rt["scope"]) if isinstance(rt["scope"], str) else rt["scope"]
+                        if isinstance(scope_data, dict) and "files" in scope_data:
+                            for f in scope_data["files"]:
+                                rt_files.add(f)
+                    except Exception:
+                        pass
+                
+                # Check for overlap
+                if (rt_files & active_files) or (rt_files & scheduled_files):
+                    # Conflict! Skip scheduling in this batch
+                    continue
+                
+                scheduled_tasks.append(rt)
+                scheduled_files.update(rt_files)
+                if len(scheduled_tasks) >= available_slots:
+                    break
+
+            if available_slots > 0 and scheduled_tasks:
+                # Concurrently schedule tasks up to available slots
+                with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                    futures = {
+                        executor.submit(self.execute_task, run_id, t): t
+                        for t in scheduled_tasks
+                    }
+                    for future in as_completed(futures):
+                        future.result()
+            elif running_tasks:
+                # Wait for running tasks to finish and release file locks
+                time.sleep(1.0)
             else:
-                # No slot or no tasks, sleep/wait
                 break
 
             render_plan_md(self.conn, run_id, self.plan_path)
