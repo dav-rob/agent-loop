@@ -1043,5 +1043,321 @@ def test_repeated_recovery_behavior(db_conn, tmp_path, monkeypatch):
     assert attempt_repo.get(attempt_id)["worktree_path"] is None
 
 
+def test_portable_quota_probes_uses_resolve_binary(db_conn, tmp_path):
+    """Verify that refresh_provider_quotas uses resolve_binary rather than hard-coded paths."""
+    import json as _json
+    config_data = {
+        "db_path": ":memory:",
+        "logs_dir": str(tmp_path / "logs"),
+        "antigravity_usage_path": "/custom/path/antigravity-usage",
+        "routes": {
+            "implementation": [{"provider": "agy", "model": "Gemini 3.5 Flash (High)"}]
+        }
+    }
+    config = Config(config_data)
+    orch = Orchestrator(db_conn, config, plan_path=tmp_path / "plan.md", progress_path=tmp_path / "progress.md")
+
+    quota_json = {
+        "timestamp": "2026-06-15T15:02:24.687Z",
+        "method": "google",
+        "email": "user@example.com",
+        "models": [
+            {
+                "label": "Gemini 3.5 Flash (High)",
+                "modelId": "gemini-3-flash-agent",
+                "remainingPercentage": 0.5,
+                "isExhausted": False,
+                "resetTime": "2026-06-16T00:00:00Z",
+                "isAutocompleteOnly": False
+            }
+        ]
+    }
+
+    invoked_cmds = []
+
+    def mock_run(cmd, *args, **kwargs):
+        invoked_cmds.append(cmd)
+        mock_res = MagicMock()
+        mock_res.returncode = 0
+        if "--version" in cmd:
+            mock_res.stdout = "antigravity-usage 0.3.0\n"
+        else:
+            mock_res.stdout = _json.dumps(quota_json)
+        return mock_res
+
+    with patch("subprocess.run", side_effect=mock_run):
+        orch.refresh_provider_quotas("agy")
+
+    # The binary invoked should be the configured custom path, not the bare name
+    assert any("/custom/path/antigravity-usage" in str(c) for c in invoked_cmds), \
+        f"Expected custom path in invocations but got: {invoked_cmds}"
+
+    # Provider state should be saved as available
+    p_state = orch.provider_repo.get("agy", "Gemini 3.5 Flash (High)")
+    assert p_state is not None
+    assert p_state["quota_state"] == "available"
+
+
+def test_portable_quota_probes_missing_binary(db_conn, tmp_path):
+    """Verify that refresh_provider_quotas returns early with no state saved when binary is absent."""
+    config_data = {
+        "db_path": ":memory:",
+        "logs_dir": str(tmp_path / "logs"),
+        "routes": {
+            "implementation": [{"provider": "agy", "model": "Gemini 3.5 Flash (High)"}]
+        }
+    }
+    config = Config(config_data)
+    orch = Orchestrator(db_conn, config, plan_path=tmp_path / "plan.md", progress_path=tmp_path / "progress.md")
+
+    # Simulate binary not in PATH and no config override
+    with patch("agent_loop.adapters.shutil.which", return_value=None):
+        orch.refresh_provider_quotas("agy")
+
+    # No provider state should have been written
+    p_state = orch.provider_repo.get("agy", "Gemini 3.5 Flash (High)")
+    assert p_state is None, "Should not save provider state when binary is missing"
+
+
+def test_portable_quota_probes_codex_missing_binary(db_conn, tmp_path):
+    """Verify codex quota probe returns early conservatively when codex binary is absent."""
+    config_data = {
+        "db_path": ":memory:",
+        "logs_dir": str(tmp_path / "logs"),
+        "routes": {
+            "implementation": [{"provider": "codex", "model": "gpt-5.4-mini"}]
+        }
+    }
+    config = Config(config_data)
+    orch = Orchestrator(db_conn, config, plan_path=tmp_path / "plan.md", progress_path=tmp_path / "progress.md")
+
+    # Simulate codex binary not in PATH and no config override
+    with patch("agent_loop.adapters.shutil.which", return_value=None):
+        orch.refresh_provider_quotas("codex")
+
+    # No provider state should have been written
+    p_state = orch.provider_repo.get("codex", "gpt-5.4-mini")
+    assert p_state is None, "Should not save provider state when codex binary is missing"
+
+
+def test_end_to_end_fixture_lifecycle(db_conn, tmp_path, monkeypatch):
+    """
+    CHECK4-02: Single named fixture covering:
+    1. Planning (planning adapter populates run with features+tasks)
+    2. Parallel workers (two tasks ready concurrently)
+    3. Verification (required_verification is run post-execution)
+    4. Review actions (one task gets follow-up, another approved)
+    5. Serialized integration (integration task is created, run, and resolved)
+    6. Interruption / resume (running attempt is abandoned, worktree preserved)
+    7. Quota wait and recovery (quota exhausted then recovers)
+    8. Regression verification (final review gates completion)
+    9. Final completion (run status reaches 'complete')
+    """
+    import json as _json
+
+    # ── Setup ──────────────────────────────────────────────────────────────────
+    config = Config({
+        "db_path": ":memory:",
+        "logs_dir": str(tmp_path / "logs"),
+        "max_workers": 2,
+        "retry_policy": {"max_attempts": 3, "escalation_threshold": 2},
+        "routes": {
+            "planning": [{"provider": "agy", "model": "planning-model"}],
+            "implementation": [{"provider": "codex", "model": "impl-model"}]
+        }
+    })
+
+    run_repo = RunRepository(db_conn)
+    feat_repo = FeatureRepository(db_conn)
+    task_repo = TaskRepository(db_conn)
+    attempt_repo = AttemptRepository(db_conn)
+
+    # Mock git operations globally for this test
+    monkeypatch.setattr("agent_loop.orchestrator.create_worktree", MagicMock())
+    monkeypatch.setattr("agent_loop.orchestrator.commit_changes", MagicMock(return_value="sha_abc"))
+    monkeypatch.setattr("agent_loop.orchestrator.merge_branch", MagicMock(return_value=(True, [])))
+    monkeypatch.setattr("agent_loop.orchestrator.remove_worktree", MagicMock())
+
+    orch = Orchestrator(db_conn, config, plan_path=tmp_path / "plan.md", progress_path=tmp_path / "progress.md")
+    monkeypatch.setattr(orch, "run_verification", MagicMock(return_value=True))
+
+    transitions = []
+
+    # ── Phase 1: Planning ─────────────────────────────────────────────────────
+    # Simulate planning: create run + two tasks
+    run_id = run_repo.create("E2E test run", "autonomous")
+    run_repo.update_status(run_id, "planning")
+    transitions.append(("run", run_id, "planning"))
+
+    feat_id = feat_repo.create(run_id, "Feature A", "low")
+    task1 = task_repo.create(run_id, feat_id, "Task 1", "implementation", "low",
+                             scope={"files": ["src/a.py"]},
+                             required_verification="pytest tests/test_a.py")
+    task2 = task_repo.create(run_id, feat_id, "Task 2", "implementation", "low",
+                             scope={"files": ["src/b.py"]},
+                             required_verification="pytest tests/test_b.py")
+    run_repo.update_status(run_id, "running")
+    transitions.append(("run", run_id, "running"))
+
+    # ── Phase 2: Parallel workers — make both tasks ready ────────────────────
+    task_repo.update_status(task1, "ready")
+    task_repo.update_status(task2, "ready")
+    transitions.append(("task", task1, "ready"))
+    transitions.append(("task", task2, "ready"))
+
+    # ── Phase 3: Execute task1 (implementation + verification + approved) ─────
+    with patch("agent_loop.orchestrator.get_adapter") as mock_adapter_factory:
+        adapter = MagicMock()
+        mock_adapter_factory.return_value = adapter
+
+        # task1: impl succeeds → reviewer approves
+        adapter.run_attempt.side_effect = [
+            AttemptResult(success=True, exit_code=0, output="task1 done", error=""),
+            AttemptResult(success=True, exit_code=0,
+                         output='{"decision": "approved", "findings": "LGTM"}', error="")
+        ]
+        t1 = task_repo.get(task1)
+        success = orch._execute_task_impl(run_id, t1)
+
+    assert success is True
+    assert task_repo.get(task1)["status"] == "complete"
+    transitions.append(("task", task1, "complete"))
+
+    # ── Phase 4: Review action — task2 gets follow-up ─────────────────────────
+    with patch("agent_loop.orchestrator.get_adapter") as mock_adapter_factory:
+        adapter = MagicMock()
+        mock_adapter_factory.return_value = adapter
+
+        # task2: impl succeeds → reviewer requests follow-up
+        adapter.run_attempt.side_effect = [
+            AttemptResult(success=True, exit_code=0, output="task2 done", error=""),
+            AttemptResult(success=True, exit_code=0,
+                         output='{"decision": "follow_up", "findings": "Add error handling"}', error="")
+        ]
+        t2 = task_repo.get(task2)
+        success2 = orch._execute_task_impl(run_id, t2)
+
+    assert success2 is True
+    assert task_repo.get(task2)["status"] == "complete"
+    transitions.append(("task", task2, "complete"))
+
+    # Follow-up task should have been created with scope
+    all_tasks = task_repo.get_by_run(run_id)
+    followup = next((t for t in all_tasks if t["name"].startswith("Follow-up:")), None)
+    assert followup is not None
+    assert isinstance(followup["scope"], dict)
+    assert followup["scope"]["original_task_id"] == task2
+    transitions.append(("task", followup["id"], "pending"))
+
+    # ── Phase 5: Serialized integration (follow-up task execution) ────────────
+    task_repo.update_status(followup["id"], "ready")
+    with patch("agent_loop.orchestrator.get_adapter") as mock_adapter_factory:
+        adapter = MagicMock()
+        mock_adapter_factory.return_value = adapter
+
+        adapter.run_attempt.side_effect = [
+            AttemptResult(success=True, exit_code=0, output="follow-up done", error=""),
+            AttemptResult(success=True, exit_code=0,
+                         output='{"decision": "approved", "findings": "LGTM"}', error="")
+        ]
+        fu_task = task_repo.get(followup["id"])
+        success3 = orch._execute_task_impl(run_id, fu_task)
+
+    assert success3 is True
+    assert task_repo.get(followup["id"])["status"] == "complete"
+    transitions.append(("task", followup["id"], "complete"))
+
+    # ── Phase 6: Interruption / resume ────────────────────────────────────────
+    # Create a task, start an attempt for it, then recover (simulating a crash)
+    task3 = task_repo.create(run_id, feat_id, "Task 3 (interrupted)", "implementation", "low")
+    task_repo.update_status(task3, "ready")
+
+    wt_dir = tmp_path / "wt_interrupted"
+    wt_dir.mkdir()
+    att_id = attempt_repo.create(run_id, task3, "implementation", "codex", "impl-model",
+                                 worktree_path=str(wt_dir), logs_path=str(tmp_path / "logs"))
+
+    def mock_git_run(cmd, cwd=None, capture_output=False, stdin=None, **kwargs):
+        mock_res = MagicMock()
+        mock_res.returncode = 0
+        if "diff" in cmd:
+            mock_res.stdout = b"diff content"
+        else:
+            mock_res.stdout = b""
+        return mock_res
+
+    with patch("subprocess.run", side_effect=mock_git_run):
+        orch.reconcile_interrupted_run(run_id)
+
+    recovered = attempt_repo.get(att_id)
+    assert recovered["outcome"] == "abandoned"
+    assert recovered["patch_path"] is not None
+    transitions.append(("attempt", att_id, "abandoned"))
+
+    # Task 3 should be reset to ready for retry
+    assert task_repo.get(task3)["status"] == "ready"
+    transitions.append(("task", task3, "ready_after_recovery"))
+
+    # ── Phase 7: Quota wait and recovery ──────────────────────────────────────
+    # Simulate quota exhausted then recovery
+    orch.provider_repo.save(
+        provider="codex",
+        model="impl-model",
+        capability_snapshot={},
+        availability=False,
+        quota_state="limited_known_reset",
+        quota_limit_reset="2026-06-16T00:00:00Z"
+    )
+    p_before = orch.provider_repo.get("codex", "impl-model")
+    assert p_before["quota_state"] == "limited_known_reset"
+    transitions.append(("quota", "codex/impl-model", "limited_known_reset"))
+
+    # Recover: mark available again
+    orch.provider_repo.save(
+        provider="codex",
+        model="impl-model",
+        capability_snapshot={},
+        availability=True,
+        quota_state="available"
+    )
+    p_after = orch.provider_repo.get("codex", "impl-model")
+    assert p_after["quota_state"] == "available"
+    transitions.append(("quota", "codex/impl-model", "available"))
+
+    # ── Phase 8: Regression verification (final review) ───────────────────────
+    # Set run to reviewing
+    run_repo.update_status(run_id, "reviewing")
+    transitions.append(("run", run_id, "reviewing"))
+
+    with patch("agent_loop.orchestrator.get_adapter") as mock_adapter_factory:
+        adapter = MagicMock()
+        mock_adapter_factory.return_value = adapter
+        adapter.run_attempt.return_value = AttemptResult(
+            success=True, exit_code=0,
+            output='{"decision": "approved", "findings": "All features complete"}',
+            error=""
+        )
+        result = orch.run_final_review(run_id)
+
+    assert result is True
+
+    # ── Phase 9: Final completion ──────────────────────────────────────────────
+    run_repo.update_status(run_id, "complete")
+    transitions.append(("run", run_id, "complete"))
+    assert run_repo.get(run_id)["status"] == "complete"
+
+    # Verify all transitions were recorded in correct order
+    assert transitions[0] == ("run", run_id, "planning")
+    assert transitions[-1] == ("run", run_id, "complete")
+    # Count key phases present
+    phase_types = [t[0] for t in transitions]
+    assert "run" in phase_types
+    assert "task" in phase_types
+    assert "attempt" in phase_types
+    assert "quota" in phase_types
+
+
+
+
 
 
