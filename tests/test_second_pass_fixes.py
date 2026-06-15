@@ -1357,6 +1357,114 @@ def test_end_to_end_fixture_lifecycle(db_conn, tmp_path, monkeypatch):
     assert "quota" in phase_types
 
 
+def test_planning_role_selects_planning_route(db_conn, tmp_path, monkeypatch):
+    """
+    FIX5-01 regression: a low-risk planning task (including architectural-assessment)
+    must create an attempt on the planning route, not the implementation route.
+    This test would fail under the old risk-only routing in _execute_task_impl.
+    """
+    config = Config({
+        "db_path": ":memory:",
+        "logs_dir": str(tmp_path / "logs"),
+        "retry_policy": {"max_attempts": 3, "escalation_threshold": 2},
+        "routes": {
+            "planning": [{"provider": "agy", "model": "planning-model"}],
+            "implementation": [{"provider": "codex", "model": "impl-model"}]
+        }
+    })
+
+    run_repo = RunRepository(db_conn)
+    feat_repo = FeatureRepository(db_conn)
+    task_repo = TaskRepository(db_conn)
+
+    monkeypatch.setattr("agent_loop.orchestrator.create_worktree", MagicMock())
+    monkeypatch.setattr("agent_loop.orchestrator.commit_changes", MagicMock(return_value="sha_plan"))
+    monkeypatch.setattr("agent_loop.orchestrator.merge_branch", MagicMock(return_value=(True, [])))
+    monkeypatch.setattr("agent_loop.orchestrator.remove_worktree", MagicMock())
+
+    run_id = run_repo.create("Planning route regression test", "autonomous")
+    run_repo.update_status(run_id, "planning")
+    run_repo.update_status(run_id, "running")
+    feat_id = feat_repo.create(run_id, "Feat", "low")
+
+    # Create a low-risk planning task — old code would pick "implementation"
+    task_id = task_repo.create(run_id, feat_id, "Low-risk planning task", "planning", "low")
+    task_repo.update_status(task_id, "ready")
+
+    orch = Orchestrator(db_conn, config, plan_path=tmp_path / "plan.md", progress_path=tmp_path / "progress.md")
+    monkeypatch.setattr(orch, "run_verification", MagicMock(return_value=True))
+
+    with patch("agent_loop.orchestrator.get_adapter") as mock_adapter_factory:
+        adapter = MagicMock()
+        mock_adapter_factory.return_value = adapter
+        adapter.run_attempt.side_effect = [
+            AttemptResult(success=True, exit_code=0, output="done", error=""),
+            AttemptResult(success=True, exit_code=0,
+                          output='{"decision": "approved", "findings": "OK"}', error="")
+        ]
+        task = task_repo.get(task_id)
+        orch._execute_task_impl(run_id, task)
+
+    # Inspect the persisted attempt — route and provider must be planning
+    attempts = [a for a in orch.attempt_repo.get_by_run(run_id) if a["task_id"] == task_id]
+    assert len(attempts) == 1
+    assert attempts[0]["route"] == "planning", \
+        f"Expected route='planning' but got route='{attempts[0]['route']}'"
+    assert attempts[0]["provider"] == "agy", \
+        f"Expected provider='agy' but got provider='{attempts[0]['provider']}'"
+    assert attempts[0]["model"] == "planning-model", \
+        f"Expected model='planning-model' but got model='{attempts[0]['model']}'"
+
+
+def test_notification_deduplication_and_payload(db_conn, tmp_path):
+    """
+    FIX5-02: Send the same (run_id, event) notification twice and prove only one
+    delivery attempt is made. Assert the actual webhook payload contract: the
+    transport sends a single 'text' field; assert run_id and event appear in it.
+    """
+    config = Config({
+        "db_path": ":memory:",
+        "logs_dir": str(tmp_path / "logs"),
+        "webhook_env_var": "TEST_NOTIF_WEBHOOK"
+    })
+    run_repo = RunRepository(db_conn)
+    run_id = run_repo.create("Dedup test", "autonomous")
+    orch = Orchestrator(db_conn, config, plan_path=tmp_path / "plan.md", progress_path=tmp_path / "progress.md")
+
+    call_count = 0
+
+    import os
+    os.environ["TEST_NOTIF_WEBHOOK"] = "http://example.com/webhook"
+    try:
+        with patch("urllib.request.urlopen") as mock_urlopen:
+            mock_urlopen.return_value.__enter__ = MagicMock(return_value=MagicMock())
+            mock_urlopen.return_value.__exit__ = MagicMock(return_value=False)
+
+            # First call — should be delivered
+            orch.notify(run_id, "complete", "Run finished successfully")
+            first_call_count = mock_urlopen.call_count
+
+            # Second call with same run_id + event — must be deduplicated (not sent again)
+            orch.notify(run_id, "complete", "Run finished successfully")
+            second_call_count = mock_urlopen.call_count
+
+        # Exactly one HTTP delivery, not two
+        assert first_call_count == 1, f"Expected 1 delivery on first call, got {first_call_count}"
+        assert second_call_count == 1, f"Expected no second delivery (dedup), got {second_call_count}"
+
+        # Verify actual payload contract: transport sends a single 'text' field
+        req_arg = mock_urlopen.call_args_list[0][0][0]
+        payload = json.loads(req_arg.data.decode("utf-8"))
+        assert "text" in payload, "Webhook payload must contain 'text' field"
+        text = payload["text"]
+        # The text must reference the run and event
+        assert str(run_id) in text, f"Payload text should contain run_id {run_id}: {text!r}"
+        assert "complete" in text, f"Payload text should contain event 'complete': {text!r}"
+    finally:
+        del os.environ["TEST_NOTIF_WEBHOOK"]
+
+
+
 
 
 
