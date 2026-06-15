@@ -1,0 +1,14 @@
+# SQLite Databases and WAL files
+.agent-loop.db
+.agent-loop.db-wal
+.agent-loop.db-shm
+
+# Task logs and isolation worktrees
+logs/
+worktrees/
+
+# Python environment & cache
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
