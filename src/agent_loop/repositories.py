@@ -4,7 +4,7 @@ from typing import Any, Dict, List, Optional
 
 VALID_RUN_TRANSITIONS = {
     "draft": {"planning", "cancelled"},
-    "planning": {"awaiting_plan_approval", "running", "cancelled"},
+    "planning": {"awaiting_plan_approval", "running", "cancelled", "blocked", "failed"},
     "awaiting_plan_approval": {"running", "planning", "cancelled"},
     "running": {"waiting_for_quota", "blocked", "reviewing", "cancelled", "failed"},
     "waiting_for_quota": {"running", "blocked", "cancelled"},
@@ -423,38 +423,39 @@ class ProviderStateRepository:
     def __init__(self, conn: sqlite3.Connection):
         self.conn = conn
 
-    def get(self, provider: str) -> Optional[Dict[str, Any]]:
+    def get(self, provider: str, model: str) -> Optional[Dict[str, Any]]:
         cursor = self.conn.cursor()
         cursor.execute(
-            "SELECT provider, capability_snapshot, availability, quota_limit_reset, last_probe FROM provider_state WHERE provider = ?;",
-            (provider,)
+            "SELECT provider, model, capability_snapshot, availability, quota_limit_reset, last_probe FROM provider_state WHERE provider = ? AND model = ?;",
+            (provider, model)
         )
         row = cursor.fetchone()
         if not row:
             return None
         return {
             "provider": row[0],
-            "capability_snapshot": json.loads(row[1]) if row[1] else {},
-            "availability": bool(row[2]),
-            "quota_limit_reset": row[3],
-            "last_probe": row[4]
+            "model": row[1],
+            "capability_snapshot": json.loads(row[2]) if row[2] else {},
+            "availability": bool(row[3]),
+            "quota_limit_reset": row[4],
+            "last_probe": row[5]
         }
 
-    def save(self, provider: str, capability_snapshot: Dict[str, Any], availability: bool, quota_limit_reset: Optional[str] = None, last_probe: Optional[str] = None) -> None:
+    def save(self, provider: str, model: str, capability_snapshot: Dict[str, Any], availability: bool, quota_limit_reset: Optional[str] = None, last_probe: Optional[str] = None) -> None:
         cap_str = json.dumps(capability_snapshot)
         avail_int = 1 if availability else 0
         cursor = self.conn.cursor()
         cursor.execute(
             """
-            INSERT INTO provider_state (provider, capability_snapshot, availability, quota_limit_reset, last_probe)
-            VALUES (?, ?, ?, ?, ?)
-            ON CONFLICT(provider) DO UPDATE SET
+            INSERT INTO provider_state (provider, model, capability_snapshot, availability, quota_limit_reset, last_probe)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(provider, model) DO UPDATE SET
                 capability_snapshot = excluded.capability_snapshot,
                 availability = excluded.availability,
                 quota_limit_reset = excluded.quota_limit_reset,
                 last_probe = excluded.last_probe;
             """,
-            (provider, cap_str, avail_int, quota_limit_reset, last_probe)
+            (provider, model, cap_str, avail_int, quota_limit_reset, last_probe)
         )
         self.conn.commit()
 

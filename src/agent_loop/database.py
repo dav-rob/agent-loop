@@ -97,11 +97,13 @@ MIGRATIONS: List[str] = [
 
     -- Provider state table
     CREATE TABLE provider_state (
-        provider TEXT PRIMARY KEY,
+        provider TEXT,
+        model TEXT,
         capability_snapshot TEXT,
         availability INTEGER NOT NULL DEFAULT 1,
         quota_limit_reset TIMESTAMP,
-        last_probe TIMESTAMP
+        last_probe TIMESTAMP,
+        PRIMARY KEY (provider, model)
     );
 
     -- Notifications table
@@ -173,14 +175,14 @@ def migrate(conn: sqlite3.Connection) -> None:
         if i not in applied:
             try:
                 cursor.execute("BEGIN TRANSACTION;")
-                # Execute individual statements by splitting on semicolon
-                # or using executescript. executescript also handles commit/rollback sometimes,
-                # but doing it within a transaction is safer.
-                conn.executescript(migration_sql)
-                conn.execute(
+                # Execute individual statements to preserve transaction boundary
+                statements = [stmt.strip() for stmt in migration_sql.split(";") if stmt.strip()]
+                for stmt in statements:
+                    cursor.execute(stmt)
+                cursor.execute(
                     "INSERT INTO schema_migrations (version) VALUES (?);", (i,)
                 )
-                conn.execute("COMMIT;")
+                cursor.execute("COMMIT;")
             except Exception as e:
-                conn.execute("ROLLBACK;")
+                cursor.execute("ROLLBACK;")
                 raise RuntimeError(f"Migration version {i} failed: {e}") from e
