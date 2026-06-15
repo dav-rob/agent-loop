@@ -904,3 +904,144 @@ def test_architectural_assessment_resolution(db_conn, tmp_path, monkeypatch):
         assert task_repo.get(task_id)["status"] == "ready"
 
 
+def test_quota_gating_by_role(db_conn, tmp_path):
+    # Setup config with only implementation routes, or separate planning routes
+    config = Config({
+        "db_path": ":memory:",
+        "logs_dir": str(tmp_path / "logs"),
+        "routes": {
+            "planning": [{"provider": "agy", "model": "planning-model"}],
+            "implementation": [{"provider": "codex", "model": "impl-model"}]
+        }
+    })
+
+    run_repo = RunRepository(db_conn)
+    feat_repo = FeatureRepository(db_conn)
+    task_repo = TaskRepository(db_conn)
+
+    run_id = run_repo.create("Role routing test", "autonomous")
+    run_repo.update_status(run_id, "planning")
+    run_repo.update_status(run_id, "running")
+
+    feat_id = feat_repo.create(run_id, "Feature 1", "low")
+
+    # Create a low-risk planning task
+    t1 = task_repo.create(run_id, feat_id, "Task Plan Low Risk", "planning", "low")
+    task_repo.update_status(t1, "ready")
+
+    orch = Orchestrator(db_conn, config, plan_path=tmp_path / "plan.md", progress_path=tmp_path / "progress.md")
+
+    # Under risk-only routing, this low-risk planning task would select route_key = "implementation"
+    # because risk is "low" and attempts = 0.
+    # But under role-based capability routing, it must select "planning"!
+    req = orch.get_required_routes(run_id)
+    assert len(req) == 1
+    assert req[0]["capability"] == "planning"
+    assert req[0]["model"] == "planning-model"
+
+
+def test_safe_preservation_change_types(db_conn, tmp_path, monkeypatch):
+    config = Config()
+    orch = Orchestrator(db_conn, config, plan_path=tmp_path / "plan.md", progress_path=tmp_path / "progress.md")
+
+    run_repo = RunRepository(db_conn)
+    feat_repo = FeatureRepository(db_conn)
+    task_repo = TaskRepository(db_conn)
+    attempt_repo = AttemptRepository(db_conn)
+
+    run_id = run_repo.create("Change types recovery test", "autonomous")
+    feat_id = feat_repo.create(run_id, "Feat 1", "low")
+    task_id = task_repo.create(run_id, feat_id, "Task 1", "implementation", "low")
+
+    wt_dir = tmp_path / "wt_run"
+    wt_dir.mkdir(parents=True, exist_ok=True)
+    logs_dir = tmp_path / "logs"
+    logs_dir.mkdir(parents=True, exist_ok=True)
+
+    attempt_id = attempt_repo.create(
+        run_id=run_id,
+        task_id=task_id,
+        route="implementation",
+        provider="codex",
+        model="gpt-5.4-mini",
+        worktree_path=str(wt_dir),
+        logs_path=str(logs_dir)
+    )
+
+    recorded_cmds = []
+    def mock_run(cmd, cwd=None, capture_output=False, stdin=None):
+        recorded_cmds.append(cmd)
+        mock_res = MagicMock()
+        mock_res.returncode = 0
+        if "diff" in cmd:
+            mock_res.stdout = b"fake binary patch data"
+        else:
+            mock_res.stdout = b""
+        return mock_res
+
+    mock_remove_wt = MagicMock()
+    monkeypatch.setattr("agent_loop.orchestrator.remove_worktree", mock_remove_wt)
+
+    with patch("subprocess.run", side_effect=mock_run):
+        orch.reconcile_interrupted_run(run_id)
+
+    # Verify command sequence
+    assert ["git", "add", "-A"] in recorded_cmds
+    assert ["git", "diff", "--cached", "--binary"] in recorded_cmds
+
+    # Verify attempt updated and patch path set
+    attempt = attempt_repo.get(attempt_id)
+    assert attempt["outcome"] == "abandoned"
+    assert attempt["patch_path"] is not None
+    assert Path(attempt["patch_path"]).exists()
+    assert Path(attempt["patch_path"]).read_bytes() == b"fake binary patch data"
+
+    # Verify cleanup occurred
+    mock_remove_wt.assert_called_once()
+    assert attempt_repo.get(attempt_id)["worktree_path"] is None
+
+
+def test_repeated_recovery_behavior(db_conn, tmp_path, monkeypatch):
+    config = Config()
+    orch = Orchestrator(db_conn, config, plan_path=tmp_path / "plan.md", progress_path=tmp_path / "progress.md")
+
+    run_repo = RunRepository(db_conn)
+    feat_repo = FeatureRepository(db_conn)
+    task_repo = TaskRepository(db_conn)
+    attempt_repo = AttemptRepository(db_conn)
+
+    run_id = run_repo.create("Repeated recovery test", "autonomous")
+    feat_id = feat_repo.create(run_id, "Feat 1", "low")
+    task_id = task_repo.create(run_id, feat_id, "Task 1", "implementation", "low")
+
+    wt_dir = tmp_path / "wt_run"
+    wt_dir.mkdir(parents=True, exist_ok=True)
+    logs_dir = tmp_path / "logs"
+    logs_dir.mkdir(parents=True, exist_ok=True)
+
+    # Scenario: Database updated to abandoned but worktree path is still set (crash during previous recovery)
+    attempt_id = attempt_repo.create(
+        run_id=run_id,
+        task_id=task_id,
+        route="implementation",
+        provider="codex",
+        model="gpt-5.4-mini",
+        worktree_path=str(wt_dir),
+        logs_path=str(logs_dir)
+    )
+    cursor = db_conn.cursor()
+    cursor.execute("UPDATE attempts SET outcome = 'abandoned' WHERE id = ?;", (attempt_id,))
+    db_conn.commit()
+
+    mock_remove_wt = MagicMock()
+    monkeypatch.setattr("agent_loop.orchestrator.remove_worktree", mock_remove_wt)
+
+    # Reconcile should detect the leftover worktree and delete it
+    orch.reconcile_interrupted_run(run_id)
+
+    mock_remove_wt.assert_called_once_with(Path.cwd(), wt_dir)
+    assert attempt_repo.get(attempt_id)["worktree_path"] is None
+
+
+
+

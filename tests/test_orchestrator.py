@@ -561,7 +561,8 @@ def test_merge_conflict_integration_lifecycle(db_conn, tmp_path, monkeypatch):
     assert integration_task is not None
     assert integration_task["status"] == "pending"
 
-    scope_data = json.loads(integration_task["scope"])
+    scope_data = integration_task["scope"]
+    assert isinstance(scope_data, dict)
     assert scope_data["original_task_id"] == task_id
     assert "conflict_file.py" in scope_data["conflicting_files"]
 
