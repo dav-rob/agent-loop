@@ -1,6 +1,6 @@
 import sys
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
 import pytest
 from agent_loop.cli import main
 from agent_loop.config import Config
@@ -22,8 +22,26 @@ def test_cli_start_non_interactive(clean_workspace):
         "--goal",
         "Build a compiler"
     ]
-    with patch.object(sys, "argv", test_args):
-        main()
+    
+    # Mock planning to update database state successfully without running adapters
+    def mock_plan_run(run_id):
+        db_path = Path(".agent-loop.db")
+        conn = get_connection(db_path)
+        RunRepository(conn).update_status(run_id, "planning")
+        RunRepository(conn).update_status(run_id, "running")
+        conn.close()
+        return True
+
+    with patch("agent_loop.cli.Orchestrator") as mock_orch_cls:
+        mock_orch = MagicMock()
+        mock_orch.plan_run.side_effect = mock_plan_run
+        mock_orch_cls.return_value = mock_orch
+
+        with patch.object(sys, "argv", test_args):
+            main()
+
+        mock_orch.plan_run.assert_called_once()
+        mock_orch.run_loop.assert_called_once()
 
     # Verify database exists and run is created
     db_path = Path(".agent-loop.db")
@@ -35,7 +53,7 @@ def test_cli_start_non_interactive(clean_workspace):
     assert len(runs) == 1
     assert runs[0]["goal"] == "Build a compiler"
     assert runs[0]["intake_mode"] == "non_interactive"
-    assert runs[0]["status"] == "planning"
+    assert runs[0]["status"] == "running"
     conn.close()
 
     # Verify views rendered
@@ -100,6 +118,8 @@ def test_cli_resume(clean_workspace):
     attempt_repo = AttemptRepository(conn)
 
     run_id = run_repo.create("Resume test", "non_interactive")
+    run_repo.update_status(run_id, "planning")
+    run_repo.update_status(run_id, "running")
     feat_id = feat_repo.create(run_id, "Feat 1", "low")
     task_id = task_repo.create(run_id, feat_id, "Task 1", "implementation", "low")
     attempt_id = attempt_repo.create(run_id, task_id, "implementation", "codex", "gpt-5.4-mini")
@@ -109,8 +129,12 @@ def test_cli_resume(clean_workspace):
 
     # Test 'agent-loop resume'
     test_args = ["agent-loop", "resume", str(run_id)]
-    with patch.object(sys, "argv", test_args):
-        main()
+    with patch("agent_loop.cli.Orchestrator") as mock_orch_cls:
+        mock_orch = MagicMock()
+        mock_orch_cls.return_value = mock_orch
+        with patch.object(sys, "argv", test_args):
+            main()
+        mock_orch.run_loop.assert_called_once()
 
     # Verify attempt is now marked abandoned
     conn = get_connection(db_path)

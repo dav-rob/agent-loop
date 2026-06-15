@@ -16,6 +16,7 @@ from agent_loop.repositories import (
     ProviderStateRepository
 )
 from agent_loop.views import render_plan_md, render_progress_md
+from agent_loop.orchestrator import Orchestrator
 
 def get_db(config: Config) -> sqlite3.Connection:
     conn = get_connection(config.db_path)
@@ -45,7 +46,6 @@ def handle_start(args: argparse.Namespace, config: Config) -> None:
             intake_mode="non_interactive",
             config_snapshot=config.data
         )
-        run_repo.update_status(run_id, "planning")
         print(f"Started run {run_id} in non-interactive mode.")
     else:
         # Interactive Wizard
@@ -75,12 +75,24 @@ def handle_start(args: argparse.Namespace, config: Config) -> None:
             intake_mode=intake_mode,
             config_snapshot=config.data
         )
-        run_repo.update_status(run_id, "planning")
         print(f"\nStarted run {run_id} in {intake_mode} mode.")
 
     # Render initial Markdown views
     render_plan_md(conn, run_id, Path("plan.md"))
     render_progress_md(conn, run_id, Path("progress.md"))
+
+    # Instantiate Orchestrator and execute planning
+    orch = Orchestrator(conn, config)
+    print("Planning run...")
+    plan_success = orch.plan_run(run_id)
+    if plan_success:
+        run = run_repo.get(run_id)
+        if run["status"] == "running":
+            print("Executing tasks...")
+            orch.run_loop(run_id)
+    else:
+        print("Planning failed.")
+
     conn.close()
 
 def handle_resume(args: argparse.Namespace, config: Config) -> None:
@@ -118,6 +130,18 @@ def handle_resume(args: argparse.Namespace, config: Config) -> None:
     render_plan_md(conn, run_id, Path("plan.md"))
     render_progress_md(conn, run_id, Path("progress.md"))
     print("Markdown views regenerated.")
+
+    # Actually resume orchestration
+    orch = Orchestrator(conn, config)
+    updated_run = run_repo.get(run_id)
+    if updated_run["status"] == "planning":
+        print("Resuming planning...")
+        orch.plan_run(run_id)
+        updated_run = run_repo.get(run_id)
+    if updated_run["status"] == "running":
+        print("Resuming task execution...")
+        orch.run_loop(run_id)
+
     conn.close()
 
 def handle_status(args: argparse.Namespace, config: Config) -> None:
