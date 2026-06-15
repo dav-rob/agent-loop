@@ -8,6 +8,7 @@ DEFAULT_CONFIG = {
     "logs_dir": "logs",
     "max_workers": 4,
     "webhook_env_var": "AGENT_LOOP_WEBHOOK_URL",
+    "execution_mode": "trusted-host",
     "routes": {
         "planning": [
             {"provider": "codex", "model": "gpt-5.5", "reasoning_level": "high"},
@@ -56,6 +57,10 @@ class Config:
     @property
     def retry_policy(self) -> Dict[str, Any]:
         return self.data.get("retry_policy", DEFAULT_CONFIG["retry_policy"])
+
+    @property
+    def execution_mode(self) -> str:
+        return str(self.data.get("execution_mode", DEFAULT_CONFIG["execution_mode"]))
 
     @property
     def commands(self) -> Dict[str, str]:
