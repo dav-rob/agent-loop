@@ -115,7 +115,8 @@ class CodexAdapter(BaseAdapter):
             "-m", model,
             "-s", "workspace-write",
             "-a", "never",
-            "-o", str(output_msg_file)
+            "-o", str(output_msg_file),
+            "-c", f"sandbox_workspace_write.writable_roots=[\"{workspace_path.resolve()}\"]"
         ]
         if reasoning_level:
             cmd += ["-c", f"reasoning_level={reasoning_level}"]
@@ -139,7 +140,8 @@ class CodexAdapter(BaseAdapter):
                     stdin=subprocess.DEVNULL,
                     stdout=out_f,
                     stderr=err_f,
-                    timeout=timeout_seconds
+                    timeout=timeout_seconds,
+                    cwd=workspace_path
                 )
             
             # Read stdout/stderr content
@@ -307,7 +309,8 @@ class AgyAdapter(BaseAdapter):
                     stdin=subprocess.DEVNULL,
                     stdout=out_f,
                     stderr=err_f,
-                    timeout=timeout_seconds
+                    timeout=timeout_seconds,
+                    cwd=workspace_path
                 )
 
             stdout_content = redact_secrets(stdout_file.read_text(errors="ignore"))

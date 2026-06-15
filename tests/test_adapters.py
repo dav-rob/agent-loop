@@ -70,7 +70,7 @@ def test_codex_run_attempt_success(tmp_path):
     mock_proc.returncode = 0
     
     # Simulate stdout that would be written by subprocess to out_f
-    def run_side_effect(cmd, stdin, stdout, stderr, timeout):
+    def run_side_effect(cmd, stdin, stdout, stderr, timeout, **kwargs):
         # stdout is a file object
         stdout.write(
             '{"event": "token_usage", "input": 100, "output": 200}\n'
@@ -101,7 +101,7 @@ def test_codex_run_attempt_quota_exhausted(tmp_path):
     mock_proc = MagicMock()
     mock_proc.returncode = 1
     
-    def run_side_effect(cmd, stdin, stdout, stderr, timeout):
+    def run_side_effect(cmd, stdin, stdout, stderr, timeout, **kwargs):
         stdout.write(
             '{"event": "error", "error": {"code": "insufficient_quota", "reset": "2026-06-15T15:00:00Z"}}\n'
         )
@@ -127,7 +127,7 @@ def test_agy_run_attempt_success(tmp_path):
     mock_proc = MagicMock()
     mock_proc.returncode = 0
     
-    def run_side_effect(cmd, stdin, stdout, stderr, timeout):
+    def run_side_effect(cmd, stdin, stdout, stderr, timeout, **kwargs):
         stdout.write("Hello from agy\n")
         return mock_proc
 
@@ -159,7 +159,7 @@ def test_agy_run_attempt_quota_exhausted(tmp_path):
     mock_proc = MagicMock()
     mock_proc.returncode = 1
     
-    def run_side_effect(cmd, stdin, stdout, stderr, timeout):
+    def run_side_effect(cmd, stdin, stdout, stderr, timeout, **kwargs):
         stdout.write("Error: Rate limit exceeded. Please try again. Reset at 2026-06-15T16:00:00Z\n")
         return mock_proc
 
