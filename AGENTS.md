@@ -90,3 +90,19 @@ Escalate to high model when:
 - critical files are touched
 - architecture decision is needed
 - protected test change is proposed
+
+## Handoff protocol
+
+When the user prompt points to a handoff request:
+
+1. Read `docs/handoffs/README.md` for the protocol.
+2. Read the entire request before changing files.
+3. Treat every requirement ID heading as mandatory.
+4. Write the next sequenced executor response in the same dated handoff directory.
+5. Account for every requirement as `complete`, `blocked`, or `shelved`.
+6. Include evidence for completed items and a concrete reason for blocked or shelved items.
+7. Run `agent-loop handoff validate <request> <response>` before replying.
+8. Never claim completion unless validation passes and every requirement is complete.
+
+Do not silently omit difficult requirements. Shelving is allowed only as an
+explicit, auditable deferral and means the overall response is not complete.

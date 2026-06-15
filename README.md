@@ -44,6 +44,17 @@ agent-loop plan --details
 agent-loop resume
 ```
 
+### 7. Validate an executor handoff
+
+```bash
+agent-loop handoff validate \
+  docs/handoffs/2026-06-15/04-fix-request.md \
+  docs/handoffs/2026-06-15/05-executor-response.md
+```
+
+See `docs/handoffs/README.md` for the dated request/response convention,
+requirement statuses, templates, and standard executor prompt.
+
 ## Configuration
 
 Settings can be customized in `agent-loop.toml` in the project root:
