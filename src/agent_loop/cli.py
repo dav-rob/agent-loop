@@ -109,13 +109,8 @@ def handle_resume(args: argparse.Namespace, config: Config) -> None:
     print(f"Resuming run {run_id}...")
 
     # Recovery: Reconcile active attempts. Interrupted 'running' attempts are marked 'abandoned'
-    attempts = attempt_repo.get_by_run(run_id)
-    abandoned_count = 0
-    for attempt in attempts:
-        if attempt["outcome"] == "running":
-            # For Milestone 1, we assume no live worker is verified and mark them abandoned
-            attempt_repo.update_outcome(attempt["id"], "abandoned")
-            abandoned_count += 1
+    orch = Orchestrator(conn, config)
+    abandoned_count = orch.reconcile_interrupted_run(run_id)
 
     if abandoned_count > 0:
         print(f"Reconciled state: marked {abandoned_count} interrupted running attempt(s) as abandoned.")
@@ -132,7 +127,6 @@ def handle_resume(args: argparse.Namespace, config: Config) -> None:
     print("Markdown views regenerated.")
 
     # Actually resume orchestration
-    orch = Orchestrator(conn, config)
     updated_run = run_repo.get(run_id)
     if updated_run["status"] == "planning":
         print("Resuming planning...")

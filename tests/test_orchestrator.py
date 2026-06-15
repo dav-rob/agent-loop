@@ -448,6 +448,59 @@ def test_parallel_workers_safe_concurrency(db_conn, tmp_path, monkeypatch):
     m2_start, m2_end = merge_times[1]
     assert max(m1_start, m2_start) >= min(m1_end, m2_end)
 
+def test_interrupted_attempt_recovery(db_conn, tmp_path):
+    config = Config()
+    # Mock max_attempts = 3
+    config.data["retry_policy"] = {"max_attempts": 3, "escalation_threshold": 2}
+    orch = Orchestrator(db_conn, config, plan_path=tmp_path / "plan.md", progress_path=tmp_path / "progress.md")
+
+    run_repo = RunRepository(db_conn)
+    feat_repo = FeatureRepository(db_conn)
+    task_repo = TaskRepository(db_conn)
+    attempt_repo = AttemptRepository(db_conn)
+
+    run_id = run_repo.create("Interrupted run", "autonomous")
+    run_repo.update_status(run_id, "planning")
+    run_repo.update_status(run_id, "running")
+    feat_id = feat_repo.create(run_id, "Feature 1", "low")
+    task_id = task_repo.create(run_id, feat_id, "Task 1", "implementation", "low")
+
+    # Set task to running and add attempt 1 in status running
+    task_repo.update_status(task_id, "ready")
+    task_repo.update_status(task_id, "running")
+    att_id_1 = attempt_repo.create(run_id, task_id, "impl", "codex", "gpt-5", "high", str(tmp_path / "wt1"), None, str(tmp_path / "logs1"))
+
+    # 1. Recover first time: should mark att_id_1 as abandoned, task to ready
+    count = orch.reconcile_interrupted_run(run_id)
+    assert count == 1
+    assert attempt_repo.get(att_id_1)["outcome"] == "abandoned"
+    assert task_repo.get(task_id)["status"] == "ready"
+
+    # 2. Repeated resume call: should return 0, keep task ready, no changes
+    count2 = orch.reconcile_interrupted_run(run_id)
+    assert count2 == 0
+    assert task_repo.get(task_id)["status"] == "ready"
+
+    # 3. Simulate another attempt running and getting interrupted
+    task_repo.update_status(task_id, "running")
+    att_id_2 = attempt_repo.create(run_id, task_id, "impl", "codex", "gpt-5", "high", str(tmp_path / "wt2"), None, str(tmp_path / "logs2"))
+
+    count3 = orch.reconcile_interrupted_run(run_id)
+    assert count3 == 1
+    assert attempt_repo.get(att_id_2)["outcome"] == "abandoned"
+    assert task_repo.get(task_id)["status"] == "ready"
+
+    # 4. Simulate a third attempt running and getting interrupted (reaching max_attempts = 3)
+    task_repo.update_status(task_id, "running")
+    att_id_3 = attempt_repo.create(run_id, task_id, "impl", "codex", "gpt-5", "high", str(tmp_path / "wt3"), None, str(tmp_path / "logs3"))
+
+    count4 = orch.reconcile_interrupted_run(run_id)
+    assert count4 == 1
+    assert attempt_repo.get(att_id_3)["outcome"] == "abandoned"
+    # Task should now be blocked!
+    assert task_repo.get(task_id)["status"] == "blocked"
+
+
 
 
 

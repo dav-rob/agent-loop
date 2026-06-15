@@ -346,6 +346,67 @@ Return ONLY a valid JSON object matching the requested schema. Do not include ma
         except Exception:
             pass
 
+    def reconcile_interrupted_run(self, run_id: int) -> int:
+        cursor = self.conn.cursor()
+        
+        # 1. Database updates in a transaction
+        with self.db_lock:
+            # We explicitly handle transaction with None/None isolation or just using DB lock
+            # because conn is passed with check_same_thread=False
+            cursor.execute("BEGIN TRANSACTION;")
+            try:
+                cursor.execute(
+                    "SELECT id, task_id, worktree_path FROM attempts WHERE run_id = ? AND outcome = 'running';",
+                    (run_id,)
+                )
+                running_attempts = cursor.fetchall()
+                
+                for att_id, task_id, wt_path in running_attempts:
+                    # Update attempt to abandoned
+                    cursor.execute(
+                        "UPDATE attempts SET outcome = 'abandoned', updated_at = CURRENT_TIMESTAMP WHERE id = ?;",
+                        (att_id,)
+                    )
+                    
+                    # Check total attempts for this task
+                    cursor.execute(
+                        "SELECT count(*) FROM attempts WHERE task_id = ?;",
+                        (task_id,)
+                    )
+                    attempt_count = cursor.fetchone()[0]
+                    
+                    # Update task status based on limit
+                    max_attempts = self.config.retry_policy["max_attempts"]
+                    if attempt_count >= max_attempts:
+                        cursor.execute(
+                            "UPDATE tasks SET status = 'blocked' WHERE id = ?;",
+                            (task_id,)
+                        )
+                    else:
+                        cursor.execute(
+                            "UPDATE tasks SET status = 'ready' WHERE id = ?;",
+                            (task_id,)
+                        )
+                cursor.execute("COMMIT;")
+            except Exception as e:
+                cursor.execute("ROLLBACK;")
+                raise e
+
+        # 2. Filesystem/Git cleanup (outside database transaction)
+        for att_id, task_id, wt_path in running_attempts:
+            if wt_path:
+                wt_dir = Path(wt_path)
+                with self.git_lock:
+                    remove_worktree(Path.cwd(), wt_dir)
+                    branch_name = f"agent-loop-run-{run_id}-task-{task_id}-att-{att_id}"
+                    subprocess.run(
+                        ["git", "branch", "-D", branch_name],
+                        cwd=Path.cwd(),
+                        capture_output=True
+                    )
+                    
+        return len(running_attempts)
+
     def execute_task(self, run_id: int, task: Dict[str, Any]) -> bool:
         # Determine if database is in-memory
         db_path_val = self.config.data.get("db_path", "")
