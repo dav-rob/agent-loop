@@ -232,7 +232,7 @@ Return ONLY a valid JSON object matching the requested schema. Do not include ma
         if cursor.fetchone()[0] > 0:
             return # Skip duplicate
 
-        dest = webhook_url or "stdout-fallback"
+        dest = "Slack Webhook" if webhook_url else "stdout-fallback"
         notification_id = self.notification_repo.create(run_id, event, dest)
 
         if not webhook_url:

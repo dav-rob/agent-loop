@@ -53,7 +53,8 @@ class BaseAdapter:
         prompt: str,
         workspace_path: Path,
         attempt_logs_dir: Path,
-        timeout_seconds: float = 600.0
+        timeout_seconds: float = 600.0,
+        reasoning_level: Optional[str] = None
     ) -> AttemptResult:
         raise NotImplementedError
 
@@ -92,7 +93,8 @@ class CodexAdapter(BaseAdapter):
         prompt: str,
         workspace_path: Path,
         attempt_logs_dir: Path,
-        timeout_seconds: float = 600.0
+        timeout_seconds: float = 600.0,
+        reasoning_level: Optional[str] = None
     ) -> AttemptResult:
         attempt_logs_dir.mkdir(parents=True, exist_ok=True)
         
@@ -104,17 +106,26 @@ class CodexAdapter(BaseAdapter):
         output_msg_file = attempt_logs_dir / "last_message.txt"
 
         # Build command: codex exec --json --cd <workspace> -m <model> -o <msg_file> "<prompt>"
-        # Also bypass approvals and sandbox if needed or use defaults
+        # Use workspace-write sandbox and never ask for approval to prevent hangs and run securely
         cmd = [
             self.binary_path,
             "exec",
             "--json",
             "--cd", str(workspace_path),
             "-m", model,
-            "--dangerously-bypass-approvals-and-sandbox",
-            "-o", str(output_msg_file),
-            prompt
+            "-s", "workspace-write",
+            "-a", "never",
+            "-o", str(output_msg_file)
         ]
+        if reasoning_level:
+            cmd += ["-c", f"reasoning_level={reasoning_level}"]
+        
+        # Check if plan_schema.json exists in package dir to pass to Codex planning route
+        schema_path = Path(__file__).parent / "plan_schema.json"
+        if schema_path.exists() and "json schema describing" in prompt.lower() or "plan_schema" in prompt:
+            cmd += ["--output-schema", str(schema_path)]
+            
+        cmd.append(prompt)
 
         stdout_file = attempt_logs_dir / "stdout.log"
         stderr_file = attempt_logs_dir / "stderr.log"
@@ -264,7 +275,8 @@ class AgyAdapter(BaseAdapter):
         prompt: str,
         workspace_path: Path,
         attempt_logs_dir: Path,
-        timeout_seconds: float = 600.0
+        timeout_seconds: float = 600.0,
+        reasoning_level: Optional[str] = None
     ) -> AttemptResult:
         attempt_logs_dir.mkdir(parents=True, exist_ok=True)
 
@@ -275,10 +287,11 @@ class AgyAdapter(BaseAdapter):
         stdout_file = attempt_logs_dir / "stdout.log"
         stderr_file = attempt_logs_dir / "stderr.log"
 
-        # Build command: agy --print --dangerously-skip-permissions --model <model> --log-file <log_file> --add-dir <workspace> "<prompt>"
+        # Build command: agy --print --sandbox --dangerously-skip-permissions --model <model> --log-file <log_file> --add-dir <workspace> "<prompt>"
         cmd = [
             self.binary_path,
             "--print",
+            "--sandbox",
             "--dangerously-skip-permissions",
             "--model", model,
             "--log-file", str(agy_log_file),
