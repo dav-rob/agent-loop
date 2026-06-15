@@ -513,19 +513,34 @@ Return ONLY a valid JSON object matching the requested schema. Do not include ma
         if not worktree_dir.exists():
             return None
         try:
+            # Check git status to prove if the worktree is clean
+            res_status = subprocess.run(
+                ["git", "status", "--porcelain"],
+                cwd=worktree_dir,
+                capture_output=True,
+                text=True,
+                stdin=subprocess.DEVNULL,
+                check=True
+            )
+            if not res_status.stdout.strip():
+                # Proven clean!
+                return "CLEAN"
+
             # Stage all changes (tracked, untracked, text, binary)
             subprocess.run(
                 ["git", "add", "-A"],
                 cwd=worktree_dir,
                 capture_output=True,
-                stdin=subprocess.DEVNULL
+                stdin=subprocess.DEVNULL,
+                check=True
             )
             # Capture the complete cached binary diff
             res = subprocess.run(
                 ["git", "diff", "--cached", "--binary"],
                 cwd=worktree_dir,
                 capture_output=True,
-                stdin=subprocess.DEVNULL
+                stdin=subprocess.DEVNULL,
+                check=True
             )
             patch_bytes = res.stdout
             if isinstance(patch_bytes, str):
@@ -536,9 +551,10 @@ Return ONLY a valid JSON object matching the requested schema. Do not include ma
                 patch_file = logs_dir / "patch.diff"
                 patch_file.write_bytes(patch_bytes)
                 return str(patch_file)
+            else:
+                return "CLEAN"
         except Exception:
-            pass
-        return None
+            return None
 
     def reconcile_interrupted_run(self, run_id: int) -> int:
         cursor = self.conn.cursor()
@@ -551,22 +567,32 @@ Return ONLY a valid JSON object matching the requested schema. Do not include ma
             )
             running_attempts = cursor.fetchall()
             
-        # 2. Preserve uncommitted changes for all running attempts before updating DB
+        # 2. Preserve uncommitted changes for all running attempts
+        successful_abandon_attempts = []
         patches = {}
         for att_id, task_id, wt_path in running_attempts:
             if wt_path:
                 wt_dir = Path(wt_path)
                 if wt_dir.exists():
                     logs_dir = (self.config.logs_dir / str(run_id) / str(task_id) / str(att_id)).resolve()
-                    patch_file_path = self._preserve_uncommitted_changes(wt_dir, logs_dir)
-                    if patch_file_path:
-                        patches[att_id] = patch_file_path
+                    preservation_res = self._preserve_uncommitted_changes(wt_dir, logs_dir)
+                    if preservation_res:
+                        successful_abandon_attempts.append((att_id, task_id, wt_path))
+                        if preservation_res != "CLEAN":
+                            patches[att_id] = preservation_res
+                    else:
+                        # Preservation failed, do not add to successful_abandon_attempts
+                        pass
+                else:
+                    successful_abandon_attempts.append((att_id, task_id, wt_path))
+            else:
+                successful_abandon_attempts.append((att_id, task_id, wt_path))
 
         # 3. Database updates in a single transaction
         with self.db_lock:
             cursor.execute("BEGIN TRANSACTION;")
             try:
-                for att_id, task_id, wt_path in running_attempts:
+                for att_id, task_id, wt_path in successful_abandon_attempts:
                     # Update attempt to abandoned and record its patch path
                     patch_path = patches.get(att_id)
                     cursor.execute(
@@ -599,7 +625,7 @@ Return ONLY a valid JSON object matching the requested schema. Do not include ma
                 raise e
 
         # 4. Filesystem/Git cleanup (outside database transaction)
-        for att_id, task_id, wt_path in running_attempts:
+        for att_id, task_id, wt_path in successful_abandon_attempts:
             if wt_path:
                 wt_dir = Path(wt_path)
                 if wt_dir.exists():

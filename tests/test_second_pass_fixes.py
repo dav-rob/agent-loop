@@ -765,3 +765,52 @@ def test_ui_lab_brief_workflow_paths(tmp_path, monkeypatch):
     assert len(runs) == 1
     assert runs[0]["intake_mode"] == "non_interactive"
     conn.close()
+
+
+def test_safe_preservation_failures(db_conn, tmp_path, monkeypatch):
+    config = Config()
+    orch = Orchestrator(db_conn, config, plan_path=tmp_path / "plan.md", progress_path=tmp_path / "progress.md")
+
+    run_repo = RunRepository(db_conn)
+    feat_repo = FeatureRepository(db_conn)
+    task_repo = TaskRepository(db_conn)
+    attempt_repo = AttemptRepository(db_conn)
+
+    run_id = run_repo.create("Safe preservation test", "autonomous")
+    feat_id = feat_repo.create(run_id, "Feat 1", "low")
+    task_id = task_repo.create(run_id, feat_id, "Task 1", "implementation", "low")
+
+    # Create a running attempt with a dirty worktree directory
+    wt_dir = tmp_path / "wt_run"
+    wt_dir.mkdir(parents=True, exist_ok=True)
+    logs_dir = tmp_path / "logs"
+    logs_dir.mkdir(parents=True, exist_ok=True)
+
+    attempt_id = attempt_repo.create(
+        run_id=run_id,
+        task_id=task_id,
+        route="implementation",
+        provider="codex",
+        model="gpt-5.4-mini",
+        worktree_path=str(wt_dir),
+        logs_path=str(logs_dir)
+    )
+
+    # Mock git status to fail (which means we cannot prove it is clean and preservation fails)
+    def run_side_effect(cmd, *args, **kwargs):
+        raise subprocess.SubprocessError("Git error")
+
+    mock_remove_wt = MagicMock()
+    monkeypatch.setattr("agent_loop.orchestrator.remove_worktree", mock_remove_wt)
+
+    with patch("subprocess.run", side_effect=run_side_effect):
+        orch.reconcile_interrupted_run(run_id)
+
+    # Verify that remove_worktree was NOT called
+    mock_remove_wt.assert_not_called()
+
+    # Verify that the attempt is NOT marked abandoned in the database
+    attempt = attempt_repo.get(attempt_id)
+    assert attempt["outcome"] == "running"
+    assert attempt["worktree_path"] == str(wt_dir)
+
