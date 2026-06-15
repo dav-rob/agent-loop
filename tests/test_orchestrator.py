@@ -213,7 +213,7 @@ def test_orchestrator_task_execution_loop(db_conn, tmp_path, monkeypatch):
     orch = Orchestrator(db_conn, config, plan_path=tmp_path / "plan.md", progress_path=tmp_path / "progress.md")
 
     # Mock success run for Codex adapter
-    mock_success = AttemptResult(success=True, exit_code=0, output="Completed task", error="")
+    mock_success = AttemptResult(success=True, exit_code=0, output='{"decision": "approved"}', error="")
     
     with patch("agent_loop.orchestrator.get_adapter") as mock_get_adapter:
         mock_adapter = MagicMock()
