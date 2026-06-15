@@ -97,13 +97,11 @@ MIGRATIONS: List[str] = [
 
     -- Provider state table
     CREATE TABLE provider_state (
-        provider TEXT,
-        model TEXT,
+        provider TEXT PRIMARY KEY,
         capability_snapshot TEXT,
         availability INTEGER NOT NULL DEFAULT 1,
         quota_limit_reset TIMESTAMP,
-        last_probe TIMESTAMP,
-        PRIMARY KEY (provider, model)
+        last_probe TIMESTAMP
     );
 
     -- Notifications table
@@ -144,6 +142,29 @@ MIGRATIONS: List[str] = [
         FOREIGN KEY(run_id) REFERENCES runs(id) ON DELETE CASCADE,
         FOREIGN KEY(task_id) REFERENCES tasks(id) ON DELETE SET NULL
     );
+    """,
+    # Version 2 migration: upgrade provider_state to compound key (provider, model)
+    """
+    -- Rename the old table
+    ALTER TABLE provider_state RENAME TO provider_state_old;
+
+    -- Create new provider_state table with compound key
+    CREATE TABLE provider_state (
+        provider TEXT NOT NULL,
+        model TEXT NOT NULL,
+        capability_snapshot TEXT,
+        availability INTEGER NOT NULL DEFAULT 1,
+        quota_limit_reset TIMESTAMP,
+        last_probe TIMESTAMP,
+        PRIMARY KEY (provider, model)
+    );
+
+    -- Insert existing data conservatively
+    INSERT INTO provider_state (provider, model, capability_snapshot, availability, quota_limit_reset, last_probe)
+    SELECT provider, '', capability_snapshot, availability, quota_limit_reset, last_probe FROM provider_state_old;
+
+    -- Drop the old table
+    DROP TABLE provider_state_old;
     """
 ]
 
@@ -152,6 +173,7 @@ def get_connection(db_path: Path) -> sqlite3.Connection:
     db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(db_path, check_same_thread=False)
     conn.execute("PRAGMA foreign_keys = ON;")
+    conn.execute("PRAGMA busy_timeout = 30000;")
     return conn
 
 def migrate(conn: sqlite3.Connection) -> None:

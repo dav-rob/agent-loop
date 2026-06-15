@@ -5,10 +5,12 @@ import time
 import urllib.request
 import sqlite3
 import subprocess
+import threading
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+from agent_loop.database import get_connection
 from agent_loop.config import Config
 from agent_loop.adapters import get_adapter, AttemptResult
 from agent_loop.git_utils import (
@@ -90,11 +92,13 @@ def validate_dag(features: List[Dict[str, Any]], tasks: List[Dict[str, Any]]) ->
 
 
 class Orchestrator:
-    def __init__(self, conn: sqlite3.Connection, config: Config, plan_path: Path = None, progress_path: Path = None):
+    def __init__(self, conn: sqlite3.Connection, config: Config, plan_path: Path = None, progress_path: Path = None, git_lock = None, db_lock = None):
         self.conn = conn
         self.config = config
         self.plan_path = plan_path or Path("plan.md")
         self.progress_path = progress_path or Path("progress.md")
+        self.git_lock = git_lock or threading.Lock()
+        self.db_lock = db_lock or threading.Lock()
         self.run_repo = RunRepository(conn)
         self.feature_repo = FeatureRepository(conn)
         self.task_repo = TaskRepository(conn)
@@ -282,16 +286,17 @@ Return ONLY a valid JSON object matching the requested schema. Do not include ma
                 "stderr": str(test_err_file)
             })
             
-            self.test_run_repo.create(
-                run_id=run_id,
-                task_id=task_id,
-                attempt_id=attempt_id,
-                command=command,
-                scope=None,
-                exit_status=process.returncode,
-                duration_seconds=duration,
-                output_path=output_json
-            )
+            with self.db_lock:
+                self.test_run_repo.create(
+                    run_id=run_id,
+                    task_id=task_id,
+                    attempt_id=attempt_id,
+                    command=command,
+                    scope=None,
+                    exit_status=process.returncode,
+                    duration_seconds=duration,
+                    output_path=output_json
+                )
             return process.returncode == 0
         except Exception as e:
             duration = time.time() - start_time
@@ -299,51 +304,78 @@ Return ONLY a valid JSON object matching the requested schema. Do not include ma
                 "stdout": str(test_out_file),
                 "stderr": str(test_err_file)
             })
-            self.test_run_repo.create(
-                run_id=run_id,
-                task_id=task_id,
-                attempt_id=attempt_id,
-                command=command,
-                scope=None,
-                exit_status=-1,
-                duration_seconds=duration,
-                output_path=output_json
-            )
+            with self.db_lock:
+                self.test_run_repo.create(
+                    run_id=run_id,
+                    task_id=task_id,
+                    attempt_id=attempt_id,
+                    command=command,
+                    scope=None,
+                    exit_status=-1,
+                    duration_seconds=duration,
+                    output_path=output_json
+                )
             with test_err_file.open("a") as err_f:
                 err_f.write(f"\nVerification failed with exception: {e}\n")
             return False
 
     def detect_and_record_test_migrations(self, run_id: int, task_id: int, commit_sha: str) -> None:
         try:
-            res = subprocess.run(
-                ["git", "show", "--name-status", "--oneline", commit_sha],
-                cwd=Path.cwd(),
-                capture_output=True,
-                text=True,
-                check=True
-            )
+            with self.git_lock:
+                res = subprocess.run(
+                    ["git", "show", "--name-status", "--oneline", commit_sha],
+                    cwd=Path.cwd(),
+                    capture_output=True,
+                    text=True,
+                    check=True
+                )
             for line in res.stdout.splitlines():
                 parts = line.strip().split()
                 if len(parts) >= 2:
                     status, file_path = parts[0], parts[1]
                     if "test" in file_path.lower() and status == "M":
-                        self.test_migration_repo.create(
-                            run_id=run_id,
-                            task_id=task_id,
-                            old_test_path=file_path,
-                            replacement_test_path=file_path,
-                            rationale="Audited test modified during task implementation.",
-                            evidence=f"Commit: {commit_sha}"
-                        )
+                        with self.db_lock:
+                            self.test_migration_repo.create(
+                                run_id=run_id,
+                                task_id=task_id,
+                                old_test_path=file_path,
+                                replacement_test_path=file_path,
+                                rationale="Audited test modified during task implementation.",
+                                evidence=f"Commit: {commit_sha}"
+                            )
         except Exception:
             pass
 
     def execute_task(self, run_id: int, task: Dict[str, Any]) -> bool:
-        task_id = task["id"]
-        self.task_repo.update_status(task_id, "running")
-        render_progress_md(self.conn, run_id, self.progress_path)
+        # Determine if database is in-memory
+        db_path_val = self.config.data.get("db_path", "")
+        is_in_memory = (db_path_val == ":memory:") or (":memory:" in str(self.config.db_path))
+        if is_in_memory:
+            conn = self.conn
+        else:
+            conn = get_connection(self.config.db_path)
+            
+        try:
+            worker_orch = Orchestrator(
+                conn, 
+                self.config, 
+                self.plan_path, 
+                self.progress_path, 
+                git_lock=self.git_lock,
+                db_lock=self.db_lock
+            )
+            return worker_orch._execute_task_impl(run_id, task)
+        finally:
+            if not is_in_memory:
+                conn.close()
 
-        attempts = [a for a in self.attempt_repo.get_by_run(run_id) if a["task_id"] == task_id]
+    def _execute_task_impl(self, run_id: int, task: Dict[str, Any]) -> bool:
+        task_id = task["id"]
+        with self.db_lock:
+            self.task_repo.update_status(task_id, "running")
+            render_progress_md(self.conn, run_id, self.progress_path)
+
+            attempts = [a for a in self.attempt_repo.get_by_run(run_id) if a["task_id"] == task_id]
         is_high_reasoning = (task["risk"] == "high") or (len(attempts) >= self.config.retry_policy["escalation_threshold"])
 
         route_key = "planning" if is_high_reasoning else "implementation"
@@ -351,54 +383,62 @@ Return ONLY a valid JSON object matching the requested schema. Do not include ma
 
         selected_route = None
         for r in routes:
-            p_state = self.provider_repo.get(r["provider"], r["model"])
+            with self.db_lock:
+                p_state = self.provider_repo.get(r["provider"], r["model"])
             if not p_state or p_state["availability"]:
                 selected_route = r
                 break
 
         if not selected_route:
-            self.task_repo.update_status(task_id, "failed")
-            self.task_repo.update_status(task_id, "ready")
+            with self.db_lock:
+                self.task_repo.update_status(task_id, "failed")
+                self.task_repo.update_status(task_id, "ready")
             return False
 
         provider = selected_route["provider"]
         model = selected_route["model"]
         reasoning_level = selected_route.get("reasoning_level")
 
-        attempt_id = self.attempt_repo.create(
-            run_id=run_id,
-            task_id=task_id,
-            route=route_key,
-            provider=provider,
-            model=model,
-            reasoning_level=reasoning_level,
-            worktree_path=None,
-            logs_path=None
-        )
+        with self.db_lock:
+            attempt_id = self.attempt_repo.create(
+                run_id=run_id,
+                task_id=task_id,
+                route=route_key,
+                provider=provider,
+                model=model,
+                reasoning_level=reasoning_level,
+                worktree_path=None,
+                logs_path=None
+            )
 
         worktree_dir = (Path("worktrees") / f"run-{run_id}-task-{task_id}-attempt-{attempt_id}").resolve()
         logs_dir = (self.config.logs_dir / str(run_id) / str(task_id) / str(attempt_id)).resolve()
         logs_dir.mkdir(parents=True, exist_ok=True)
 
-        cursor = self.conn.cursor()
-        cursor.execute(
-            "UPDATE attempts SET worktree_path = ?, logs_path = ? WHERE id = ?;",
-            (str(worktree_dir), str(logs_dir), attempt_id)
-        )
-        self.conn.commit()
+        with self.db_lock:
+            cursor = self.conn.cursor()
+            cursor.execute(
+                "UPDATE attempts SET worktree_path = ?, logs_path = ? WHERE id = ?;",
+                (str(worktree_dir), str(logs_dir), attempt_id)
+            )
+            self.conn.commit()
 
         branch_name = f"agent-loop-run-{run_id}-task-{task_id}-att-{attempt_id}"
         try:
-            create_worktree(Path.cwd(), worktree_dir, branch_name)
+            with self.git_lock:
+                create_worktree(Path.cwd(), worktree_dir, branch_name)
         except Exception:
-            self.attempt_repo.update_outcome(attempt_id, "failed")
-            self.task_repo.update_status(task_id, "failed")
-            self.task_repo.update_status(task_id, "ready")
+            with self.db_lock:
+                self.attempt_repo.update_outcome(attempt_id, "failed")
+                self.task_repo.update_status(task_id, "failed")
+                self.task_repo.update_status(task_id, "ready")
             return False
 
-        previous_rejection = self.review_repo.get_latest_rejection("task", task_id)
+        with self.db_lock:
+            previous_rejection = self.review_repo.get_latest_rejection("task", task_id)
+            goal_text = self.run_repo.get(run_id)['goal']
         prompt = f"""
-Goal: {self.run_repo.get(run_id)['goal']}
+Goal: {goal_text}
 Task: {task['name']}
 Verification Command: {task['required_verification']}
 Scope: {json.dumps(task['scope'])}
@@ -431,57 +471,70 @@ Scope: {json.dumps(task['scope'])}
 
             if result.success and verification_success:
                 sha = commit_changes(worktree_dir, f"agent-loop: complete {task['name']}")
-                self.attempt_repo.update_outcome(attempt_id, "completed", commit_sha=sha)
+                with self.db_lock:
+                    self.attempt_repo.update_outcome(attempt_id, "completed", commit_sha=sha)
                 
                 if sha:
                     self.detect_and_record_test_migrations(run_id, task_id, sha)
 
-                self.task_repo.update_status(task_id, "reviewing")
+                with self.db_lock:
+                    self.task_repo.update_status(task_id, "reviewing")
                 approved = self.run_task_review(run_id, task_id, sha)
                 
                 if approved:
-                    merged = merge_branch(Path.cwd(), branch_name, "main")
+                    with self.git_lock:
+                        merged = merge_branch(Path.cwd(), branch_name, "main")
                     if merged:
-                        self.task_repo.update_status(task_id, "complete")
+                        with self.db_lock:
+                            self.task_repo.update_status(task_id, "complete")
                     else:
-                        self.create_integration_task(run_id, task, branch_name)
+                        with self.db_lock:
+                            self.create_integration_task(run_id, task, branch_name)
+                            self.task_repo.update_status(task_id, "failed")
+                            self.task_repo.update_status(task_id, "ready")
+                else:
+                    with self.db_lock:
                         self.task_repo.update_status(task_id, "failed")
                         self.task_repo.update_status(task_id, "ready")
-                else:
-                    self.task_repo.update_status(task_id, "failed")
-                    self.task_repo.update_status(task_id, "ready")
 
-                remove_worktree(Path.cwd(), worktree_dir)
+                with self.git_lock:
+                    remove_worktree(Path.cwd(), worktree_dir)
                 return True
             else:
                 if result.quota_exhausted:
-                    self.provider_repo.save(
-                        provider=provider,
-                        model=model,
-                        capability_snapshot={"models": [model]},
-                        availability=False,
-                        quota_limit_reset=result.quota_reset
-                    )
-                    self.attempt_repo.update_outcome(attempt_id, "abandoned")
-                    self.task_repo.update_status(task_id, "failed")
-                    self.task_repo.update_status(task_id, "ready")
-                else:
-                    self.attempt_repo.update_outcome(attempt_id, "failed")
-                    if len(attempts) + 1 >= self.config.retry_policy["max_attempts"]:
-                        self.task_repo.update_status(task_id, "blocked")
-                        self.notify(run_id, "blocked", f"Task {task['name']} failed {self.config.retry_policy['max_attempts']} times.")
-                    else:
+                    with self.db_lock:
+                        self.provider_repo.save(
+                            provider=provider,
+                            model=model,
+                            capability_snapshot={"models": [model]},
+                            availability=False,
+                            quota_limit_reset=result.quota_reset
+                        )
+                        self.attempt_repo.update_outcome(attempt_id, "abandoned")
                         self.task_repo.update_status(task_id, "failed")
                         self.task_repo.update_status(task_id, "ready")
+                else:
+                    with self.db_lock:
+                        self.attempt_repo.update_outcome(attempt_id, "failed")
+                        if len(attempts) + 1 >= self.config.retry_policy["max_attempts"]:
+                            self.task_repo.update_status(task_id, "blocked")
+                        else:
+                            self.task_repo.update_status(task_id, "failed")
+                            self.task_repo.update_status(task_id, "ready")
+                    if len(attempts) + 1 >= self.config.retry_policy["max_attempts"]:
+                        self.notify(run_id, "blocked", f"Task {task['name']} failed {self.config.retry_policy['max_attempts']} times.")
 
-                remove_worktree(Path.cwd(), worktree_dir)
+                with self.git_lock:
+                    remove_worktree(Path.cwd(), worktree_dir)
                 return False
 
         except Exception:
-            self.attempt_repo.update_outcome(attempt_id, "failed")
-            self.task_repo.update_status(task_id, "failed")
-            self.task_repo.update_status(task_id, "ready")
-            remove_worktree(Path.cwd(), worktree_dir)
+            with self.db_lock:
+                self.attempt_repo.update_outcome(attempt_id, "failed")
+                self.task_repo.update_status(task_id, "failed")
+                self.task_repo.update_status(task_id, "ready")
+            with self.git_lock:
+                remove_worktree(Path.cwd(), worktree_dir)
             return False
 
     def run_agent_review(self, run_id: int, subject_type: str, subject_id: int, review_prompt: str) -> bool:
@@ -584,48 +637,54 @@ Only return the raw JSON object. Do not include markdown wrappers.
         diff = "No commit SHA provided."
         if commit_sha:
             try:
-                res = subprocess.run(
-                    ["git", "diff", f"{commit_sha}^..{commit_sha}"],
-                    cwd=Path.cwd(),
-                    capture_output=True,
-                    text=True,
-                    check=True
-                )
+                with self.git_lock:
+                    res = subprocess.run(
+                        ["git", "diff", f"{commit_sha}^..{commit_sha}"],
+                        cwd=Path.cwd(),
+                        capture_output=True,
+                        text=True,
+                        check=True
+                    )
                 diff = res.stdout
             except Exception:
                 diff = "Could not fetch git diff."
         
-        prompt = f"Please review task '{self.task_repo.get(task_id)['name']}' diff:\n\n{diff}"
+        with self.db_lock:
+            task_name = self.task_repo.get(task_id)['name']
+        prompt = f"Please review task '{task_name}' diff:\n\n{diff}"
         return self.run_agent_review(run_id, "task", task_id, prompt)
 
     def run_feature_review(self, run_id: int, feature_id: int) -> bool:
-        feat = self.feature_repo.get(feature_id)
+        with self.db_lock:
+            feat = self.feature_repo.get(feature_id)
         prompt = f"Please review completed feature '{feat['name']}' with criteria: {feat['acceptance_criteria']}"
         return self.run_agent_review(run_id, "feature", feature_id, prompt)
 
     def run_final_review(self, run_id: int) -> bool:
-        run = self.run_repo.get(run_id)
+        with self.db_lock:
+            run = self.run_repo.get(run_id)
         prompt = f"Please perform the final review for run goal: {run['goal']}. Verify all features are complete and correct."
         return self.run_agent_review(run_id, "final", run_id, prompt)
 
     def create_integration_task(self, run_id: int, task: Dict[str, Any], branch_name: str) -> None:
-        self.decision_repo.create(
-            run_id=run_id,
-            decision_type="architecture",
-            is_autonomous=True,
-            summary=f"Merge conflict on task {task['name']}. Spawned integration task.",
-            details=f"Conflict branch: {branch_name}"
-        )
-        self.task_repo.create(
-            run_id=run_id,
-            feature_id=task["feature_id"],
-            name=f"Resolve merge conflict on {task['name']}",
-            role="planning",
-            risk="high",
-            scope=task["scope"],
-            dependencies=[],
-            required_verification=task["required_verification"]
-        )
+        with self.db_lock:
+            self.decision_repo.create(
+                run_id=run_id,
+                decision_type="architecture",
+                is_autonomous=True,
+                summary=f"Merge conflict on task {task['name']}. Spawned integration task.",
+                details=f"Conflict branch: {branch_name}"
+            )
+            self.task_repo.create(
+                run_id=run_id,
+                feature_id=task["feature_id"],
+                name=f"Resolve merge conflict on {task['name']}",
+                role="planning",
+                risk="high",
+                scope=task["scope"],
+                dependencies=[],
+                required_verification=task["required_verification"]
+            )
 
     def check_and_recover_quotas(self, run_id: int, required_routes: List[Dict[str, Any]]) -> bool:
         all_limited = True

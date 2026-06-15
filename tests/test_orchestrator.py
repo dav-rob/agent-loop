@@ -349,6 +349,7 @@ def test_final_review_gating_success_and_failure(db_conn, tmp_path):
     task_repo = TaskRepository(db_conn)
     
     run_id = run_repo.create("Test goal", "autonomous")
+    run_repo.update_status(run_id, "planning")
     run_repo.update_status(run_id, "running")
     feat_id = feat_repo.create(run_id, "Feature 1", "low")
     task_id = task_repo.create(run_id, feat_id, "Task 1", "implementation", "low")
@@ -366,6 +367,87 @@ def test_final_review_gating_success_and_failure(db_conn, tmp_path):
     with patch.object(orch, "run_final_review", return_value=True) as mock_final:
         orch.run_loop(run_id)
         assert run_repo.get(run_id)["status"] == "complete"
+
+def test_parallel_workers_safe_concurrency(db_conn, tmp_path, monkeypatch):
+    import time
+    mock_create_wt = MagicMock()
+    mock_commit = MagicMock(return_value="mock_sha_123")
+    mock_remove_wt = MagicMock()
+    
+    merge_times = []
+    
+    def mock_merge_branch(repo_path, source_branch, target_branch):
+        start = time.time()
+        time.sleep(0.1)  # ensure overlap would happen if not locked
+        end = time.time()
+        merge_times.append((start, end))
+        return True
+
+    monkeypatch.setattr("agent_loop.orchestrator.create_worktree", mock_create_wt)
+    monkeypatch.setattr("agent_loop.orchestrator.commit_changes", mock_commit)
+    monkeypatch.setattr("agent_loop.orchestrator.merge_branch", mock_merge_branch)
+    monkeypatch.setattr("agent_loop.orchestrator.remove_worktree", mock_remove_wt)
+
+    run_repo = RunRepository(db_conn)
+    feat_repo = FeatureRepository(db_conn)
+    task_repo = TaskRepository(db_conn)
+
+    run_id = run_repo.create("Parallel task run", "autonomous")
+    run_repo.update_status(run_id, "planning")
+    run_repo.update_status(run_id, "running")
+
+    feat_id = feat_repo.create(run_id, "Feature 1", "low")
+
+    # Task 1 (no deps, scope: file1.py)
+    t1_id = task_repo.create(run_id, feat_id, "Task 1", "implementation", "low", scope={"files": ["file1.py"]})
+    # Task 2 (no deps, scope: file2.py)
+    t2_id = task_repo.create(run_id, feat_id, "Task 2", "implementation", "low", scope={"files": ["file2.py"]})
+
+    config_data = {
+        "db_path": ":memory:",
+        "logs_dir": str(tmp_path / "logs"),
+        "max_workers": 2,
+        "retry_policy": {"max_attempts": 3, "escalation_threshold": 2},
+        "routes": {
+            "implementation": [{"provider": "codex", "model": "gpt-5.4-mini"}]
+        }
+    }
+    config = Config(config_data)
+    orch = Orchestrator(db_conn, config, plan_path=tmp_path / "plan.md", progress_path=tmp_path / "progress.md")
+
+    task_execution_times = []
+    
+    def mock_run_attempt(model, prompt, workspace_path, attempt_logs_dir, **kwargs):
+        start = time.time()
+        time.sleep(0.2)  # force execution overlap
+        end = time.time()
+        task_execution_times.append((start, end))
+        return AttemptResult(success=True, exit_code=0, output='{"decision": "approved", "findings": "LGTM"}', error="")
+
+    with patch("agent_loop.orchestrator.get_adapter") as mock_get_adapter:
+        mock_adapter = MagicMock()
+        mock_adapter.run_attempt.side_effect = mock_run_attempt
+        mock_get_adapter.return_value = mock_adapter
+
+        # Run loop
+        orch.run_loop(run_id)
+
+    # Check both tasks completed
+    assert task_repo.get(t1_id)["status"] == "complete"
+    assert task_repo.get(t2_id)["status"] == "complete"
+    
+    # Assert that task executions overlapped in time (parallel workers)
+    assert len(task_execution_times) == 2
+    t1_start, t1_end = task_execution_times[0]
+    t2_start, t2_end = task_execution_times[1]
+    assert max(t1_start, t2_start) < min(t1_end, t2_end)
+    
+    # Assert that git merges were serialized (intervals do not overlap)
+    assert len(merge_times) == 2
+    m1_start, m1_end = merge_times[0]
+    m2_start, m2_end = merge_times[1]
+    assert max(m1_start, m2_start) >= min(m1_end, m2_end)
+
 
 
 
