@@ -699,7 +699,7 @@ Return ONLY a valid JSON object matching the requested schema. Do not include ma
             attempts = [a for a in self.attempt_repo.get_by_run(run_id) if a["task_id"] == task_id]
         is_high_reasoning = (task["risk"] == "high") or (len(attempts) >= self.config.retry_policy["escalation_threshold"])
 
-        route_key = "planning" if is_high_reasoning else "implementation"
+        route_key = "planning" if (task["role"] == "planning" or is_high_reasoning) else "implementation"
         routes = self.config.routes.get(route_key, [])
 
         selected_route = None
