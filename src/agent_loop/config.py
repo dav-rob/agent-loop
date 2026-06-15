@@ -36,11 +36,11 @@ class Config:
 
     @property
     def db_path(self) -> Path:
-        return Path(self.data.get("db_path", DEFAULT_CONFIG["db_path"]))
+        return Path(self.data.get("db_path", DEFAULT_CONFIG["db_path"])).resolve()
 
     @property
     def logs_dir(self) -> Path:
-        return Path(self.data.get("logs_dir", DEFAULT_CONFIG["logs_dir"]))
+        return Path(self.data.get("logs_dir", DEFAULT_CONFIG["logs_dir"])).resolve()
 
     @property
     def max_workers(self) -> int:
