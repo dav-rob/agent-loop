@@ -4,6 +4,7 @@ Use this file to record learnings, so that agents do not have to repeat work alr
 
 ## Durable project facts
 
+- All commits must be fine-grained commits so that the purpose of each change can be tracked easily.
 - Schema is transactionally versioned and stored in SQLite.
 - Markdown views (`plan.md` and `progress.md`) are generated directly from DB state.
 - `agy` CLI requires passing `stdin=subprocess.DEVNULL` to run non-interactively without hanging.
