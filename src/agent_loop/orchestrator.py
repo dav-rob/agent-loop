@@ -12,7 +12,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from agent_loop.database import get_connection
 from agent_loop.config import Config
-from agent_loop.adapters import get_adapter, AttemptResult
+from agent_loop.adapters import get_adapter, AttemptResult, resolve_binary
 from agent_loop.git_utils import (
     create_worktree,
     remove_worktree,
@@ -1290,8 +1290,14 @@ Only return the raw JSON object. Do not include markdown wrappers.
         import datetime
         if provider == "agy":
             try:
+                agy_usage_bin = resolve_binary("antigravity-usage", self.config)
+            except FileNotFoundError:
+                # Optional tool not installed; skip conservatively
+                return
+
+            try:
                 res = subprocess.run(
-                    ["antigravity-usage", "--version"],
+                    [agy_usage_bin, "--version"],
                     capture_output=True,
                     text=True,
                     stdin=subprocess.DEVNULL,
@@ -1304,7 +1310,7 @@ Only return the raw JSON object. Do not include markdown wrappers.
             if not has_tool:
                 return
 
-            cmd = ["antigravity-usage", "quota", "--json", "--method", "google"]
+            cmd = [agy_usage_bin, "quota", "--json", "--method", "google"]
             if force_refresh:
                 cmd.append("--refresh")
 
@@ -1379,7 +1385,12 @@ Only return the raw JSON object. Do not include markdown wrappers.
 
         elif provider == "codex":
             try:
-                binary_path = "/usr/local/bin/codex"
+                binary_path = resolve_binary("codex", self.config)
+            except FileNotFoundError:
+                # codex binary not available; skip conservatively
+                return
+
+            try:
                 proc = subprocess.Popen(
                     [binary_path, "app-server"],
                     stdin=subprocess.PIPE,
