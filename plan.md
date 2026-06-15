@@ -1,6 +1,8 @@
-
-
 ## Objective
+
+> This file is a human-readable summary. Full task metadata, dependencies,
+> attempts, and evidence are stored in the agent-loop SQLite database. Run
+> `agent-loop plan --details` to inspect them.
 
 
 
@@ -19,4 +21,3 @@
 
 
 ## Review required
-
