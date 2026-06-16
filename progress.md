@@ -13,8 +13,8 @@ routing is active in `_execute_task_impl`, notification deduplication and
 webhook payload behavior are verified, and a lifecycle fixture exercises the
 public orchestration flow through `plan_run` and `run_loop`.
 
-Delivery documentation has been added at `docs/delivery.md` with operator usage
-instructions and simple runnable examples.
+Delivery documentation has been organized under `docs/delivery/` with a
+technical overview and a plain-English operator guide.
 
 ## Next step
 
@@ -22,7 +22,7 @@ No further executor handoff is required for this request.
 
 ## Tests run
 
-- Documentation-only update: tests not run; CLI help verified for documented command groups.
+- Delivery documentation update: tests not run; CLI help verified for documented command groups.
 - Final targeted tests: 3 passed in 0.25s.
 - Real Codex parser smoke: 1 passed in 10.58s.
 - `.venv/bin/python -m pytest -q`: 81 passed in 18.68s; clean worktree.
