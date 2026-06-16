@@ -16,6 +16,7 @@ Use this file to record learnings, so that agents do not have to repeat work alr
 - Supervisor/executor work is recorded in dated, sequential handoff files under `docs/handoffs/`.
 - Handoff requirements use stable IDs; executor responses must account for each ID and pass `agent-loop handoff validate` before claiming completion.
 - A requirement may be explicitly `shelved` with a reason, but shelved work prevents an overall `complete` status.
+- User-facing language should call the top-level tracked request a goal. Internally this is still called a run (`runs` table, `run_id`, `RunRepository`), so `Goal ID` maps to the internal run ID.
 
 ## Useful commands
 

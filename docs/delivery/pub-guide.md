@@ -1,17 +1,18 @@
-# Agent Loop, Explained Like We Are In The Pub
+# Agent Loop
 
-This is the non-technical version of how it feels to use `agent-loop`.
-
-The short version: you tell it what you want done in a repo, it makes a plan,
-breaks the work into tasks, sends those tasks to agent CLIs, reviews the work,
-keeps going where it can, and stops when it either finishes or hits something it
-should not guess about.
+You kick off the app with one user goal. It makes a plan,
+breaks that goal into features and tasks, sends those tasks to agent CLIs,
+reviews the work, keeps going where it can, and stops when it either finishes or
+hits something it should not guess about.
 
 It is not meant to be a chat session where you babysit every step. It is closer
 to saying, "Here is the job. Go and do the sensible version of it, but stop if
 you hit a real decision or a safety boundary."
 
-## What Do I Do When I Want Something Done?
+One bit of terminology: the product internally calls a tracked goal a `run`. So if you see a variable or
+database table called `run_id`, read that as the internal name for `Goal ID`.
+
+## How To Get Something Done?
 
 Go to the repository you want changed and run:
 
@@ -35,24 +36,11 @@ The settings page is confusing. Improve the layout, make dangerous actions less
 easy to hit by accident, and keep the existing settings behavior working.
 ```
 
-Then the app plans the work and either starts executing or waits for plan
-approval, depending on the intake mode.
+Then the app plans the goal and either starts executing or waits for plan
+approval, depending on the intake mode. Later, if you want an added feature, you
+usually start a new goal.
 
-## Do I Have To Use Flags?
-
-No. You can just run:
-
-```bash
-agent-loop start
-```
-
-The flags are there when you already know what you want.
-
-Use this when you want the wizard:
-
-```bash
-agent-loop start
-```
+## Other Flags?
 
 Use this when you want to fire off a clear task without prompts:
 
@@ -188,7 +176,7 @@ The reviewer can also force help by returning `block` or `assessment`.
 
 ## When Does The Loop Actually Stop?
 
-The loop stops cleanly when the run reaches one of these states:
+The loop stops cleanly when the goal reaches one of these states:
 
 - `complete`: the work passed task review, feature review, final review, and regression tests
 - `complete_pending_test_review`: the work is otherwise done, but a test baseline migration needs your approval
@@ -204,7 +192,7 @@ later.
 ## What Is `resume` For?
 
 `resume` is not a magic "next step" button that you press after every task. It is
-for recovering or continuing an existing run.
+for recovering or continuing an existing goal.
 
 Use it when:
 
@@ -213,7 +201,7 @@ Use it when:
 - the machine restarted
 - quota was exhausted and you want to continue later
 - credentials were missing, you logged in, and now want to continue
-- the run was left in a runnable waiting state
+- the goal was left in a runnable waiting state
 
 Run:
 
@@ -221,7 +209,7 @@ Run:
 agent-loop resume
 ```
 
-That resumes the latest run.
+That resumes the latest goal.
 
 Or:
 
@@ -229,13 +217,13 @@ Or:
 agent-loop resume 3
 ```
 
-That resumes run `3`.
+That resumes goal `3`.
 
 On resume, the app reconciles interrupted attempts, preserves partial diffs where
 it can, marks interrupted attempts as abandoned, regenerates `plan.md` and
-`progress.md`, then continues planning or execution if the run is runnable.
+`progress.md`, then continues planning or execution if the goal is runnable.
 
-One important caveat: if a run is blocked because a task itself is blocked,
+One important caveat: if a goal is blocked because a task itself is blocked,
 `resume` will not magically invent a safe answer. You need to inspect the plan,
 logs, and blocker first.
 
@@ -243,17 +231,17 @@ logs, and blocker first.
 
 They are database IDs.
 
-The app stores runs, tasks, attempts, and test migrations in `.agent-loop.db`.
+The app stores goals, tasks, attempts, and test migrations in `.agent-loop.db`.
 The numbers let you point at the exact thing you mean.
 
 The common ones are:
 
-- run ID: the whole job, for example `Run ID: 3`
-- task ID: one planned unit of work inside the run
+- goal ID: the whole user goal, for example `Goal ID: 3`
+- task ID: one planned unit of work inside the goal
 - attempt ID: one try at executing a task
 - migration ID: one proposed test baseline change
 
-Most commands default to the latest run, so you often do not need the number:
+Most commands default to the latest goal, so you often do not need the number:
 
 ```bash
 agent-loop status
@@ -356,8 +344,8 @@ edges to keep in mind:
   at-a-time product conversation.
 - UI Lab currently runs the brief-style intake path. It does not yet walk
   through the full set of UI Lab stages described in the spec.
-- `resume` can restart a run from `blocked`, but if the underlying blocked task
-  is still blocked and no other task is runnable, the run will just become
+- `resume` can restart a goal from `blocked`, but if the underlying blocked task
+  is still blocked and no other task is runnable, the goal will just become
   blocked again. The app needs a clearer operator workflow for resolving
   blockers.
 - The statuses include `cancelled`, but there is no obvious `agent-loop cancel`
@@ -370,8 +358,9 @@ edges to keep in mind:
 - The app validates handoff files, but normal product execution does not yet
   generate supervisor/executor handoff documents. Those files are still mainly
   part of our manual development process for building the app.
-- The current CLI is functional but still exposes internal IDs directly. That is
-  accurate and useful, but it is also why the numbers feel confusing at first.
+- The current CLI is moving toward user-facing `Goal ID` language, but some
+  internals and older docs still use `run` because the database table and
+  repository are named that way.
 
 The practical takeaway: you can use it now as a local agent loop, especially for
 small and medium development tasks, but the operator experience still needs a

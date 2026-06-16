@@ -4,9 +4,13 @@ This guide is for running `agent-loop` as a local orchestration tool. It covers
 the normal operator workflow and a few small examples you can run in a real
 repository.
 
-`agent-loop` turns a broad goal into a plan, executes tasks through configured
-agent CLIs, records attempts in SQLite, writes human-readable `plan.md` and
-`progress.md` views, and can resume after interruption.
+`agent-loop` turns one broad user goal into a plan, executes tasks through
+configured agent CLIs, records attempts in SQLite, writes human-readable
+`plan.md` and `progress.md` views, and can resume after interruption.
+
+The public term is `goal`. Internally, the code and database still call the
+tracked execution container a `run`, so `Goal ID` in the CLI maps to the
+internal `run_id`.
 
 ## Before You Run It
 
@@ -75,9 +79,9 @@ regression_test = "pytest tests"
 
 Runtime files are written under the current repository:
 
-- `.agent-loop.db`: run, task, attempt, decision, quota, and migration state
+- `.agent-loop.db`: goal/run, task, attempt, decision, quota, and migration state
 - `plan.md`: current objective, features, tasks, dependencies, and status
-- `progress.md`: current run state, blockers, tests, and next action
+- `progress.md`: current goal state, blockers, tests, and next action
 - `logs/`: provider prompts, stdout/stderr, patches, reviews, and test output
 - `worktrees/`: isolated task worktrees used during execution
 
@@ -126,7 +130,7 @@ agent-loop start \
   --unattended-policy reject
 ```
 
-Inspect the latest run:
+Inspect the latest goal:
 
 ```bash
 agent-loop status
@@ -134,7 +138,7 @@ agent-loop plan
 agent-loop plan --details
 ```
 
-Inspect a specific run:
+Inspect a specific goal:
 
 ```bash
 agent-loop status 3
@@ -166,7 +170,7 @@ stdout for local visibility.
 
 ## Test Migrations
 
-When the agent proposes a test baseline migration, the run can stop in
+When the agent proposes a test baseline migration, the goal can stop in
 `complete_pending_test_review`. Inspect the details first:
 
 ```bash
@@ -180,8 +184,8 @@ agent-loop migration approve 12
 agent-loop migration reject 12
 ```
 
-Approving all pending migrations completes the run. Rejecting a migration blocks
-the run so the change remains auditable.
+Approving all pending migrations completes the goal. Rejecting a migration
+blocks the goal so the change remains auditable.
 
 ## Handoff Validation
 
@@ -273,7 +277,7 @@ agent-loop approve
 
 ### Example 4: Resume After Stopping the Process
 
-Start a run, stop the terminal process with `Ctrl-C`, then resume:
+Start a goal, stop the terminal process with `Ctrl-C`, then resume:
 
 ```bash
 agent-loop status
@@ -282,7 +286,7 @@ agent-loop plan --details
 ```
 
 Resume reconciles interrupted attempts, regenerates `plan.md` and
-`progress.md`, and continues execution when the run is runnable.
+`progress.md`, and continues execution when the goal is runnable.
 
 ### Example 5: Use UI Lab Intake for UI Work
 
@@ -309,7 +313,7 @@ then run:
 agent-loop resume
 ```
 
-If quota is exhausted, inspect the run:
+If quota is exhausted, inspect the goal:
 
 ```bash
 agent-loop status

@@ -19,6 +19,12 @@ from agent_loop.views import render_plan_md, render_progress_md
 from agent_loop.orchestrator import Orchestrator
 from agent_loop.handoffs import validate_handoff
 
+def describe_goal(goal: str, max_length: int = 50) -> str:
+    one_line = " ".join((goal or "").split())
+    if len(one_line) <= max_length:
+        return one_line
+    return one_line[: max_length - 3].rstrip() + "..."
+
 def get_db(config: Config) -> sqlite3.Connection:
     conn = get_connection(config.db_path)
     migrate(conn)
@@ -30,7 +36,7 @@ def get_target_run_id(run_repo: RunRepository, run_id_arg: Optional[int]) -> int
     # Fall back to the most recent run
     runs = run_repo.list_all()
     if not runs:
-        print("Error: No runs found in the database. Please start a run first.", file=sys.stderr)
+        print("Error: No goals found in the database. Please start a goal first.", file=sys.stderr)
         sys.exit(1)
     return runs[0]["id"]
 
@@ -93,7 +99,7 @@ def handle_start(args: argparse.Namespace, config: Config) -> None:
             intake_mode=intake_mode,
             config_snapshot=cfg_snap
         )
-        print(f"Started run {run_id} in {intake_mode} mode (unattended policy: {args.unattended_policy}).")
+        print(f"Started goal {run_id} in {intake_mode} mode (unattended policy: {args.unattended_policy}).")
     else:
         # Interactive Wizard
         print("=== Agent Loop Intake Wizard ===")
@@ -218,7 +224,7 @@ def handle_start(args: argparse.Namespace, config: Config) -> None:
             intake_mode=intake_mode,
             config_snapshot=cfg_snap
         )
-        print(f"\nStarted run {run_id} in {intake_mode} mode.")
+        print(f"\nStarted goal {run_id} in {intake_mode} mode.")
 
     # Render initial Markdown views
     render_plan_md(conn, run_id, Path("plan.md"))
@@ -235,7 +241,7 @@ def handle_start(args: argparse.Namespace, config: Config) -> None:
             orch.run_loop(run_id)
         elif run["status"] == "awaiting_plan_approval":
             if not args.non_interactive:
-                print(f"\nPlan generated for run {run_id} (see plan.md).")
+                print(f"\nPlan generated for goal {run_id} (see plan.md).")
                 approve = input("Do you approve this plan? (yes/no): ").strip().lower()
                 if approve in {"yes", "y"}:
                     run_repo.update_status(run_id, "running")
@@ -270,10 +276,10 @@ def handle_resume(args: argparse.Namespace, config: Config) -> None:
     run_id = get_target_run_id(run_repo, args.run_id)
     run = run_repo.get(run_id)
     if not run:
-        print(f"Error: Run {run_id} not found.", file=sys.stderr)
+        print(f"Error: Goal {run_id} not found.", file=sys.stderr)
         sys.exit(1)
 
-    print(f"Resuming run {run_id}...")
+    print(f"Resuming goal {run_id}...")
 
     # Recovery: Reconcile active attempts. Interrupted 'running' attempts are marked 'abandoned'
     orch = Orchestrator(conn, config)
@@ -311,10 +317,11 @@ def handle_status(args: argparse.Namespace, config: Config) -> None:
     run_id = get_target_run_id(run_repo, args.run_id)
     run = run_repo.get(run_id)
     if not run:
-        print(f"Error: Run {run_id} not found.", file=sys.stderr)
+        print(f"Error: Goal {run_id} not found.", file=sys.stderr)
         sys.exit(1)
 
-    print(f"Run ID: {run['id']}")
+    print(f"Goal ID: {run['id']}")
+    print(f"Goal Description: {describe_goal(run['goal'])}")
     print(f"Goal: {run['goal']}")
     print(f"Intake Mode: {run['intake_mode']}")
     print(f"Status: {run['status']}")
@@ -334,13 +341,13 @@ def handle_plan(args: argparse.Namespace, config: Config) -> None:
     run_id = get_target_run_id(run_repo, args.run_id)
     run = run_repo.get(run_id)
     if not run:
-        print(f"Error: Run {run_id} not found.", file=sys.stderr)
+        print(f"Error: Goal {run_id} not found.", file=sys.stderr)
         sys.exit(1)
 
     features = feature_repo.get_by_run(run_id)
     tasks = task_repo.get_by_run(run_id)
 
-    print(f"Plan for Run {run_id}")
+    print(f"Plan for Goal {run_id}")
     print(f"Objective: {run['goal']}")
     print("-" * 40)
 
@@ -439,15 +446,15 @@ def handle_approve(args: argparse.Namespace, config: Config) -> None:
     run_id = get_target_run_id(run_repo, args.run_id)
     run = run_repo.get(run_id)
     if not run:
-        print(f"Error: Run {run_id} not found.", file=sys.stderr)
+        print(f"Error: Goal {run_id} not found.", file=sys.stderr)
         sys.exit(1)
 
     if run["status"] != "awaiting_plan_approval":
-        print(f"Error: Run {run_id} is in status '{run['status']}', not 'awaiting_plan_approval'. Cannot approve.", file=sys.stderr)
+        print(f"Error: Goal {run_id} is in status '{run['status']}', not 'awaiting_plan_approval'. Cannot approve.", file=sys.stderr)
         sys.exit(1)
 
     run_repo.update_status(run_id, "running")
-    print(f"Plan approved for run {run_id}. Starting execution...")
+    print(f"Plan approved for goal {run_id}. Starting execution...")
 
     # Regenerate markdown views
     render_plan_md(conn, run_id, Path("plan.md"))
@@ -498,10 +505,10 @@ def handle_migration(args: argparse.Namespace, config: Config) -> None:
         if run["status"] == "complete_pending_test_review":
             if has_rejected:
                 run_repo.update_status(run_id, "blocked")
-                print(f"Run {run_id} is now blocked due to rejected migration(s).")
+                print(f"Goal {run_id} is now blocked due to rejected migration(s).")
             elif not has_pending:
                 run_repo.update_status(run_id, "complete")
-                print(f"Run {run_id} completed successfully (all migrations approved).")
+                print(f"Goal {run_id} completed successfully (all migrations approved).")
                 
     elif args.action == "reject":
         migration_repo.update_approval(args.migration_id, "rejected")
@@ -510,7 +517,7 @@ def handle_migration(args: argparse.Namespace, config: Config) -> None:
         run = run_repo.get(run_id)
         if run["status"] in {"complete_pending_test_review", "running", "reviewing"}:
             run_repo.update_status(run_id, "blocked")
-            print(f"Run {run_id} is now blocked due to rejected migration.")
+            print(f"Goal {run_id} is now blocked due to rejected migration.")
             
     # Regenerate markdown views
     render_plan_md(conn, run_id, Path("plan.md"))
@@ -527,28 +534,28 @@ def main() -> None:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     # start
-    start_parser = subparsers.add_parser("start", help="Start a new run")
+    start_parser = subparsers.add_parser("start", help="Start a new goal")
     start_parser.add_argument("--non-interactive", action="store_true", help="Run without wizard prompts")
-    start_parser.add_argument("--goal", type=str, help="Broad goal for the run")
+    start_parser.add_argument("--goal", type=str, help="Broad goal to execute")
     start_parser.add_argument("--intake", choices=["brainstorm", "ui_lab", "autonomous"], help="Intake mode")
     start_parser.add_argument("--unattended-policy", choices=["approve", "reject"], default="approve", help="Unattended policy for plan approval")
 
     # resume
-    resume_parser = subparsers.add_parser("resume", help="Resume an existing run")
-    resume_parser.add_argument("run_id", type=int, nargs="?", help="ID of the run to resume (defaults to last)")
+    resume_parser = subparsers.add_parser("resume", help="Resume an existing goal")
+    resume_parser.add_argument("run_id", metavar="goal_id", type=int, nargs="?", help="Goal ID to resume; internally this is the run ID (defaults to latest)")
 
     # status
-    status_parser = subparsers.add_parser("status", help="Get run status")
-    status_parser.add_argument("run_id", type=int, nargs="?", help="ID of the run (defaults to last)")
+    status_parser = subparsers.add_parser("status", help="Get goal status")
+    status_parser.add_argument("run_id", metavar="goal_id", type=int, nargs="?", help="Goal ID to inspect; internally this is the run ID (defaults to latest)")
 
     # plan
-    plan_parser = subparsers.add_parser("plan", help="Inspect run plan")
-    plan_parser.add_argument("run_id", type=int, nargs="?", help="ID of the run (defaults to last)")
+    plan_parser = subparsers.add_parser("plan", help="Inspect goal plan")
+    plan_parser.add_argument("run_id", metavar="goal_id", type=int, nargs="?", help="Goal ID to inspect; internally this is the run ID (defaults to latest)")
     plan_parser.add_argument("--details", action="store_true", help="Print detailed task and execution metadata")
 
     # approve
     approve_parser = subparsers.add_parser("approve", help="Approve the generated plan to start execution")
-    approve_parser.add_argument("run_id", type=int, nargs="?", help="ID of the run (defaults to last)")
+    approve_parser.add_argument("run_id", metavar="goal_id", type=int, nargs="?", help="Goal ID to approve; internally this is the run ID (defaults to latest)")
 
     # notify
     notify_parser = subparsers.add_parser("notify", help="Notify helpers")

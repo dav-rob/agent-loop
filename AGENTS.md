@@ -6,6 +6,18 @@ Work autonomously from the user's goal until complete, blocked, or unsafe.
 
 Do not stop for conversational input unless a stop condition is hit.
 
+## Product language
+
+Use `goal` for user-facing documentation, CLI help, and explanations. A user
+starts one goal; the agent-loop works that goal until it completes, blocks, or
+needs intervention. Additional requested features are usually started as new
+goals.
+
+The internal implementation currently calls this same execution container a
+`run` (`runs` table, `run_id`, `RunRepository`). Keep internal names stable
+unless doing an explicit schema/API migration. When exposing the identifier to a
+user, prefer `Goal ID` and explain that it is internally the run ID.
+
 ## Files
 
 - `plan.md` = current task breakdown

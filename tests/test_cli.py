@@ -2,7 +2,7 @@ import sys
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 import pytest
-from agent_loop.cli import main
+from agent_loop.cli import main, describe_goal
 from agent_loop.config import Config
 from agent_loop.database import get_connection, migrate
 from agent_loop.repositories import RunRepository, FeatureRepository, TaskRepository, AttemptRepository
@@ -106,6 +106,34 @@ def test_cli_plan_details(clean_workspace, capsys):
     assert "DETAILED METADATA" in captured_details.out
     assert "gpt-5.4-mini" in captured_details.out
     assert "abcd123" in captured_details.out
+
+
+def test_cli_status_uses_goal_language(clean_workspace, capsys):
+    db_path = Path(".agent-loop.db")
+    conn = get_connection(db_path)
+    migrate(conn)
+
+    run_repo = RunRepository(conn)
+    run_id = run_repo.create(
+        "Add CSV export to reports and update the relevant tests for the CLI workflow",
+        "autonomous"
+    )
+    conn.close()
+
+    test_args = ["agent-loop", "status", str(run_id)]
+    with patch.object(sys, "argv", test_args):
+        main()
+
+    captured = capsys.readouterr()
+    assert f"Goal ID: {run_id}" in captured.out
+    assert "Goal Description: Add CSV export to reports and update the releva..." in captured.out
+    assert "Intake Mode: autonomous" in captured.out
+    assert "Status: draft" in captured.out
+
+
+def test_goal_description_truncates_cleanly():
+    assert describe_goal("Short goal") == "Short goal"
+    assert describe_goal("A" * 60) == ("A" * 47) + "..."
 
 def test_cli_resume(clean_workspace):
     db_path = Path(".agent-loop.db")

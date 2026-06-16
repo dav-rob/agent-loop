@@ -12,19 +12,23 @@ pip install -e .
 
 This registers the `agent-loop` CLI command.
 
+User-facing commands and docs refer to a tracked request as a goal. Internally,
+the SQLite schema and Python repositories still call the same object a run, so
+`Goal ID` maps to the internal `run_id`.
+
 ## Quick Start
 
-### 1. Start a run (interactive mode)
+### 1. Start a goal (interactive mode)
 ```bash
 agent-loop start
 ```
 
-### 2. Start a run (non-interactive mode)
+### 2. Start a goal (non-interactive mode)
 ```bash
 agent-loop start --non-interactive --goal "Implement standard login endpoints using oauth2 flow"
 ```
 
-### 3. Check status of the latest run
+### 3. Check status of the latest goal
 ```bash
 agent-loop status
 ```
@@ -39,7 +43,7 @@ agent-loop plan
 agent-loop plan --details
 ```
 
-### 6. Resume an interrupted run
+### 6. Resume an interrupted goal
 ```bash
 agent-loop resume
 ```

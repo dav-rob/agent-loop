@@ -16,6 +16,8 @@ public orchestration flow through `plan_run` and `run_loop`.
 Delivery documentation has been organized under `docs/delivery/` with a
 technical overview and a plain-English operator guide. The plain-English guide
 now includes the orchestrator/planner/executor/reviewer mechanism.
+User-facing terminology is being aligned around `Goal ID`, while internal code
+continues to use `run_id` and the `runs` table.
 
 ## Next step
 
@@ -23,6 +25,7 @@ No further executor handoff is required for this request.
 
 ## Tests run
 
+- Goal terminology update: `tests/test_cli.py` passed in 0.30s; CLI help verified for goal wording.
 - Delivery documentation update: tests not run; CLI help verified for documented command groups.
 - Final targeted tests: 3 passed in 0.25s.
 - Real Codex parser smoke: 1 passed in 10.58s.
