@@ -220,8 +220,9 @@ agent-loop resume 3
 That resumes goal `3`.
 
 On resume, the app reconciles interrupted attempts, preserves partial diffs where
-it can, marks interrupted attempts as abandoned, regenerates `plan.md` and
-`progress.md`, then continues planning or execution if the goal is runnable.
+it can, marks interrupted attempts as abandoned, regenerates
+`.agent-loop/plan.md` and `.agent-loop/progress.md`, then continues planning or
+execution if the goal is runnable.
 
 One important caveat: if a goal is blocked because a task itself is blocked,
 `resume` will not magically invent a safe answer. You need to inspect the plan,
@@ -231,8 +232,9 @@ logs, and blocker first.
 
 They are database IDs.
 
-The app stores goals, tasks, attempts, and test migrations in `.agent-loop.db`.
-The numbers let you point at the exact thing you mean.
+The app stores goals, tasks, attempts, and test migrations in
+`.agent-loop/agent-loop.db`. The numbers let you point at the exact thing you
+mean.
 
 The common ones are:
 
@@ -249,7 +251,7 @@ agent-loop plan --details
 agent-loop resume
 ```
 
-Use the number when you want an older run:
+Use the number when you want an older goal:
 
 ```bash
 agent-loop status 2
@@ -281,9 +283,9 @@ agent-loop plan --details
 
 Also look at:
 
-- `progress.md` for the current state and next action
-- `plan.md` for the human-readable task plan
-- `logs/` for provider output, test output, and review evidence
+- `.agent-loop/progress.md` for the current state and next action
+- `.agent-loop/plan.md` for the human-readable task plan
+- `.agent-loop/logs/` for provider output, test output, and review evidence
 - `git log --oneline` for task-sized commits
 
 If something failed, `agent-loop plan --details` is usually the best first stop
@@ -311,7 +313,7 @@ For a job where I want to approve the plan:
 agent-loop start --goal "Add webhook retry support"
 ```
 
-Choose brainstorm mode, read `plan.md`, then approve if it looks sane.
+Choose brainstorm mode, read `.agent-loop/plan.md`, then approve if it looks sane.
 
 For UI work:
 

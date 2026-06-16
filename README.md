@@ -16,6 +16,10 @@ User-facing commands and docs refer to a tracked request as a goal. Internally,
 the SQLite schema and Python repositories still call the same object a run, so
 `Goal ID` maps to the internal `run_id`.
 
+Runtime state is kept under `.agent-loop/` in the target repository and is
+ignored by Git by default. Keep `agent-loop.toml` at the repository root if you
+want committed project configuration.
+
 ## Quick Start
 
 ### 1. Start a goal (interactive mode)
@@ -65,8 +69,10 @@ Settings can be customized in `agent-loop.toml` in the project root:
 
 ```toml
 max_workers = 4
-db_path = ".agent-loop.db"
-logs_dir = "logs"
+state_dir = ".agent-loop"
+db_path = ".agent-loop/agent-loop.db"
+logs_dir = ".agent-loop/logs"
+worktrees_dir = ".agent-loop/worktrees"
 
 [routes]
 planning = [

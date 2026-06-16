@@ -74,20 +74,20 @@ Database migrations must be versioned and transactional.
 
 ### Human-Readable Views
 
-`plan.md` summarizes the objective, acceptance criteria, features, tasks, dependencies, risk, and progress. It must include this note near the top:
+`.agent-loop/plan.md` summarizes the objective, acceptance criteria, features, tasks, dependencies, risk, and progress. It must include this note near the top:
 
 > This file is a human-readable summary. Full task metadata, dependencies, attempts, and evidence are stored in the agent-loop SQLite database. Run `agent-loop plan --details` to inspect them.
 
-`progress.md` summarizes current work, completed outcomes, active blockers, test results, provider state, and the next expected action.
+`.agent-loop/progress.md` summarizes current work, completed outcomes, active blockers, test results, provider state, and the next expected action.
 
-`learning.md` remains an optional curated record of reusable project facts. It is not a catch-all transcript and is not authoritative state.
+`.agent-loop/learning.md` remains an optional curated record of reusable project facts. It is not a catch-all transcript and is not authoritative state.
 
 ### Logs
 
 SQLite stores searchable log metadata and concise summaries. Raw, append-only artifacts live under:
 
 ```text
-logs/<run-id>/<task-id>/<attempt-id>/
+.agent-loop/logs/<run-id>/<task-id>/<attempt-id>/
 ```
 
 Artifacts can include:
@@ -101,7 +101,7 @@ Artifacts can include:
 - handover records
 - webhook delivery attempts
 
-Runtime logs and the SQLite database are ignored by Git by default. Secrets and sensitive environment values must be redacted or omitted before writing any artifact.
+Runtime logs, isolated worktrees, generated Markdown views, and the SQLite database live under `.agent-loop/` and are ignored by Git by default. Secrets and sensitive environment values must be redacted or omitted before writing any artifact.
 
 ### Provider Adapters
 
@@ -134,7 +134,7 @@ The planner creates:
 - execution role and risk per task
 - required tests and review gates
 
-Planning detail should be sufficient for execution and verification without becoming an implementation diary. The full graph and metadata live in SQLite; `plan.md` remains a compact summary.
+Planning detail should be sufficient for execution and verification without becoming an implementation diary. The full graph and metadata live in SQLite; `.agent-loop/plan.md` remains a compact summary.
 
 Risk is assigned to features and tasks, never to the entire plan. High-risk categories include architecture, security, authentication, payments, deployment, destructive operations, ambiguous product behavior, protected data, and unusually broad changes.
 
@@ -346,7 +346,7 @@ The first complete implementation must demonstrate that it can:
 
 - start an interactive or non-interactive run
 - create a feature and task DAG from a broad goal
-- render concise `plan.md` and `progress.md` views from SQLite
+- render concise `.agent-loop/plan.md` and `.agent-loop/progress.md` views from SQLite
 - inspect full plan details through the CLI
 - route planning and implementation through configured Codex and `agy` adapters
 - fail over to the next route only through a fresh task attempt

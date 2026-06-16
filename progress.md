@@ -18,6 +18,8 @@ technical overview and a plain-English operator guide. The plain-English guide
 now includes the orchestrator/planner/executor/reviewer mechanism.
 User-facing terminology is being aligned around `Goal ID`, while internal code
 continues to use `run_id` and the `runs` table.
+Runtime state is being moved into `.agent-loop/` for target repositories while
+keeping root `agent-loop.toml` as optional project config.
 
 ## Next step
 
@@ -26,6 +28,7 @@ No further executor handoff is required for this request.
 ## Tests run
 
 - Goal terminology update: `tests/test_cli.py` passed in 0.30s; CLI help verified for goal wording.
+- `.agent-loop/` workspace update: targeted CLI/orchestrator path tests passed in 0.95s; view rendering tests passed in 0.16s; full suite passed with 84 tests in 26.34s.
 - Delivery documentation update: tests not run; CLI help verified for documented command groups.
 - Final targeted tests: 3 passed in 0.25s.
 - Real Codex parser smoke: 1 passed in 10.58s.

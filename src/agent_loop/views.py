@@ -70,6 +70,7 @@ def render_plan_md(conn: sqlite3.Connection, run_id: int, dest_path: Path) -> No
                         lines.append(f"  - **Verification:** `{task['required_verification']}`")
             lines.append("")
 
+    dest_path.parent.mkdir(parents=True, exist_ok=True)
     dest_path.write_text("\n".join(lines) + "\n")
 
 
@@ -225,4 +226,5 @@ def render_progress_md(conn: sqlite3.Connection, run_id: int, dest_path: Path) -
         
     lines.append(f"LOOP_STATUS: {loop_status}")
 
+    dest_path.parent.mkdir(parents=True, exist_ok=True)
     dest_path.write_text("\n".join(lines) + "\n")

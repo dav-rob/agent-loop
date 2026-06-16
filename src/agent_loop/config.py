@@ -4,8 +4,13 @@ import tomllib
 from typing import Any, Dict, List
 
 DEFAULT_CONFIG = {
-    "db_path": ".agent-loop.db",
-    "logs_dir": "logs",
+    "state_dir": ".agent-loop",
+    "db_path": None,
+    "logs_dir": None,
+    "worktrees_dir": None,
+    "plan_path": None,
+    "progress_path": None,
+    "learning_path": None,
     "max_workers": 4,
     "webhook_env_var": "AGENT_LOOP_WEBHOOK_URL",
     "execution_mode": "trusted-host",
@@ -35,12 +40,42 @@ class Config:
         self.data = data or DEFAULT_CONFIG.copy()
 
     @property
+    def state_dir(self) -> Path:
+        return Path(self.data.get("state_dir") or DEFAULT_CONFIG["state_dir"]).resolve()
+
+    @property
     def db_path(self) -> Path:
-        return Path(self.data.get("db_path", DEFAULT_CONFIG["db_path"])).resolve()
+        val = self.data.get("db_path")
+        if val:
+            if str(val) == ":memory:":
+                return Path(":memory:")
+            return Path(val).resolve()
+        return (self.state_dir / "agent-loop.db").resolve()
 
     @property
     def logs_dir(self) -> Path:
-        return Path(self.data.get("logs_dir", DEFAULT_CONFIG["logs_dir"])).resolve()
+        val = self.data.get("logs_dir")
+        return Path(val).resolve() if val else (self.state_dir / "logs").resolve()
+
+    @property
+    def worktrees_dir(self) -> Path:
+        val = self.data.get("worktrees_dir")
+        return Path(val).resolve() if val else (self.state_dir / "worktrees").resolve()
+
+    @property
+    def plan_path(self) -> Path:
+        val = self.data.get("plan_path")
+        return Path(val).resolve() if val else (self.state_dir / "plan.md").resolve()
+
+    @property
+    def progress_path(self) -> Path:
+        val = self.data.get("progress_path")
+        return Path(val).resolve() if val else (self.state_dir / "progress.md").resolve()
+
+    @property
+    def learning_path(self) -> Path:
+        val = self.data.get("learning_path")
+        return Path(val).resolve() if val else (self.state_dir / "learning.md").resolve()
 
     @property
     def max_workers(self) -> int:

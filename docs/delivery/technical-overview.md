@@ -6,7 +6,8 @@ repository.
 
 `agent-loop` turns one broad user goal into a plan, executes tasks through
 configured agent CLIs, records attempts in SQLite, writes human-readable
-`plan.md` and `progress.md` views, and can resume after interruption.
+`.agent-loop/plan.md` and `.agent-loop/progress.md` views, and can resume after
+interruption.
 
 The public term is `goal`. Internally, the code and database still call the
 tracked execution container a `run`, so `Goal ID` in the CLI maps to the
@@ -48,8 +49,10 @@ enough:
 
 ```toml
 max_workers = 4
-db_path = ".agent-loop.db"
-logs_dir = "logs"
+state_dir = ".agent-loop"
+db_path = ".agent-loop/agent-loop.db"
+logs_dir = ".agent-loop/logs"
+worktrees_dir = ".agent-loop/worktrees"
 webhook_env_var = "AGENT_LOOP_WEBHOOK_URL"
 
 # Optional binary overrides.
@@ -79,11 +82,13 @@ regression_test = "pytest tests"
 
 Runtime files are written under the current repository:
 
-- `.agent-loop.db`: goal/run, task, attempt, decision, quota, and migration state
-- `plan.md`: current objective, features, tasks, dependencies, and status
-- `progress.md`: current goal state, blockers, tests, and next action
-- `logs/`: provider prompts, stdout/stderr, patches, reviews, and test output
-- `worktrees/`: isolated task worktrees used during execution
+- `.agent-loop/agent-loop.db`: goal/run, task, attempt, decision, quota, and migration state
+- `.agent-loop/plan.md`: current objective, features, tasks, dependencies, and status
+- `.agent-loop/progress.md`: current goal state, blockers, tests, and next action
+- `.agent-loop/learning.md`: durable notes for this repository's goals
+- `.agent-loop/logs/`: provider prompts, stdout/stderr, patches, reviews, and test output
+- `.agent-loop/worktrees/`: isolated task worktrees used during execution
+- `.agent-loop/goals/`, `.agent-loop/plans/`, `.agent-loop/specs/`: structured workspace folders for future goal-specific artifacts
 
 ## Basic Workflow
 
@@ -285,8 +290,8 @@ agent-loop resume
 agent-loop plan --details
 ```
 
-Resume reconciles interrupted attempts, regenerates `plan.md` and
-`progress.md`, and continues execution when the goal is runnable.
+Resume reconciles interrupted attempts, regenerates `.agent-loop/plan.md` and
+`.agent-loop/progress.md`, and continues execution when the goal is runnable.
 
 ### Example 5: Use UI Lab Intake for UI Work
 

@@ -25,7 +25,22 @@ def describe_goal(goal: str, max_length: int = 50) -> str:
         return one_line
     return one_line[: max_length - 3].rstrip() + "..."
 
+def ensure_workspace(config: Config) -> None:
+    config.state_dir.mkdir(parents=True, exist_ok=True)
+    config.logs_dir.mkdir(parents=True, exist_ok=True)
+    config.worktrees_dir.mkdir(parents=True, exist_ok=True)
+    (config.state_dir / "goals").mkdir(parents=True, exist_ok=True)
+    (config.state_dir / "plans").mkdir(parents=True, exist_ok=True)
+    (config.state_dir / "specs").mkdir(parents=True, exist_ok=True)
+    if not config.learning_path.exists():
+        config.learning_path.write_text(
+            "# learning.md\n\n"
+            "Use this file to record durable facts for this repository's agent-loop goals.\n",
+            encoding="utf-8"
+        )
+
 def get_db(config: Config) -> sqlite3.Connection:
+    ensure_workspace(config)
     conn = get_connection(config.db_path)
     migrate(conn)
     return conn
@@ -227,8 +242,8 @@ def handle_start(args: argparse.Namespace, config: Config) -> None:
         print(f"\nStarted goal {run_id} in {intake_mode} mode.")
 
     # Render initial Markdown views
-    render_plan_md(conn, run_id, Path("plan.md"))
-    render_progress_md(conn, run_id, Path("progress.md"))
+    render_plan_md(conn, run_id, config.plan_path)
+    render_progress_md(conn, run_id, config.progress_path)
 
     # Instantiate Orchestrator and execute planning
     orch = Orchestrator(conn, config)
@@ -241,13 +256,13 @@ def handle_start(args: argparse.Namespace, config: Config) -> None:
             orch.run_loop(run_id)
         elif run["status"] == "awaiting_plan_approval":
             if not args.non_interactive:
-                print(f"\nPlan generated for goal {run_id} (see plan.md).")
+                print(f"\nPlan generated for goal {run_id} (see {config.plan_path}).")
                 approve = input("Do you approve this plan? (yes/no): ").strip().lower()
                 if approve in {"yes", "y"}:
                     run_repo.update_status(run_id, "running")
                     # Regenerate markdown views
-                    render_plan_md(conn, run_id, Path("plan.md"))
-                    render_progress_md(conn, run_id, Path("progress.md"))
+                    render_plan_md(conn, run_id, config.plan_path)
+                    render_progress_md(conn, run_id, config.progress_path)
                     print("Plan approved! Executing tasks...")
                     orch.run_loop(run_id)
                 else:
@@ -257,8 +272,8 @@ def handle_start(args: argparse.Namespace, config: Config) -> None:
                 print(f"Unattended policy is '{policy}'.")
                 if policy == "approve":
                     run_repo.update_status(run_id, "running")
-                    render_plan_md(conn, run_id, Path("plan.md"))
-                    render_progress_md(conn, run_id, Path("progress.md"))
+                    render_plan_md(conn, run_id, config.plan_path)
+                    render_progress_md(conn, run_id, config.progress_path)
                     print("Plan automatically approved via unattended policy. Executing tasks...")
                     orch.run_loop(run_id)
                 else:
@@ -295,8 +310,8 @@ def handle_resume(args: argparse.Namespace, config: Config) -> None:
             run_repo.update_status(run_id, "running")
 
     # Regenerate markdown views
-    render_plan_md(conn, run_id, Path("plan.md"))
-    render_progress_md(conn, run_id, Path("progress.md"))
+    render_plan_md(conn, run_id, config.plan_path)
+    render_progress_md(conn, run_id, config.progress_path)
     print("Markdown views regenerated.")
 
     # Actually resume orchestration
@@ -457,8 +472,8 @@ def handle_approve(args: argparse.Namespace, config: Config) -> None:
     print(f"Plan approved for goal {run_id}. Starting execution...")
 
     # Regenerate markdown views
-    render_plan_md(conn, run_id, Path("plan.md"))
-    render_progress_md(conn, run_id, Path("progress.md"))
+    render_plan_md(conn, run_id, config.plan_path)
+    render_progress_md(conn, run_id, config.progress_path)
 
     orch = Orchestrator(conn, config)
     orch.run_loop(run_id)
@@ -520,8 +535,8 @@ def handle_migration(args: argparse.Namespace, config: Config) -> None:
             print(f"Goal {run_id} is now blocked due to rejected migration.")
             
     # Regenerate markdown views
-    render_plan_md(conn, run_id, Path("plan.md"))
-    render_progress_md(conn, run_id, Path("progress.md"))
+    render_plan_md(conn, run_id, config.plan_path)
+    render_progress_md(conn, run_id, config.progress_path)
     conn.close()
 
 def main() -> None:

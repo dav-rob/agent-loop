@@ -13,6 +13,12 @@ def clean_workspace(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     return tmp_path
 
+def default_state_dir() -> Path:
+    return Path(".agent-loop")
+
+def default_db_path() -> Path:
+    return default_state_dir() / "agent-loop.db"
+
 def test_cli_start_non_interactive(clean_workspace):
     # Test starting a run in non-interactive mode
     test_args = [
@@ -25,7 +31,7 @@ def test_cli_start_non_interactive(clean_workspace):
     
     # Mock planning to update database state successfully without running adapters
     def mock_plan_run(run_id):
-        db_path = Path(".agent-loop.db")
+        db_path = default_db_path()
         conn = get_connection(db_path)
         RunRepository(conn).update_status(run_id, "planning")
         RunRepository(conn).update_status(run_id, "running")
@@ -44,8 +50,16 @@ def test_cli_start_non_interactive(clean_workspace):
         mock_orch.run_loop.assert_called_once()
 
     # Verify database exists and run is created
-    db_path = Path(".agent-loop.db")
+    state_dir = default_state_dir()
+    db_path = default_db_path()
+    assert state_dir.is_dir()
     assert db_path.exists()
+    assert (state_dir / "logs").is_dir()
+    assert (state_dir / "worktrees").is_dir()
+    assert (state_dir / "goals").is_dir()
+    assert (state_dir / "plans").is_dir()
+    assert (state_dir / "specs").is_dir()
+    assert (state_dir / "learning.md").exists()
 
     conn = get_connection(db_path)
     run_repo = RunRepository(conn)
@@ -57,12 +71,15 @@ def test_cli_start_non_interactive(clean_workspace):
     conn.close()
 
     # Verify views rendered
-    assert Path("plan.md").exists()
-    assert Path("progress.md").exists()
+    assert (state_dir / "plan.md").exists()
+    assert (state_dir / "progress.md").exists()
+    assert not Path(".agent-loop.db").exists()
+    assert not Path("plan.md").exists()
+    assert not Path("progress.md").exists()
 
 def test_cli_plan_details(clean_workspace, capsys):
     # Setup test run in db
-    db_path = Path(".agent-loop.db")
+    db_path = default_db_path()
     conn = get_connection(db_path)
     migrate(conn)
 
@@ -109,7 +126,7 @@ def test_cli_plan_details(clean_workspace, capsys):
 
 
 def test_cli_status_uses_goal_language(clean_workspace, capsys):
-    db_path = Path(".agent-loop.db")
+    db_path = default_db_path()
     conn = get_connection(db_path)
     migrate(conn)
 
@@ -136,7 +153,7 @@ def test_goal_description_truncates_cleanly():
     assert describe_goal("A" * 60) == ("A" * 47) + "..."
 
 def test_cli_resume(clean_workspace):
-    db_path = Path(".agent-loop.db")
+    db_path = default_db_path()
     conn = get_connection(db_path)
     migrate(conn)
 
@@ -195,7 +212,7 @@ def test_cli_intake_and_approval(clean_workspace):
     input_generator = (val for val in user_inputs)
 
     def mock_plan_run(run_id):
-        db_path = Path(".agent-loop.db")
+        db_path = default_db_path()
         conn = get_connection(db_path)
         RunRepository(conn).update_status(run_id, "planning")
         RunRepository(conn).update_status(run_id, "awaiting_plan_approval")
@@ -240,7 +257,7 @@ def test_cli_intake_and_approval(clean_workspace):
             mock_orch.run_loop.assert_called_once()
 
     # Verify db status and goal refinement
-    db_path = Path(".agent-loop.db")
+    db_path = default_db_path()
     conn = get_connection(db_path)
     run_repo = RunRepository(conn)
     runs = run_repo.list_all()
@@ -254,7 +271,7 @@ def test_cli_intake_and_approval(clean_workspace):
 
 def test_cli_approve_command(clean_workspace):
     # Test the standalone approve subcommand
-    db_path = Path(".agent-loop.db")
+    db_path = default_db_path()
     conn = get_connection(db_path)
     migrate(conn)
     run_repo = RunRepository(conn)

@@ -691,7 +691,7 @@ def test_ui_lab_brief_workflow_paths(tmp_path, monkeypatch):
             
         mock_adapter_instance.run_attempt.assert_called_once()
         
-    db_path = Path(".agent-loop.db")
+    db_path = Path(".agent-loop") / "agent-loop.db"
     conn = get_connection(db_path)
     run_repo = RunRepository(conn)
     runs = run_repo.list_all()
@@ -1720,7 +1720,6 @@ def test_genuine_lifecycle_via_run_loop(db_conn, tmp_path, monkeypatch):
     test_runs = orch.test_run_repo.get_by_run(run_id)
     assert any(tr["exit_status"] == 0 for tr in test_runs), \
         "Regression test must have passed (exit_status=0)"
-
 
 
 

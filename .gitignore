@@ -1,4 +1,5 @@
 # SQLite Databases and WAL files
+.agent-loop/
 .agent-loop.db
 .agent-loop.db-wal
 .agent-loop.db-shm

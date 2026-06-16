@@ -25,6 +25,11 @@ user, prefer `Goal ID` and explain that it is internally the run ID.
 - `learning.md` = durable project knowledge
 - `skills/` = reusable methods and workflows
 
+Product runtime note: when `agent-loop` is used in a target repository, it
+stores its own state under that repository's `.agent-loop/` directory. The
+current root-level `plan.md`, `progress.md`, and `learning.md` files are the
+manual development loop files for this repository.
+
 ## Work loop
 
 Repeat:

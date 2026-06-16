@@ -6,7 +6,7 @@ Use this file to record learnings, so that agents do not have to repeat work alr
 
 - All commits must be fine-grained commits so that the purpose of each change can be tracked easily.
 - Schema is transactionally versioned and stored in SQLite.
-- Markdown views (`plan.md` and `progress.md`) are generated directly from DB state.
+- Markdown views are generated directly from DB state. Product runtime views live under `.agent-loop/`; this repository also has root manual-loop `plan.md` and `progress.md` files.
 - `agy` CLI requires passing `stdin=subprocess.DEVNULL` to run non-interactively without hanging.
 - Codex CLI supports `--json` output and structured schema constraints via `--output-schema`.
 - Transactional DDL in Python's `sqlite3` requires setting `isolation_level = None` temporarily to prevent Python's wrapper from executing implicit commits before DDL statements.
@@ -17,6 +17,7 @@ Use this file to record learnings, so that agents do not have to repeat work alr
 - Handoff requirements use stable IDs; executor responses must account for each ID and pass `agent-loop handoff validate` before claiming completion.
 - A requirement may be explicitly `shelved` with a reason, but shelved work prevents an overall `complete` status.
 - User-facing language should call the top-level tracked request a goal. Internally this is still called a run (`runs` table, `run_id`, `RunRepository`), so `Goal ID` maps to the internal run ID.
+- Agent-loop runtime state for target repositories belongs under `.agent-loop/` (`agent-loop.db`, generated views, learning notes, logs, worktrees, goal/plan/spec folders). Root `agent-loop.toml` remains the optional committed project config.
 
 ## Useful commands
 

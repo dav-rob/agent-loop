@@ -96,8 +96,8 @@ class Orchestrator:
         import datetime
         self.conn = conn
         self.config = config
-        self.plan_path = plan_path or Path("plan.md")
-        self.progress_path = progress_path or Path("progress.md")
+        self.plan_path = plan_path or config.plan_path
+        self.progress_path = progress_path or config.progress_path
         self.git_lock = git_lock or threading.RLock()
         self.db_lock = db_lock or threading.RLock()
         self.get_now = get_now or (lambda: datetime.datetime.now(datetime.timezone.utc))
@@ -731,7 +731,7 @@ Return ONLY a valid JSON object matching the requested schema. Do not include ma
                 logs_path=None
             )
 
-        worktree_dir = (Path("worktrees") / f"run-{run_id}-task-{task_id}-attempt-{attempt_id}").resolve()
+        worktree_dir = (self.config.worktrees_dir / f"run-{run_id}-task-{task_id}-attempt-{attempt_id}").resolve()
         logs_dir = (self.config.logs_dir / str(run_id) / str(task_id) / str(attempt_id)).resolve()
         logs_dir.mkdir(parents=True, exist_ok=True)
 

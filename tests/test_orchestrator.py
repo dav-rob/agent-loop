@@ -503,6 +503,58 @@ def test_interrupted_attempt_recovery(db_conn, tmp_path):
     # Task should now be blocked!
     assert task_repo.get(task_id)["status"] == "blocked"
 
+
+def test_execute_task_uses_agent_loop_worktrees_by_default(db_conn, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    config = Config({
+        "db_path": ":memory:",
+        "routes": {
+            "implementation": [{"provider": "codex", "model": "gpt-5.4-mini"}],
+            "planning": [{"provider": "codex", "model": "gpt-5.5"}]
+        },
+        "commands": {
+            "narrow_test": "",
+            "regression_test": ""
+        }
+    })
+    orch = Orchestrator(db_conn, config)
+
+    run_repo = RunRepository(db_conn)
+    feat_repo = FeatureRepository(db_conn)
+    task_repo = TaskRepository(db_conn)
+
+    run_id = run_repo.create("Worktree placement test", "autonomous")
+    run_repo.update_status(run_id, "planning")
+    run_repo.update_status(run_id, "running")
+    feat_id = feat_repo.create(run_id, "Feature 1", "low")
+    task_id = task_repo.create(run_id, feat_id, "Task 1", "implementation", "low")
+    task_repo.update_status(task_id, "ready")
+    task = task_repo.get(task_id)
+
+    created_worktrees = []
+
+    def fake_create_worktree(repo_path, worktree_path, branch_name):
+        created_worktrees.append(Path(worktree_path))
+
+    mock_adapter = MagicMock()
+    mock_adapter.run_attempt.side_effect = [
+        AttemptResult(success=True, exit_code=0, output="task done", error=""),
+        AttemptResult(success=True, exit_code=0, output='{"decision": "approved", "findings": "ok"}', error="")
+    ]
+
+    monkeypatch.setattr("agent_loop.orchestrator.create_worktree", fake_create_worktree)
+    monkeypatch.setattr("agent_loop.orchestrator.commit_changes", lambda worktree_dir, message: "abc123")
+    monkeypatch.setattr("agent_loop.orchestrator.merge_branch", lambda repo_path, source_branch, target_branch: (True, []))
+    monkeypatch.setattr("agent_loop.orchestrator.remove_worktree", lambda repo_path, worktree_path: None)
+    monkeypatch.setattr("agent_loop.orchestrator.get_adapter", lambda provider, config: mock_adapter)
+
+    assert orch._execute_task_impl(run_id, task) is True
+
+    assert created_worktrees == [
+        tmp_path / ".agent-loop" / "worktrees" / f"run-{run_id}-task-{task_id}-attempt-1"
+    ]
+
+
 def test_merge_conflict_integration_lifecycle(db_conn, tmp_path, monkeypatch):
     mock_create_wt = MagicMock()
     mock_commit = MagicMock(return_value="mock_sha_123")
@@ -753,7 +805,6 @@ def test_preserve_partial_work_on_recovery(db_conn, tmp_path, monkeypatch):
     patch_file = Path(attempt["patch_path"])
     assert patch_file.exists()
     assert patch_file.read_text() == dummy_diff
-
 
 
 
