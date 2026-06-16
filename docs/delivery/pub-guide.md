@@ -83,7 +83,7 @@ agent-loop plan --details
 agent-loop approve
 ```
 
-## Architecture In A Nutshell
+## What Happens Under The Hood
 
 ### How It Works
 
