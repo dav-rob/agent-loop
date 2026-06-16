@@ -83,95 +83,108 @@ agent-loop plan --details
 agent-loop approve
 ```
 
-## Will It Keep Asking Me Questions?
+## Architecture In A Nutshell
 
-Mostly, no.
+### How It Works
 
-At the beginning, interactive mode can ask:
+The orchestrator calls the planner to create the whole feature/task graph up
+front and stores it in SQLite. Then each executor attempt gets one task.
 
-- what goal you want
-- whether you want normal brainstorm, UI Lab, or autonomous mode
-- any extra preferences, users, or technical constraints
-- UI Lab questions if the goal is clearly UI work
-- whether you approve the generated plan
+One detail to be precise about: the planner runs before plan approval. Approval
+does not create the plan; approval decides whether the already-created plan is
+allowed to start execution.
 
-Once execution starts, the app tries to answer ordinary engineering questions
-itself. It records those decisions in the database so you can inspect them with:
+The orchestrator's scheduler may run several independent tasks at the same time,
+up to `max_workers`, but that means several separate executor attempts, not one
+executor receiving the whole plan.
 
-```bash
-agent-loop plan --details
+A task is runnable when:
+
+- its dependencies are complete
+- its status is `ready`
+- it does not overlap active task file scope
+- a suitable model route is available
+
+The executor prompt currently contains the goal, task name, required
+verification, task scope, and previous reviewer rejection if there was one. It is
+not a conversational handoff.
+
+### Process Details
+
+The orchestrator is the traffic controller. It calls different agent CLIs for
+different jobs, for example "planner", "executor", and "reviewer", stores their
+outputs in SQLite, logs, and Git, and decides what happens next.
+
+The mechanism is basically:
+
+```text
+plan created and approved
+  -> tasks stored in SQLite
+  -> scheduler picks ready task(s)
+  -> executor agent gets one task prompt in an isolated worktree
+  -> executor exits with files changed / logs / success or failure
+  -> orchestrator runs verification
+  -> orchestrator commits the task work
+  -> reviewer agent gets the diff
+  -> reviewer returns JSON decision
+  -> orchestrator updates SQLite and either continues, retries, creates follow-up, or stops
 ```
 
-The app should stop instead of guessing when the issue is genuinely unsafe or
-requires your call. Typical examples:
+So the executor does not "reply to the reviewer" directly. The executor replies
+to the orchestrator by finishing its CLI run. The reviewer then reviews the
+resulting commit/diff.
 
-- credentials are missing or expired
-- all useful model routes are unavailable
-- a reviewer blocks the work
-- a feature or final review rejects the result
-- the same task fails too many times
-- a test baseline change needs approval
-- a destructive or ambiguous product decision would be needed
+### Executor-Reviewer Process
 
-So the intended rhythm is not "answer questions every five minutes." It is more:
-kick it off, check `progress.md` or `agent-loop status`, and only intervene when
-it reaches a real stop condition.
+The orchestrator automatically sends work to review after this sequence:
 
-## What Happens After The Planner, Executor, And Reviewer?
+```text
+executor run succeeds
+verification command passes
+orchestrator commits the work
+orchestrator sends the commit diff to reviewer
+```
 
-In the app itself, these are not separate manual handoff files.
+The orchestrator asks the reviewer for a JSON response:
 
-The planner writes a task graph into SQLite. The executor runs task attempts in
-isolated Git worktrees. The reviewer inspects task diffs, feature completion,
-and the final result. All of that is part of one loop.
+```json
+{
+  "decision": "approved",
+  "findings": "..."
+}
+```
 
-If the reviewer approves a task, the app merges the task commit and continues.
+Allowed decisions are:
 
-If the reviewer says "this needs a follow-up", the app creates a follow-up task
-and continues. You do not need to restart it.
+- `approved`: merge task commit and mark task complete
+- `rejected`: retry the task if attempts remain; block after too many attempts
+- `follow_up`: merge the useful work, create a dependent follow-up task, continue
+- `assessment`: block the original task and create a high-reasoning planning/assessment task
+- `block`: stop this task because it hit a real stop condition
 
-If there is a merge conflict, the app creates an integration task and continues
-if it can.
+The `assessment` path is worth spelling out: the original task is blocked while
+the assessment task is created. If the assessment is approved, the original task
+can be put back to `ready` and retried with that extra reasoning recorded.
 
-If the reviewer asks for architectural assessment, the current implementation
-creates a high-reasoning planning task. It can continue if there is still runnable
-work.
+The executor/adapters can effectively signal:
 
-If the reviewer blocks the task and there is no other runnable work, the run
-becomes `blocked`. That is when you inspect the details and decide what to do.
+- success
+- normal failure
+- quota exhausted
+- authentication required
+- transient provider failure
+- unavailable/incompatible route
 
-The handoff markdown files under `docs/handoffs/` are for our current manual
-supervisor/executor development process around this project. The product has a
-handoff validator, but normal product execution does not mean you manually create
-those files after every task.
+The orchestrator then decides:
 
-## Does The App End When A Reviewer Gives The Executor More Work?
+- retry the same task
+- try another route
+- wait for quota
+- block for missing credentials
+- preserve partial diff/logs
+- mark the task blocked after repeated failure
 
-No, not for normal follow-up work.
-
-If the reviewer creates a follow-up task, the app adds that task to the same run
-and keeps going. You do not run `resume` just because a follow-up task was
-created.
-
-You only need to intervene if the run reaches a stop state like `blocked`,
-`failed`, or `complete_pending_test_review`, or if the process itself stopped.
-
-## Does The App End When The Executor Finishes?
-
-Not immediately.
-
-After an executor finishes a task, the app still has to:
-
-1. run the task verification command
-2. commit the task-sized change
-3. run task review
-4. merge the task if review passes
-5. run feature review when all tasks in a feature are complete
-6. run final review when all features are complete
-7. run the regression test command
-8. check whether any test migrations need your approval
-
-Only after that does the run become `complete`.
+The reviewer can also force help by returning `block` or `assessment`.
 
 ## When Does The Loop Actually Stop?
 

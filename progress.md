@@ -14,7 +14,8 @@ webhook payload behavior are verified, and a lifecycle fixture exercises the
 public orchestration flow through `plan_run` and `run_loop`.
 
 Delivery documentation has been organized under `docs/delivery/` with a
-technical overview and a plain-English operator guide.
+technical overview and a plain-English operator guide. The plain-English guide
+now includes the orchestrator/planner/executor/reviewer mechanism.
 
 ## Next step
 
