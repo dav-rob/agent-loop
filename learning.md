@@ -18,6 +18,9 @@ Use this file to record learnings, so that agents do not have to repeat work alr
 - A requirement may be explicitly `shelved` with a reason, but shelved work prevents an overall `complete` status.
 - User-facing language should call the top-level tracked request a goal. Internally this is still called a run (`runs` table, `run_id`, `RunRepository`), so `Goal ID` maps to the internal run ID.
 - Agent-loop runtime state for target repositories belongs under `.agent-loop/` (`agent-loop.db`, generated views, learning notes, logs, worktrees, goal/plan/spec folders). Root `agent-loop.toml` remains the optional committed project config.
+- Interactive `agent-loop start` must preserve immediately pasted multi-line goal text before prompting for intake choices, because Python `input()` otherwise consumes only the first pasted line.
+- Codex structured-output schemas used with `--output-schema` must set `additionalProperties: false` on every object and require every property listed in each object schema.
+- If planning fails before any features are generated, the goal is `blocked` with an empty plan; `agent-loop resume` should re-enter planning rather than transition directly to task execution.
 
 ## Useful commands
 
