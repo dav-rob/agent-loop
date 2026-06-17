@@ -1,9 +1,10 @@
 import argparse
 import select
+import shutil
 import sys
 from pathlib import Path
 import sqlite3
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from agent_loop.config import Config
 from agent_loop.database import get_connection, migrate
@@ -53,6 +54,43 @@ def _read_goal_input(prompt: str) -> str:
     pasted_lines = _read_ready_tty_lines(sys.stdin)
     return "\n".join([first_line, *pasted_lines]).strip()
 
+def _bundled_skills_dir() -> Path:
+    return Path(__file__).resolve().parents[2] / "skills"
+
+def _sync_workspace_skills(config: Config) -> None:
+    source_dir = _bundled_skills_dir()
+    if not source_dir.exists():
+        return
+
+    target_dir = config.state_dir / "skills"
+    target_dir.mkdir(parents=True, exist_ok=True)
+    for source in source_dir.iterdir():
+        if source.name.startswith("."):
+            continue
+        target = target_dir / source.name
+        if source.is_dir():
+            shutil.copytree(source, target, dirs_exist_ok=True)
+        elif source.is_file():
+            shutil.copy2(source, target)
+
+def _collect_brainstorming_notes() -> str:
+    questions: List[Tuple[str, str]] = [
+        ("User / audience", "Who is the main user or audience? (Optional): "),
+        ("Success criteria", "What should be true when this goal is complete? (Optional): "),
+        ("Constraints / preferences", "Any constraints, preferences, integrations, or style choices? (Optional): "),
+        ("Non-goals / risks", "What should be out of scope, risky, or easy to get wrong? (Optional): "),
+        ("Verification", "How should the agent verify the result? (Optional): "),
+    ]
+    answers = []
+    for label, prompt in questions:
+        answer = input(prompt).strip()
+        if answer:
+            answers.append(f"- {label}: {answer}")
+
+    if not answers:
+        return ""
+    return "Brainstorming Notes:\n" + "\n".join(answers)
+
 def ensure_workspace(config: Config) -> None:
     config.state_dir.mkdir(parents=True, exist_ok=True)
     config.logs_dir.mkdir(parents=True, exist_ok=True)
@@ -66,6 +104,7 @@ def ensure_workspace(config: Config) -> None:
             "Use this file to record durable facts for this repository's agent-loop goals.\n",
             encoding="utf-8"
         )
+    _sync_workspace_skills(config)
 
 def get_db(config: Config) -> sqlite3.Connection:
     ensure_workspace(config)
@@ -189,10 +228,10 @@ def handle_start(args: argparse.Namespace, config: Config) -> None:
 
         # Implement concise brainstorm interaction for brainstorm modes
         if intake_mode in {"brainstorm", "brainstorm_ui_lab"}:
-            print("\n--- Brainstorming Options ---")
-            extra_context = input("Any specific preferences, target users, or tech constraints? (Optional): ").strip()
-            if extra_context:
-                goal = f"{goal}\nRefinement / Constraints: {extra_context}"
+            print("\n--- Brainstorming Questions ---")
+            notes = _collect_brainstorming_notes()
+            if notes:
+                goal = f"{goal}\n{notes}"
 
             if intake_mode == "brainstorm_ui_lab":
                 import re

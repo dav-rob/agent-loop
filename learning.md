@@ -21,6 +21,7 @@ Use this file to record learnings, so that agents do not have to repeat work alr
 - Interactive `agent-loop start` must preserve immediately pasted multi-line goal text before prompting for intake choices, because Python `input()` otherwise consumes only the first pasted line.
 - Codex structured-output schemas used with `--output-schema` must set `additionalProperties: false` on every object and require every property listed in each object schema.
 - If planning fails before any features are generated, the goal is `blocked` with an empty plan; `agent-loop resume` should re-enter planning rather than transition directly to task execution.
+- Project-local skills live under repository root `skills/` and are copied into target runtime state under `.agent-loop/skills/` during workspace initialization.
 
 ## Useful commands
 

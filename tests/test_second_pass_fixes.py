@@ -657,7 +657,11 @@ def test_ui_lab_brief_workflow_paths(tmp_path, monkeypatch):
     # 1. UI Lab intake mode selected for a UI goal: should succeed and run AgyAdapter
     user_inputs = [
         "2",
+        "Product admins",
         "Fast and clean",
+        "Use existing auth",
+        "Avoid heavy animation",
+        "Run UI tests",
         "fast",
         "tool",
         "immediately",
@@ -713,7 +717,11 @@ def test_ui_lab_brief_workflow_paths(tmp_path, monkeypatch):
     # 3. Brainstorm intake mode (Option 1) for a non-UI goal
     user_inputs = [
         "1",
+        "Compiler maintainers",
         "Only needs standard lexer",
+        "",
+        "",
+        "",
         "y"
     ]
     input_gen = (val for val in user_inputs)
@@ -1720,7 +1728,6 @@ def test_genuine_lifecycle_via_run_loop(db_conn, tmp_path, monkeypatch):
     test_runs = orch.test_run_repo.get_by_run(run_id)
     assert any(tr["exit_status"] == 0 for tr in test_runs), \
         "Regression test must have passed (exit_status=0)"
-
 
 
 

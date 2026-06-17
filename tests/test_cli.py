@@ -59,6 +59,7 @@ def test_cli_start_non_interactive(clean_workspace):
     assert (state_dir / "goals").is_dir()
     assert (state_dir / "plans").is_dir()
     assert (state_dir / "specs").is_dir()
+    assert (state_dir / "skills" / "brainstorming" / "SKILL.md").exists()
     assert (state_dir / "learning.md").exists()
 
     conn = get_connection(db_path)
@@ -239,7 +240,11 @@ def test_cli_intake_and_approval(clean_workspace):
     user_inputs = [
         "Design a nice portal",
         "2",
+        "Operations team",
+        "Users can triage issues quickly",
         "Must look sleek",
+        "Avoid dense charts",
+        "Manual smoke test",
         "fast",
         "tool",
         "immediately",
@@ -301,10 +306,60 @@ def test_cli_intake_and_approval(clean_workspace):
     run_repo = RunRepository(conn)
     runs = run_repo.list_all()
     assert len(runs) == 1
-    assert "Must look sleek" in runs[0]["goal"]
+    assert "User / audience: Operations team" in runs[0]["goal"]
+    assert "Success criteria: Users can triage issues quickly" in runs[0]["goal"]
+    assert "Constraints / preferences: Must look sleek" in runs[0]["goal"]
+    assert "Non-goals / risks: Avoid dense charts" in runs[0]["goal"]
+    assert "Verification: Manual smoke test" in runs[0]["goal"]
     assert "Dark neon" in runs[0]["goal"]
     assert runs[0]["intake_mode"] == "brainstorm_ui_lab"
     assert runs[0]["status"] == "running" # Transitioned by 'y' approval
+    conn.close()
+
+
+def test_cli_start_brainstorm_collects_multiturn_notes(clean_workspace):
+    user_inputs = [
+        "1",
+        "Compiler maintainers",
+        "Parses source files into an AST",
+        "Keep dependencies minimal",
+        "No optimizer yet",
+        "Unit tests for parser fixtures",
+    ]
+    input_generator = (val for val in user_inputs)
+
+    def mock_plan_run(run_id):
+        db_path = default_db_path()
+        conn = get_connection(db_path)
+        RunRepository(conn).update_status(run_id, "planning")
+        RunRepository(conn).update_status(run_id, "running")
+        conn.close()
+        return True
+
+    with patch("builtins.input", side_effect=lambda *args, **kwargs: next(input_generator)):
+        with patch("agent_loop.cli.Orchestrator") as mock_orch_cls:
+            mock_orch = MagicMock()
+            mock_orch.plan_run.side_effect = mock_plan_run
+            mock_orch_cls.return_value = mock_orch
+
+            with patch.object(sys, "argv", ["agent-loop", "start", "--goal", "Build a compiler"]):
+                main()
+
+            mock_orch.plan_run.assert_called_once()
+            mock_orch.run_loop.assert_called_once()
+
+    db_path = default_db_path()
+    conn = get_connection(db_path)
+    run_repo = RunRepository(conn)
+    runs = run_repo.list_all()
+    assert len(runs) == 1
+    assert runs[0]["intake_mode"] == "brainstorm"
+    assert "Brainstorming Notes:" in runs[0]["goal"]
+    assert "- User / audience: Compiler maintainers" in runs[0]["goal"]
+    assert "- Success criteria: Parses source files into an AST" in runs[0]["goal"]
+    assert "- Constraints / preferences: Keep dependencies minimal" in runs[0]["goal"]
+    assert "- Non-goals / risks: No optimizer yet" in runs[0]["goal"]
+    assert "- Verification: Unit tests for parser fixtures" in runs[0]["goal"]
     conn.close()
 
 
@@ -346,6 +401,10 @@ def test_cli_start_captures_pasted_multiline_goal(clean_workspace):
         pasted_goal_lines,
         [
             "1\n",
+            "\n",
+            "\n",
+            "\n",
+            "\n",
             "\n",
         ],
     )
