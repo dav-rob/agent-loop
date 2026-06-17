@@ -1,4 +1,5 @@
 import argparse
+import select
 import sys
 from pathlib import Path
 import sqlite3
@@ -24,6 +25,33 @@ def describe_goal(goal: str, max_length: int = 50) -> str:
     if len(one_line) <= max_length:
         return one_line
     return one_line[: max_length - 3].rstrip() + "..."
+
+def _read_ready_tty_lines(stdin: Any, pause_seconds: float = 0.05) -> List[str]:
+    try:
+        if not stdin.isatty():
+            return []
+        stdin.fileno()
+    except (AttributeError, OSError):
+        return []
+
+    lines = []
+    while True:
+        try:
+            readable, _, _ = select.select([stdin], [], [], pause_seconds)
+        except (OSError, TypeError, ValueError):
+            return lines
+        if not readable:
+            return lines
+
+        line = stdin.readline()
+        if line == "":
+            return lines
+        lines.append(line.rstrip("\r\n"))
+
+def _read_goal_input(prompt: str) -> str:
+    first_line = input(prompt)
+    pasted_lines = _read_ready_tty_lines(sys.stdin)
+    return "\n".join([first_line, *pasted_lines]).strip()
 
 def ensure_workspace(config: Config) -> None:
     config.state_dir.mkdir(parents=True, exist_ok=True)
@@ -120,7 +148,7 @@ def handle_start(args: argparse.Namespace, config: Config) -> None:
         print("=== Agent Loop Intake Wizard ===")
         goal = args.goal
         if not goal:
-            goal = input("Enter your broad goal: ").strip()
+            goal = _read_goal_input("Enter your broad goal: ")
             if not goal:
                 print("Error: Goal cannot be empty.", file=sys.stderr)
                 sys.exit(1)

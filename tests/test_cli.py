@@ -269,6 +269,86 @@ def test_cli_intake_and_approval(clean_workspace):
     conn.close()
 
 
+def test_cli_start_captures_pasted_multiline_goal(clean_workspace):
+    class ScriptedTTY:
+        def __init__(self, first_line, pasted_lines, later_lines):
+            self.first_line = first_line
+            self.pasted_lines = list(pasted_lines)
+            self.later_lines = list(later_lines)
+
+        def readline(self):
+            if self.first_line is not None:
+                line = self.first_line
+                self.first_line = None
+                return line
+            if self.pasted_lines:
+                return self.pasted_lines.pop(0)
+            if self.later_lines:
+                return self.later_lines.pop(0)
+            return ""
+
+        def isatty(self):
+            return True
+
+        def fileno(self):
+            return 0
+
+    pasted_goal_lines = [
+        "\n",
+        "1) Headlines like this: https://www.google.com/search?q=news+headlines+today\n",
+        "2) The coming weather by the hour for the next 24 hours\n",
+        "3) Subscribe to Youtube sites, starting with\n",
+        "https://www.youtube.com/@NatureVideoChannel, https://www.youtube.com/@TLDRnewsGLOBAL\n",
+        "\n",
+        "- if there is a new video, summarize it with agy CLI\n",
+    ]
+    fake_stdin = ScriptedTTY(
+        "Create a website that runs in the background and checks hourly:\n",
+        pasted_goal_lines,
+        [
+            "1\n",
+            "\n",
+        ],
+    )
+
+    def fake_select(readable, _writable, _exceptional, _timeout=0):
+        if fake_stdin.pasted_lines:
+            return readable, [], []
+        return [], [], []
+
+    def mock_plan_run(run_id):
+        db_path = default_db_path()
+        conn = get_connection(db_path)
+        RunRepository(conn).update_status(run_id, "planning")
+        RunRepository(conn).update_status(run_id, "running")
+        conn.close()
+        return True
+
+    with patch.object(sys, "stdin", fake_stdin), \
+         patch("select.select", side_effect=fake_select), \
+         patch("agent_loop.cli.Orchestrator") as mock_orch_cls:
+        mock_orch = MagicMock()
+        mock_orch.plan_run.side_effect = mock_plan_run
+        mock_orch_cls.return_value = mock_orch
+
+        with patch.object(sys, "argv", ["agent-loop", "start"]):
+            main()
+
+        mock_orch.plan_run.assert_called_once()
+        mock_orch.run_loop.assert_called_once()
+
+    db_path = default_db_path()
+    conn = get_connection(db_path)
+    run_repo = RunRepository(conn)
+    runs = run_repo.list_all()
+    assert len(runs) == 1
+    assert "news+headlines+today" in runs[0]["goal"]
+    assert "https://www.youtube.com/@TLDRnewsGLOBAL" in runs[0]["goal"]
+    assert "summarize it with agy CLI" in runs[0]["goal"]
+    assert runs[0]["intake_mode"] == "brainstorm"
+    conn.close()
+
+
 def test_cli_approve_command(clean_workspace):
     # Test the standalone approve subcommand
     db_path = default_db_path()
