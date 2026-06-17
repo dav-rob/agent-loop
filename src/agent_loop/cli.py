@@ -20,7 +20,7 @@ from agent_loop.views import render_plan_md, render_progress_md
 from agent_loop.orchestrator import Orchestrator
 from agent_loop.handoffs import validate_handoff
 
-def describe_goal(goal: str, max_length: int = 50) -> str:
+def describe_goal(goal: str, max_length: int = 70) -> str:
     one_line = " ".join((goal or "").split())
     if len(one_line) <= max_length:
         return one_line
@@ -368,7 +368,6 @@ def handle_status(args: argparse.Namespace, config: Config) -> None:
 
     print(f"Goal ID: {run['id']}")
     print(f"Goal Description: {describe_goal(run['goal'])}")
-    print(f"Goal: {run['goal']}")
     print(f"Intake Mode: {run['intake_mode']}")
     print(f"Status: {run['status']}")
     print(f"Created At: {run['created_at']}")

@@ -143,14 +143,15 @@ def test_cli_status_uses_goal_language(clean_workspace, capsys):
 
     captured = capsys.readouterr()
     assert f"Goal ID: {run_id}" in captured.out
-    assert "Goal Description: Add CSV export to reports and update the releva..." in captured.out
+    assert "Goal Description: Add CSV export to reports and update the relevant tests for the CLI..." in captured.out
+    assert "Goal: Add CSV export" not in captured.out
     assert "Intake Mode: autonomous" in captured.out
     assert "Status: draft" in captured.out
 
 
 def test_goal_description_truncates_cleanly():
     assert describe_goal("Short goal") == "Short goal"
-    assert describe_goal("A" * 60) == ("A" * 47) + "..."
+    assert describe_goal("A" * 80) == ("A" * 67) + "..."
 
 def test_cli_resume(clean_workspace):
     db_path = default_db_path()
