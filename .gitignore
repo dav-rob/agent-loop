@@ -13,5 +13,4 @@ worktrees/
 __pycache__/
 *.pyc
 .pytest_cache/
-PKG-INFO
-SOURCES.txt
+
