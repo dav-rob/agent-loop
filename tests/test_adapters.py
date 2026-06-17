@@ -20,6 +20,25 @@ def test_secret_redaction():
         assert "[REDACTED]" in redacted
         assert "public-content" not in redacted
 
+def test_plan_schema_is_strict_for_codex_structured_output():
+    schema_path = Path(__file__).parents[1] / "src" / "agent_loop" / "plan_schema.json"
+    schema = json.loads(schema_path.read_text())
+
+    def assert_strict_objects(node, path="$"):
+        if isinstance(node, dict):
+            if node.get("type") == "object":
+                assert node.get("additionalProperties") is False, f"{path} must set additionalProperties: false"
+                property_names = set(node.get("properties", {}).keys())
+                required_names = set(node.get("required", []))
+                assert required_names == property_names, f"{path} must require every property"
+            for key, value in node.items():
+                assert_strict_objects(value, f"{path}.{key}")
+        elif isinstance(node, list):
+            for index, value in enumerate(node):
+                assert_strict_objects(value, f"{path}[{index}]")
+
+    assert_strict_objects(schema)
+
 def test_codex_discover_capabilities():
     adapter = CodexAdapter()
     

@@ -2,6 +2,7 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "AgentPlan",
   "type": "object",
+  "additionalProperties": false,
   "properties": {
     "objective": {
       "type": "string"
@@ -10,18 +11,20 @@
       "type": "array",
       "items": {
         "type": "object",
+        "additionalProperties": false,
         "properties": {
           "decision_type": { "type": "string", "enum": ["product", "architecture"] },
           "summary": { "type": "string" },
           "details": { "type": "string" }
         },
-        "required": ["decision_type", "summary"]
+        "required": ["decision_type", "summary", "details"]
       }
     },
     "features": {
       "type": "array",
       "items": {
         "type": "object",
+        "additionalProperties": false,
         "properties": {
           "name": { "type": "string" },
           "risk": { "type": "string", "enum": ["low", "medium", "high"] },
@@ -38,6 +41,7 @@
       "type": "array",
       "items": {
         "type": "object",
+        "additionalProperties": false,
         "properties": {
           "name": { "type": "string" },
           "feature_name": { "type": "string" },
@@ -45,12 +49,14 @@
           "risk": { "type": "string", "enum": ["low", "medium", "high"] },
           "scope": {
             "type": "object",
+            "additionalProperties": false,
             "properties": {
               "files": {
                 "type": "array",
                 "items": { "type": "string" }
               }
-            }
+            },
+            "required": ["files"]
           },
           "dependencies": {
             "type": "array",
@@ -58,9 +64,9 @@
           },
           "required_verification": { "type": "string" }
         },
-        "required": ["name", "feature_name", "role", "risk", "dependencies", "required_verification"]
+        "required": ["name", "feature_name", "role", "risk", "scope", "dependencies", "required_verification"]
       }
     }
   },
-  "required": ["objective", "features", "tasks"]
+  "required": ["objective", "decisions", "features", "tasks"]
 }

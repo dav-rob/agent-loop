@@ -8,7 +8,7 @@ VALID_RUN_TRANSITIONS = {
     "awaiting_plan_approval": {"running", "planning", "cancelled"},
     "running": {"waiting_for_quota", "blocked", "reviewing", "cancelled", "failed"},
     "waiting_for_quota": {"running", "blocked", "cancelled"},
-    "blocked": {"running", "cancelled"},
+    "blocked": {"planning", "running", "cancelled"},
     "reviewing": {"complete_pending_test_review", "complete", "failed", "running", "cancelled", "blocked"},
     "complete_pending_test_review": {"complete", "failed", "cancelled", "blocked"},
     "complete": set(),

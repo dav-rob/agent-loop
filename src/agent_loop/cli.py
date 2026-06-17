@@ -314,6 +314,7 @@ def handle_start(args: argparse.Namespace, config: Config) -> None:
 def handle_resume(args: argparse.Namespace, config: Config) -> None:
     conn = get_db(config)
     run_repo = RunRepository(conn)
+    feature_repo = FeatureRepository(conn)
     attempt_repo = AttemptRepository(conn)
 
     run_id = get_target_run_id(run_repo, args.run_id)
@@ -334,7 +335,9 @@ def handle_resume(args: argparse.Namespace, config: Config) -> None:
     # If run status was waiting/quota/running, keep it running or reset it to running/planning
     if run["status"] in {"draft", "planning", "awaiting_plan_approval", "running", "waiting_for_quota", "blocked", "reviewing"}:
         # Keep or reset status to running or planning
-        if run["status"] == "waiting_for_quota" or run["status"] == "blocked":
+        if run["status"] == "blocked" and not feature_repo.get_by_run(run_id):
+            run_repo.update_status(run_id, "planning")
+        elif run["status"] == "waiting_for_quota" or run["status"] == "blocked":
             run_repo.update_status(run_id, "running")
 
     # Regenerate markdown views

@@ -186,6 +186,44 @@ def test_cli_resume(clean_workspace):
     conn.close()
 
 
+def test_cli_resume_replans_blocked_goal_without_features(clean_workspace):
+    db_path = default_db_path()
+    conn = get_connection(db_path)
+    migrate(conn)
+
+    run_repo = RunRepository(conn)
+    run_id = run_repo.create("Resume failed planning", "brainstorm")
+    run_repo.update_status(run_id, "planning")
+    run_repo.update_status(run_id, "blocked")
+    conn.close()
+
+    def mock_plan_run(run_id_arg):
+        conn_inner = get_connection(db_path)
+        repo_inner = RunRepository(conn_inner)
+        repo_inner.update_status(run_id_arg, "planning")
+        repo_inner.update_status(run_id_arg, "awaiting_plan_approval")
+        conn_inner.close()
+        return True
+
+    test_args = ["agent-loop", "resume", str(run_id)]
+    with patch("agent_loop.cli.Orchestrator") as mock_orch_cls:
+        mock_orch = MagicMock()
+        mock_orch.reconcile_interrupted_run.return_value = 0
+        mock_orch.plan_run.side_effect = mock_plan_run
+        mock_orch_cls.return_value = mock_orch
+
+        with patch.object(sys, "argv", test_args):
+            main()
+
+        mock_orch.plan_run.assert_called_once_with(run_id)
+        mock_orch.run_loop.assert_not_called()
+
+    conn = get_connection(db_path)
+    run_repo = RunRepository(conn)
+    assert run_repo.get(run_id)["status"] == "awaiting_plan_approval"
+    conn.close()
+
+
 def test_cli_intake_and_approval(clean_workspace):
     # Test interactive wizard with brainstorm_ui_lab intake and plan approval
     test_args = ["agent-loop", "start"]
