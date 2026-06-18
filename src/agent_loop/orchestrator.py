@@ -857,6 +857,13 @@ Return ONLY a valid JSON object matching the requested schema. Do not include ma
             except Exception:
                 pass
 
+        with self.git_lock:
+            try:
+                res = subprocess.run(["git", "rev-parse", "HEAD"], cwd=worktree_dir, capture_output=True, text=True, check=True)
+                start_sha = res.stdout.strip()
+            except subprocess.CalledProcessError:
+                start_sha = None
+
         with self.db_lock:
             previous_rejection = self.review_repo.get_latest_rejection("task", task_id)
             goal_text = self.run_repo.get(run_id)['goal']
@@ -883,7 +890,7 @@ Scope: {json.dumps(task['scope'])}
             prompt += f"\nPrevious attempt was rejected with the following findings:\n{previous_rejection}\n"
             
         if not is_integration:
-            prompt += "\nPlease implement this task in the workspace. Run verification to confirm success before exiting.\n"
+            prompt += "\nPlease implement this task in the workspace. You MUST make atomic, fine-grained git commits with descriptive messages as you progress through the task. Run verification to confirm success before exiting.\n"
 
         try:
             adapter = get_adapter(provider, self.config)
@@ -907,16 +914,24 @@ Scope: {json.dumps(task['scope'])}
                 )
 
             if result.success and verification_success:
-                sha = commit_changes(worktree_dir, f"agent-loop: complete {task['name']}")
+                # Capture any uncommitted changes just in case the agent forgot
+                commit_changes(worktree_dir, f"agent-loop: uncommitted changes for {task['name']}")
+                with self.git_lock:
+                    try:
+                        res = subprocess.run(["git", "rev-parse", "HEAD"], cwd=worktree_dir, capture_output=True, text=True, check=True)
+                        end_sha = res.stdout.strip()
+                    except subprocess.CalledProcessError:
+                        end_sha = None
+
                 with self.db_lock:
-                    self.attempt_repo.update_outcome(attempt_id, "completed", commit_sha=sha)
+                    self.attempt_repo.update_outcome(attempt_id, "completed", commit_sha=end_sha)
                 
-                if sha:
-                    self.detect_and_record_test_migrations(run_id, task_id, sha)
+                if end_sha and start_sha != end_sha:
+                    self.detect_and_record_test_migrations(run_id, task_id, end_sha)
 
                 with self.db_lock:
                     self.task_repo.update_status(task_id, "reviewing")
-                decision = self.run_task_review(run_id, task_id, sha)
+                decision = self.run_task_review(run_id, task_id, start_sha, end_sha)
                 
                 if decision == "approved":
                     with self.git_lock:
@@ -1380,19 +1395,21 @@ Only return the raw JSON object. Do not include markdown wrappers.
             )
             return "rejected"
 
-    def run_task_review(self, run_id: int, task_id: int, commit_sha: Optional[str]) -> str:
+    def run_task_review(self, run_id: int, task_id: int, start_sha: Optional[str], end_sha: Optional[str]) -> str:
         diff = "No commit SHA provided."
-        if commit_sha:
+        if start_sha and end_sha:
             try:
                 with self.git_lock:
                     res = subprocess.run(
-                        ["git", "diff", f"{commit_sha}^..{commit_sha}"],
+                        ["git", "log", "-p", "--reverse", f"{start_sha}..{end_sha}"],
                         cwd=Path.cwd(),
                         capture_output=True,
                         text=True,
                         check=True
                     )
                 diff = res.stdout
+                if not diff.strip():
+                    diff = "No changes were committed."
             except Exception:
                 diff = "Could not fetch git diff."
         
