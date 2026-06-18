@@ -781,6 +781,25 @@ Return ONLY a valid JSON object matching the requested schema. Do not include ma
             if not is_in_memory:
                 conn.close()
 
+    def _reset_task_for_retry(self, task_id: int) -> None:
+        task = self.task_repo.get(task_id)
+        if not task:
+            return
+
+        status = task["status"]
+        if status == "ready":
+            return
+        if status == "failed":
+            self.task_repo.update_status(task_id, "ready")
+            return
+        if status in {"running", "reviewing"}:
+            self.task_repo.update_status(task_id, "failed")
+            self.task_repo.update_status(task_id, "ready")
+            return
+        if status == "blocked":
+            return
+        raise ValueError(f"Cannot reset task {task_id} from status '{status}' for retry.")
+
     def _execute_task_impl(self, run_id: int, task: Dict[str, Any]) -> bool:
         task_id = task["id"]
         with self.db_lock:
@@ -814,8 +833,7 @@ Return ONLY a valid JSON object matching the requested schema. Do not include ma
         selected_route = _pick_route()
         if not selected_route:
             with self.db_lock:
-                self.task_repo.update_status(task_id, "failed")
-                self.task_repo.update_status(task_id, "ready")
+                self._reset_task_for_retry(task_id)
             return False
 
         provider = selected_route["provider"]
@@ -858,8 +876,7 @@ Return ONLY a valid JSON object matching the requested schema. Do not include ma
                 if attempt_count >= self.config.retry_policy["max_attempts"]:
                     self.task_repo.update_status(task_id, "blocked")
                 else:
-                    self.task_repo.update_status(task_id, "failed")
-                    self.task_repo.update_status(task_id, "ready")
+                    self._reset_task_for_retry(task_id)
             if len(failed_attempts) + 1 >= self.config.retry_policy["max_attempts"]:
                 self.notify(run_id, "blocked", f"Task '{task['name']}' failed during worktree setup: {exc}")
             return False
@@ -1147,8 +1164,7 @@ Scope: {json.dumps(task['scope'])}
                                 self.notify(run_id, "blocked", f"Task '{task['name']}' reached attempt limit on {decision}.")
                         else:
                             with self.db_lock:
-                                self.task_repo.update_status(task_id, "failed")
-                                self.task_repo.update_status(task_id, "ready")
+                                self._reset_task_for_retry(task_id)
                     else:
                         with self.db_lock:
                             self.task_repo.update_status(task_id, "blocked")
@@ -1171,8 +1187,7 @@ Scope: {json.dumps(task['scope'])}
                             quota_limit_reset=result.quota_reset
                         )
                         self.attempt_repo.update_outcome(attempt_id, "abandoned", patch_path=patch_path)
-                        self.task_repo.update_status(task_id, "failed")
-                        self.task_repo.update_status(task_id, "ready")
+                        self._reset_task_for_retry(task_id)
                     
                     fallback = "Entering wait/sleep state"
                     expected_resume = "Will retry model after reset window" if result.quota_reset else "Will probe model using exponential backoff"
@@ -1254,8 +1269,7 @@ Scope: {json.dumps(task['scope'])}
                                     availability=False, quota_state="auth_required"
                                 )
                                 self.attempt_repo.update_outcome(attempt_id, "provider_error", patch_path=patch_path)
-                                self.task_repo.update_status(task_id, "failed")
-                                self.task_repo.update_status(task_id, "ready")
+                                self._reset_task_for_retry(task_id)
                             alert_msg = (
                                 f"Quota Alert - Run: {run_id}, Task: {task_id} ({task['name']})\n"
                                 f"All fallback routes exhausted (auth_required).\n"
@@ -1268,8 +1282,7 @@ Scope: {json.dumps(task['scope'])}
                     else:
                         # No fallback available — block task.
                         with self.db_lock:
-                            self.task_repo.update_status(task_id, "failed")
-                            self.task_repo.update_status(task_id, "ready")
+                            self._reset_task_for_retry(task_id)
                         alert_msg = (
                             f"Quota Alert - Run: {run_id}, Task: {task_id} ({task['name']})\n"
                             f"Provider: {provider} | Model: {model}\n"
@@ -1291,8 +1304,7 @@ Scope: {json.dumps(task['scope'])}
                             quota_state="transient_failure"
                         )
                         self.attempt_repo.update_outcome(attempt_id, "provider_error", patch_path=patch_path)
-                        self.task_repo.update_status(task_id, "failed")
-                        self.task_repo.update_status(task_id, "ready")
+                        self._reset_task_for_retry(task_id)
                     
                     alert_msg = (
                         f"Quota Alert - Run: {run_id}, Task: {task_id} ({task['name']})\n"
@@ -1315,8 +1327,7 @@ Scope: {json.dumps(task['scope'])}
                             quota_state="unavailable"
                         )
                         self.attempt_repo.update_outcome(attempt_id, "provider_error", patch_path=patch_path)
-                        self.task_repo.update_status(task_id, "failed")
-                        self.task_repo.update_status(task_id, "ready")
+                        self._reset_task_for_retry(task_id)
                     
                     alert_msg = (
                         f"Quota Alert - Run: {run_id}, Task: {task_id} ({task['name']})\n"
@@ -1363,10 +1374,7 @@ Scope: {json.dumps(task['scope'])}
                             self.notify(run_id, "blocked", f"Task '{task['name']}' failed {self.config.retry_policy['max_attempts']} times.")
                     else:
                         with self.db_lock:
-                            current_stat = self.task_repo.get(task_id)["status"]
-                            if current_stat != "blocked":
-                                self.task_repo.update_status(task_id, "failed")
-                                self.task_repo.update_status(task_id, "ready")
+                            self._reset_task_for_retry(task_id)
 
                 with self.git_lock:
                     remove_worktree(Path.cwd(), worktree_dir)
@@ -1409,10 +1417,7 @@ Scope: {json.dumps(task['scope'])}
                     self.notify(run_id, "blocked", f"Task '{task['name']}' failed {self.config.retry_policy['max_attempts']} times.")
             else:
                 with self.db_lock:
-                    current_stat = self.task_repo.get(task_id)["status"]
-                    if current_stat != "blocked":
-                        self.task_repo.update_status(task_id, "failed")
-                        self.task_repo.update_status(task_id, "ready")
+                    self._reset_task_for_retry(task_id)
             with self.git_lock:
                 remove_worktree(Path.cwd(), worktree_dir)
             return False

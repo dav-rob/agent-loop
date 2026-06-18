@@ -988,6 +988,27 @@ def test_retry_limit_follow_up_uses_latest_escalation_findings(db_conn, tmp_path
     assert followup_tasks[0]["scope"]["reviewer_findings"] == "Try a narrower update"
 
 
+def test_reset_task_for_retry_is_idempotent_when_already_ready(db_conn, tmp_path):
+    config = Config()
+    orch = Orchestrator(db_conn, config, plan_path=tmp_path / "plan.md", progress_path=tmp_path / "progress.md")
+
+    run_repo = RunRepository(db_conn)
+    feat_repo = FeatureRepository(db_conn)
+    task_repo = TaskRepository(db_conn)
+
+    run_id = run_repo.create("Retry reset test", "autonomous")
+    feat_id = feat_repo.create(run_id, "Feat 1", "low")
+    task_id = task_repo.create(run_id, feat_id, "Task Retry", "implementation", "low")
+
+    task_repo.update_status(task_id, "ready")
+    orch._reset_task_for_retry(task_id)
+    assert task_repo.get(task_id)["status"] == "ready"
+
+    task_repo.update_status(task_id, "running")
+    orch._reset_task_for_retry(task_id)
+    assert task_repo.get(task_id)["status"] == "ready"
+
+
 def test_preserve_partial_work_on_recovery(db_conn, tmp_path, monkeypatch):
     config = Config()
     orch = Orchestrator(db_conn, config, plan_path=tmp_path / "plan.md", progress_path=tmp_path / "progress.md")
