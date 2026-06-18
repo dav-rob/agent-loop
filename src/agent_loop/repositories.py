@@ -332,14 +332,42 @@ class AttemptRepository:
         if outcome not in {"running", "completed", "failed", "abandoned"}:
             raise ValueError(f"Invalid attempt outcome: {outcome}")
         cursor = self.conn.cursor()
-        cursor.execute(
-            """
-            UPDATE attempts 
-            SET outcome = ?, commit_sha = ?, patch_path = ?, updated_at = CURRENT_TIMESTAMP 
-            WHERE id = ?;
-            """,
-            (outcome, commit_sha or None, patch_path or None, attempt_id)
-        )
+        if commit_sha is not None and patch_path is not None:
+            cursor.execute(
+                """
+                UPDATE attempts 
+                SET outcome = ?, commit_sha = ?, patch_path = ?, updated_at = CURRENT_TIMESTAMP 
+                WHERE id = ?;
+                """,
+                (outcome, commit_sha, patch_path, attempt_id)
+            )
+        elif commit_sha is not None:
+            cursor.execute(
+                """
+                UPDATE attempts 
+                SET outcome = ?, commit_sha = ?, updated_at = CURRENT_TIMESTAMP 
+                WHERE id = ?;
+                """,
+                (outcome, commit_sha, attempt_id)
+            )
+        elif patch_path is not None:
+            cursor.execute(
+                """
+                UPDATE attempts 
+                SET outcome = ?, patch_path = ?, updated_at = CURRENT_TIMESTAMP 
+                WHERE id = ?;
+                """,
+                (outcome, patch_path, attempt_id)
+            )
+        else:
+            cursor.execute(
+                """
+                UPDATE attempts 
+                SET outcome = ?, updated_at = CURRENT_TIMESTAMP 
+                WHERE id = ?;
+                """,
+                (outcome, attempt_id)
+            )
         self.conn.commit()
 
 
