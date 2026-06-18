@@ -120,6 +120,34 @@ def test_codex_run_attempt_success(tmp_path):
         assert "-a" not in cmd_args
         assert "-s" not in cmd_args
 
+def test_codex_successful_output_may_discuss_timeouts(tmp_path):
+    adapter = CodexAdapter()
+    logs_dir = tmp_path / "logs"
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    mock_proc = MagicMock()
+    mock_proc.returncode = 0
+
+    def run_side_effect(cmd, stdin, stdout, stderr, timeout, **kwargs):
+        stdout.write(
+            '{"event": "message", "role": "assistant", '
+            '"content": "{\\"objective\\": \\"Handle failures/timeouts\\"}"}\n'
+        )
+        return mock_proc
+
+    with patch("subprocess.run", side_effect=run_side_effect):
+        res = adapter.run_attempt(
+            model="gpt-5.5",
+            prompt="You are the Agent Loop Planner. Return JSON matching the schema.",
+            workspace_path=workspace,
+            attempt_logs_dir=logs_dir,
+        )
+
+    assert res.success is True
+    assert res.transient_failure is False
+    assert "failures/timeouts" in res.output
+
 def test_codex_run_attempt_quota_exhausted(tmp_path):
     adapter = CodexAdapter()
     logs_dir = tmp_path / "logs"
@@ -179,6 +207,26 @@ def test_agy_run_attempt_success(tmp_path):
         assert Path(cmd_args[add_dir_idx + 1]).is_absolute()
         assert Path(cmd_args[add_dir_idx + 1]) == workspace.resolve()
         assert "--dangerously-skip-permissions" in cmd_args
+
+def test_agy_print_timeout_uses_go_duration(tmp_path):
+    adapter = AgyAdapter(binary_path="/custom/agy")
+    workspace = tmp_path / "workspace"
+    logs_dir = tmp_path / "logs"
+    workspace.mkdir()
+
+    mock_proc = MagicMock()
+    mock_proc.returncode = 0
+
+    def run_side_effect(cmd, stdin, stdout, stderr, timeout, **kwargs):
+        stdout.write("ok\n")
+        return mock_proc
+
+    with patch("subprocess.run", side_effect=run_side_effect) as mock_subprocess:
+        adapter.run_attempt("my-model", "hello", workspace, logs_dir, timeout_seconds=123.0)
+
+    cmd_args = mock_subprocess.call_args[0][0]
+    timeout_idx = cmd_args.index("--print-timeout")
+    assert cmd_args[timeout_idx + 1] == "123s"
 
 def test_agy_run_attempt_quota_exhausted(tmp_path):
     adapter = AgyAdapter()

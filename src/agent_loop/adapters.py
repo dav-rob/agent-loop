@@ -218,8 +218,13 @@ class CodexAdapter(BaseAdapter):
                         msg_parts.append(event.get("content", ""))
                 agent_msg = "".join(msg_parts) if msg_parts else stdout_content
 
-            # Quota detection on stderr/stdout text
-            lowered_all = (stdout_content + "\n" + stderr_content).lower()
+            diagnostic_parts = [stderr_content]
+            for event in events:
+                if event.get("event") == "error":
+                    diagnostic_parts.append(json.dumps(event))
+            if process.returncode != 0:
+                diagnostic_parts.append(stdout_content)
+            lowered_all = "\n".join(diagnostic_parts).lower()
             if any(q in lowered_all for q in ["insufficient_quota", "rate_limit_exceeded", "rate limit", "quota exceeded", "status code 429"]):
                 quota_exhausted = True
 
@@ -337,7 +342,7 @@ class AgyAdapter(BaseAdapter):
         cmd = [
             self.binary_path,
             "--print",
-            "--print-timeout", str(int(timeout_seconds)),
+            "--print-timeout", f"{int(timeout_seconds)}s",
             "--dangerously-skip-permissions",
             "--model", model,
             "--log-file", str(agy_log_file),

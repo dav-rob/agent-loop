@@ -22,6 +22,8 @@ Use this file to record learnings, so that agents do not have to repeat work alr
 - Codex structured-output schemas used with `--output-schema` must set `additionalProperties: false` on every object and require every property listed in each object schema.
 - If planning fails before any features are generated, the goal is `blocked` with an empty plan; `agent-loop resume` should re-enter planning rather than transition directly to task execution.
 - Project-local skills live under repository root `skills/` and are copied into target runtime state under `.agent-loop/skills/` during workspace initialization.
+- Adapter transient-failure detection must not scan successful assistant output for generic words like "timeout"; inspect diagnostics/errors instead so valid plans discussing timeout handling are not rejected.
+- `agy --print-timeout` expects Go-duration syntax such as `123s`, `30m`, or `1h`, not a bare integer.
 
 ## Useful commands
 

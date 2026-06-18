@@ -335,7 +335,8 @@ def test_agy_print_timeout_construction(tmp_path):
                 
     cmd_args = mock_run.call_args[0][0]
     assert "--print-timeout" in cmd_args
-    assert "123" in cmd_args
+    timeout_idx = cmd_args.index("--print-timeout")
+    assert cmd_args[timeout_idx + 1] == "123s"
 
 
 def test_review_actions_comprehensive(db_conn, tmp_path):
@@ -1728,7 +1729,6 @@ def test_genuine_lifecycle_via_run_loop(db_conn, tmp_path, monkeypatch):
     test_runs = orch.test_run_repo.get_by_run(run_id)
     assert any(tr["exit_status"] == 0 for tr in test_runs), \
         "Regression test must have passed (exit_status=0)"
-
 
 
 
