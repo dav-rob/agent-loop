@@ -267,6 +267,35 @@ Return ONLY a valid JSON object matching the requested schema. Do not include ma
         except Exception:
             self.notification_repo.update_delivery(notification_id, "failed", 1)
 
+    def _ensure_workspace_deps(self, workspace: Path) -> None:
+        """Detect common project types and run their install command if needed.
+
+        Checks for package.json, requirements.txt/pyproject.toml, Gemfile,
+        go.mod, and Cargo.toml and runs the corresponding install command when
+        the manifest is present.  Failures are silently swallowed — the caller
+        will still attempt the work and surface any real errors itself.
+        """
+        INSTALL_MANIFESTS = [
+            ("package.json",       ["npm", "install"]),
+            ("requirements.txt",   ["pip", "install", "-r", "requirements.txt"]),
+            ("pyproject.toml",     ["pip", "install", "-e", "."]),
+            ("Gemfile",            ["bundle", "install"]),
+            ("go.mod",             ["go", "mod", "download"]),
+            ("Cargo.toml",         ["cargo", "fetch"]),
+        ]
+        for manifest, cmd in INSTALL_MANIFESTS:
+            if (workspace / manifest).exists():
+                try:
+                    subprocess.run(
+                        cmd,
+                        cwd=workspace,
+                        stdin=subprocess.DEVNULL,
+                        capture_output=True,
+                        timeout=300,
+                    )
+                except Exception:
+                    pass  # best-effort; real errors surface later
+
     def run_verification(self, run_id: int, task_id: int, attempt_id: int, command: str, worktree_dir: Path, logs_dir: Path) -> bool:
         """Runs the verification command in the worktree directory.
         
@@ -278,6 +307,8 @@ Return ONLY a valid JSON object matching the requested schema. Do not include ma
         test_err_file = logs_dir / "test_run_stderr.log"
         
         try:
+            # Ensure dependencies are installed before verifying
+            self._ensure_workspace_deps(worktree_dir)
             with test_out_file.open("w") as out_f, test_err_file.open("w") as err_f:
                 process = subprocess.run(
                     command,
@@ -702,13 +733,25 @@ Return ONLY a valid JSON object matching the requested schema. Do not include ma
         route_key = "planning" if (task["role"] == "planning" or is_high_reasoning) else "implementation"
         routes = self.config.routes.get(route_key, [])
 
-        selected_route = None
-        for r in routes:
-            with self.db_lock:
-                p_state = self.provider_repo.get(r["provider"], r["model"])
-            if not p_state or p_state["availability"]:
-                selected_route = r
-                break
+        # auth_failed_routes tracks providers that returned auth_required during
+        # this invocation so we can skip them when selecting the next route.
+        auth_failed_routes: set = set()
+
+        def _pick_route():
+            for r in routes:
+                key = (r["provider"], r["model"])
+                if key in auth_failed_routes:
+                    continue
+                with self.db_lock:
+                    p_state = self.provider_repo.get(r["provider"], r["model"])
+                # Skip routes that are known auth_required or unavailable
+                if p_state and p_state.get("quota_state") in {"auth_required"}:
+                    continue
+                if not p_state or p_state["availability"]:
+                    return r
+            return None
+
+        selected_route = _pick_route()
         if not selected_route:
             with self.db_lock:
                 self.task_repo.update_status(task_id, "failed")
@@ -767,6 +810,10 @@ Return ONLY a valid JSON object matching the requested schema. Do not include ma
             except Exception:
                 pass
         is_integration = isinstance(scope_data, dict) and "source_branch" in scope_data
+
+        # Ensure workspace dependencies are installed before the adapter or
+        # any verification command runs.  Best-effort — failures are ignored.
+        self._ensure_workspace_deps(worktree_dir)
         
         if is_integration:
             source_branch = scope_data["source_branch"]
@@ -1043,19 +1090,89 @@ Scope: {json.dumps(task['scope'])}
                             quota_state="auth_required"
                         )
                         self.attempt_repo.update_outcome(attempt_id, "failed", patch_path=patch_path)
-                        self.task_repo.update_status(task_id, "failed")
-                        self.task_repo.update_status(task_id, "ready")
-                    
-                    alert_msg = (
-                        f"Quota Alert - Run: {run_id}, Task: {task_id} ({task['name']})\n"
-                        f"Provider: {provider} | Model: {model}\n"
-                        f"Classification: auth_required\n"
-                        f"Evidence Path: {logs_dir / 'stderr.log'}\n"
-                        f"Known Reset: N/A\n"
-                        f"Fallback Action: Blocking task/run\n"
-                        f"Expected Resume Behavior: Will resume after operator runs login command"
-                    )
-                    self.notify(run_id, f"quota_alert:{provider}:{model}:auth_required", alert_msg)
+
+                    # Record which route failed auth so _pick_route skips it.
+                    auth_failed_routes.add((provider, model))
+                    fallback_route = _pick_route()
+
+                    if fallback_route:
+                        # Notify but continue to the next route rather than giving up.
+                        alert_msg = (
+                            f"Auth failed for {provider}:{model} — falling back to "
+                            f"{fallback_route['provider']}:{fallback_route['model']}\n"
+                            f"Evidence Path: {logs_dir / 'stderr.log'}"
+                        )
+                        self.notify(run_id, f"quota_alert:{provider}:{model}:auth_required", alert_msg)
+
+                        # Reset task to running and retry with the fallback route.
+                        with self.db_lock:
+                            self.task_repo.update_status(task_id, "failed")
+                            self.task_repo.update_status(task_id, "running")
+                        selected_route = fallback_route
+                        provider = fallback_route["provider"]
+                        model = fallback_route["model"]
+                        reasoning_level = fallback_route.get("reasoning_level")
+                        with self.db_lock:
+                            attempt_id = self.attempt_repo.create(
+                                run_id=run_id,
+                                task_id=task_id,
+                                route=route_key,
+                                provider=provider,
+                                model=model,
+                                reasoning_level=reasoning_level,
+                                worktree_path=str(worktree_dir),
+                                logs_path=str(logs_dir)
+                            )
+                        adapter = get_adapter(provider, self.config)
+                        result = adapter.run_attempt(
+                            model=model,
+                            prompt=prompt,
+                            workspace_path=worktree_dir,
+                            attempt_logs_dir=logs_dir,
+                            reasoning_level=reasoning_level
+                        )
+                        # Fall through: the new result will be evaluated by the
+                        # next iteration of the enclosing if/elif chain via a
+                        # re-raise of the same logic.  We achieve this by
+                        # re-entering the result-dispatch block.
+                        patch_path = self._preserve_uncommitted_changes(worktree_dir, logs_dir)
+                        if result.success:
+                            pass  # handled below by the normal success path
+                        elif result.auth_required:
+                            auth_failed_routes.add((provider, model))
+                            with self.db_lock:
+                                self.provider_repo.save(
+                                    provider=provider, model=model,
+                                    capability_snapshot={"models": [model]},
+                                    availability=False, quota_state="auth_required"
+                                )
+                                self.attempt_repo.update_outcome(attempt_id, "failed", patch_path=patch_path)
+                                self.task_repo.update_status(task_id, "failed")
+                                self.task_repo.update_status(task_id, "ready")
+                            alert_msg = (
+                                f"Quota Alert - Run: {run_id}, Task: {task_id} ({task['name']})\n"
+                                f"All fallback routes exhausted (auth_required).\n"
+                                f"Evidence Path: {logs_dir / 'stderr.log'}"
+                            )
+                            self.notify(run_id, f"quota_alert:{provider}:{model}:auth_required", alert_msg)
+                        else:
+                            # Let the worktree cleanup and return happen below.
+                            pass
+                    else:
+                        # No fallback available — block task.
+                        with self.db_lock:
+                            self.task_repo.update_status(task_id, "failed")
+                            self.task_repo.update_status(task_id, "ready")
+                        alert_msg = (
+                            f"Quota Alert - Run: {run_id}, Task: {task_id} ({task['name']})\n"
+                            f"Provider: {provider} | Model: {model}\n"
+                            f"Classification: auth_required\n"
+                            f"Evidence Path: {logs_dir / 'stderr.log'}\n"
+                            f"Known Reset: N/A\n"
+                            f"Fallback Action: No more routes available — task re-queued\n"
+                            f"Expected Resume Behavior: Will resume after operator runs login command"
+                        )
+                        self.notify(run_id, f"quota_alert:{provider}:{model}:auth_required", alert_msg)
 
                 elif result.transient_failure:
                     with self.db_lock:
