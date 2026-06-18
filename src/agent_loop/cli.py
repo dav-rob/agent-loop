@@ -1,4 +1,5 @@
 import argparse
+import json
 import select
 import shutil
 import sys
@@ -76,14 +77,96 @@ def _sync_workspace_skills(config: Config) -> None:
         elif source.is_file():
             shutil.copy2(source, target)
 
-def _collect_brainstorming_notes() -> str:
-    questions: List[Tuple[str, str]] = [
+def _fallback_brainstorm_questions() -> List[Tuple[str, str]]:
+    return [
         ("User / audience", "Who is the main user or audience? (Optional): "),
         ("Success criteria", "What should be true when this goal is complete? (Optional): "),
         ("Constraints / preferences", "Any constraints, preferences, integrations, or style choices? (Optional): "),
         ("Non-goals / risks", "What should be out of scope, risky, or easy to get wrong? (Optional): "),
         ("Verification", "How should the agent verify the result? (Optional): "),
     ]
+
+def _extract_json_object(text: str) -> Dict[str, Any]:
+    cleaned = (text or "").strip()
+    if cleaned.startswith("```"):
+        cleaned = cleaned.strip("`")
+        if cleaned.startswith("json"):
+            cleaned = cleaned[4:].strip()
+    try:
+        return json.loads(cleaned)
+    except json.JSONDecodeError:
+        start = cleaned.find("{")
+        end = cleaned.rfind("}")
+        if start >= 0 and end > start:
+            return json.loads(cleaned[start:end + 1])
+        raise
+
+def _select_agy_model(config: Config) -> str:
+    for route in config.routes.get("planning", []) + config.routes.get("implementation", []):
+        if route.get("provider") == "agy":
+            return route["model"]
+    return "Gemini 3.5 Flash (High)"
+
+def _collect_adaptive_brainstorming_questions(goal: str, config: Config) -> Optional[List[Tuple[str, str]]]:
+    try:
+        from agent_loop.adapters import AgyAdapter
+        import tempfile
+
+        prompt = f"""
+You are helping with agent-loop intake. Act like a sharp product/engineering coworker.
+Given this broad goal, produce 3 to 5 concise follow-up questions that will help the planner make a useful implementation plan.
+
+Rules:
+- Ask only questions that are relevant to this specific goal.
+- Prefer concrete decisions, success criteria, scope boundaries, integrations, data, verification, and first usable outcome.
+- Do not ask generic questions if the goal already answers them.
+- Keep each question one sentence.
+- Return ONLY JSON in this shape:
+{{"questions":[{{"label":"short label","question":"question text"}}]}}
+
+Goal:
+{goal}
+"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            result = AgyAdapter(config=config).run_attempt(
+                model=_select_agy_model(config),
+                prompt=prompt,
+                workspace_path=tmp_path,
+                attempt_logs_dir=tmp_path / "logs",
+                timeout_seconds=120.0,
+            )
+        if not result.success:
+            return None
+
+        data = _extract_json_object(result.output)
+        raw_questions = data.get("questions", [])
+        questions: List[Tuple[str, str]] = []
+        for item in raw_questions:
+            label = " ".join(str(item.get("label", "")).split()).strip(":-")
+            question = " ".join(str(item.get("question", "")).split())
+            if label and question:
+                if not question.endswith(("?", ":")):
+                    question += "?"
+                questions.append((label[:60], f"{question} (Optional): "))
+        if 2 <= len(questions) <= 6:
+            return questions
+    except Exception:
+        return None
+    return None
+
+def _collect_brainstorming_notes(goal: str = "", config: Optional[Config] = None) -> str:
+    questions = None
+    if config is not None:
+        try:
+            if sys.stdin.isatty():
+                print("Generating tailored brainstorming questions...")
+                questions = _collect_adaptive_brainstorming_questions(goal, config)
+        except Exception:
+            questions = None
+    if not questions:
+        questions = _fallback_brainstorm_questions()
+
     answers = []
     for label, prompt in questions:
         answer = input(prompt).strip()
@@ -315,7 +398,7 @@ def handle_start(args: argparse.Namespace, config: Config) -> None:
         # Implement concise brainstorm interaction for brainstorm modes
         if intake_mode in {"brainstorm", "brainstorm_ui_lab"}:
             print("\n--- Brainstorming Questions ---")
-            notes = _collect_brainstorming_notes()
+            notes = _collect_brainstorming_notes(goal, config)
             if notes:
                 goal = f"{goal}\n{notes}"
 

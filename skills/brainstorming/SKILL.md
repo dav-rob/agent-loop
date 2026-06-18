@@ -10,12 +10,24 @@ Use this skill when a user starts a goal in brainstorm mode.
 ## Intent
 
 Refine a broad goal enough for the planner to create useful features and tasks.
-Keep the process lightweight: ask a few targeted questions, then summarize the
-answers as concise notes appended to the goal.
+Keep the process lightweight and conversational: ask a few targeted questions
+that respond to the actual goal, then summarize the answers as concise notes
+appended to the goal.
 
 ## Question Flow
 
 Ask one question at a time. Each question is optional; blank answers mean "skip".
+Prefer goal-specific questions over a generic form. Focus on the missing context
+that would materially change the implementation plan:
+
+- the first useful outcome
+- the main workflow or user
+- data sources, integrations, and persistence
+- scope boundaries and risks
+- verification and acceptance criteria
+
+Ask 3-5 questions unless the goal is already clear. Do not run a long interview.
+If adaptive model intake is unavailable, use the fixed fallback questions:
 
 1. Who is the main user or audience?
 2. What should be true when this goal is complete?

@@ -1,3 +1,4 @@
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -503,6 +504,66 @@ def test_cli_start_brainstorm_collects_multiturn_notes(clean_workspace):
     assert "- Verification: Unit tests for parser fixtures" in runs[0]["goal"]
     conn.close()
 
+def test_cli_start_brainstorm_uses_tailored_questions(clean_workspace):
+    user_inputs = [
+        "1",
+        "A terminal dashboard I can leave open",
+        "Headlines and videos should refresh without manual work",
+        "Keep summaries cached",
+        "y",
+    ]
+    input_generator = (val for val in user_inputs)
+
+    def mock_plan_run(run_id):
+        db_path = default_db_path()
+        conn = get_connection(db_path)
+        RunRepository(conn).update_status(run_id, "planning")
+        RunRepository(conn).update_status(run_id, "awaiting_plan_approval")
+        conn.close()
+        return True
+
+    from agent_loop.adapters import AttemptResult
+    brainstorm_output = json.dumps({
+        "questions": [
+            {"label": "First usable outcome", "question": "What would make this useful on day one?"},
+            {"label": "Refresh behaviour", "question": "Which data should refresh automatically versus on demand?"},
+            {"label": "Summary cache", "question": "What should be cached so repeat visits feel instant?"},
+        ]
+    })
+
+    with patch("builtins.input", side_effect=lambda *args, **kwargs: next(input_generator)), \
+         patch.object(sys.stdin, "isatty", return_value=True), \
+         patch("agent_loop.cli.Orchestrator") as mock_orch_cls, \
+         patch("agent_loop.adapters.AgyAdapter") as mock_agy_adapter_cls:
+        mock_orch = MagicMock()
+        mock_orch.plan_run.side_effect = mock_plan_run
+        mock_orch_cls.return_value = mock_orch
+
+        mock_adapter = MagicMock()
+        mock_adapter.run_attempt.return_value = AttemptResult(
+            success=True,
+            exit_code=0,
+            output=brainstorm_output,
+            error="",
+        )
+        mock_agy_adapter_cls.return_value = mock_adapter
+
+        with patch.object(sys, "argv", ["agent-loop", "start", "--goal", "Create my personal dashboard"]):
+            main()
+
+        mock_adapter.run_attempt.assert_called_once()
+        mock_orch.run_loop.assert_called_once()
+
+    db_path = default_db_path()
+    conn = get_connection(db_path)
+    run_repo = RunRepository(conn)
+    runs = run_repo.list_all()
+    assert len(runs) == 1
+    assert "- First usable outcome: A terminal dashboard I can leave open" in runs[0]["goal"]
+    assert "- Refresh behaviour: Headlines and videos should refresh without manual work" in runs[0]["goal"]
+    assert "- Summary cache: Keep summaries cached" in runs[0]["goal"]
+    conn.close()
+
 
 def test_cli_start_captures_pasted_multiline_goal(clean_workspace):
     class ScriptedTTY:
@@ -565,10 +626,12 @@ def test_cli_start_captures_pasted_multiline_goal(clean_workspace):
 
     with patch.object(sys, "stdin", fake_stdin), \
          patch("select.select", side_effect=fake_select), \
-         patch("agent_loop.cli.Orchestrator") as mock_orch_cls:
+         patch("agent_loop.cli.Orchestrator") as mock_orch_cls, \
+         patch("agent_loop.adapters.AgyAdapter") as mock_agy_adapter_cls:
         mock_orch = MagicMock()
         mock_orch.plan_run.side_effect = mock_plan_run
         mock_orch_cls.return_value = mock_orch
+        mock_agy_adapter_cls.side_effect = RuntimeError("no model intake in this test")
 
         with patch.object(sys, "argv", ["agent-loop", "start"]):
             main()

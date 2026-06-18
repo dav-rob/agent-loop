@@ -25,6 +25,7 @@ Use this file to record learnings, so that agents do not have to repeat work alr
 - Adapter transient-failure detection must not scan successful assistant output for generic words like "timeout"; inspect diagnostics/errors instead so valid plans discussing timeout handling are not rejected.
 - `agy --print-timeout` expects Go-duration syntax such as `123s`, `30m`, or `1h`, not a bare integer.
 - Workspace setup must ensure task worktrees can be created: initialize Git if missing, create an empty bootstrap commit only when `HEAD` is absent, add `.agent-loop/` to `.gitignore` only if needed, and preserve any effective user Git identity before falling back to agent-loop local identity.
+- Brainstorm intake should feel like a concise coworker conversation: prefer goal-specific follow-up questions from model intake, but retain the fixed questionnaire as a reliable fallback.
 
 ## Useful commands
 

@@ -341,9 +341,9 @@ I compared the original design in
 implementation. The broad shape is there, but these are the main gaps or rough
 edges to keep in mind:
 
-- The interactive brainstorm is simpler than the spec describes. It asks for a
-  goal, intake mode, and optional constraints; it is not yet a rich one-question-
-  at-a-time product conversation.
+- The interactive brainstorm now asks goal-specific follow-up questions when
+  model intake is available and falls back to a short fixed questionnaire when
+  it is not. It is still intentionally brief rather than a full design workshop.
 - UI Lab currently runs the brief-style intake path. It does not yet walk
   through the full set of UI Lab stages described in the spec.
 - `resume` can restart a goal from `blocked`, but if the underlying blocked task
