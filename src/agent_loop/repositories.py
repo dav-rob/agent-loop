@@ -452,6 +452,30 @@ class ReviewRepository:
             for row in cursor.fetchall()
         ]
 
+    def get_latest_for(self, subject_type: str, subject_id: int) -> Optional[Dict[str, Any]]:
+        cursor = self.conn.cursor()
+        cursor.execute(
+            "SELECT id, run_id, subject_type, subject_id, reviewer_route, findings, decision, evidence_paths, created_at "
+            "FROM reviews "
+            "WHERE subject_type = ? AND subject_id = ? "
+            "ORDER BY id DESC LIMIT 1;",
+            (subject_type, subject_id)
+        )
+        row = cursor.fetchone()
+        if not row:
+            return None
+        return {
+            "id": row[0],
+            "run_id": row[1],
+            "subject_type": row[2],
+            "subject_id": row[3],
+            "reviewer_route": row[4],
+            "findings": row[5],
+            "decision": row[6],
+            "evidence_paths": json.loads(row[7]) if row[7] else [],
+            "created_at": row[8]
+        }
+
     def get_latest_rejection(self, subject_type: str, subject_id: int) -> Optional[str]:
         cursor = self.conn.cursor()
         cursor.execute(

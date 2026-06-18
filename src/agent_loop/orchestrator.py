@@ -1363,8 +1363,10 @@ Scope: {json.dumps(task['scope'])}
                             self.notify(run_id, "blocked", f"Task '{task['name']}' failed {self.config.retry_policy['max_attempts']} times.")
                     else:
                         with self.db_lock:
-                            self.task_repo.update_status(task_id, "failed")
-                            self.task_repo.update_status(task_id, "ready")
+                            current_stat = self.task_repo.get(task_id)["status"]
+                            if current_stat != "blocked":
+                                self.task_repo.update_status(task_id, "failed")
+                                self.task_repo.update_status(task_id, "ready")
 
                 with self.git_lock:
                     remove_worktree(Path.cwd(), worktree_dir)
@@ -1407,8 +1409,10 @@ Scope: {json.dumps(task['scope'])}
                     self.notify(run_id, "blocked", f"Task '{task['name']}' failed {self.config.retry_policy['max_attempts']} times.")
             else:
                 with self.db_lock:
-                    self.task_repo.update_status(task_id, "failed")
-                    self.task_repo.update_status(task_id, "ready")
+                    current_stat = self.task_repo.get(task_id)["status"]
+                    if current_stat != "blocked":
+                        self.task_repo.update_status(task_id, "failed")
+                        self.task_repo.update_status(task_id, "ready")
             with self.git_lock:
                 remove_worktree(Path.cwd(), worktree_dir)
             return False
