@@ -143,9 +143,9 @@ class CodexAdapter(BaseAdapter):
         if reasoning_level:
             cmd += ["-c", f"model_reasoning_effort={reasoning_level}"]
         
-        # Check if plan_schema.json exists in package dir to pass to Codex planning route
+        # Check if plan_schema.json exists and the prompt explicitly requests the planning schema
         schema_path = Path(__file__).parent / "plan_schema.json"
-        if schema_path.exists() and ("schema" in prompt.lower() or "planner" in prompt.lower()):
+        if schema_path.exists() and "You are the Agent Loop Planner" in prompt:
             cmd += ["--output-schema", str(schema_path)]
             
         use_stdin = False
