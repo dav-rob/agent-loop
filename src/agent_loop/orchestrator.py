@@ -1079,10 +1079,41 @@ Scope: {json.dumps(task['scope'])}
 
                     elif decision == "rejected":
                         with self.db_lock:
-                            if num_attempts >= self.config.retry_policy["max_attempts"]:
-                                self.task_repo.update_status(task_id, "blocked")
-                                self.notify(run_id, "blocked", f"Task '{task['name']}' reached attempt limit on {decision}.")
+                            is_limit = num_attempts >= self.config.retry_policy["max_attempts"]
+                        
+                        if is_limit:
+                            esc_decision = self.run_task_escalation(run_id, task_id, num_attempts, f"Review rejected: {findings}")
+                            if esc_decision == "follow_up":
+                                with self.db_lock:
+                                    latest_review = self.review_repo.get_latest_for("task_escalation", task_id)
+                                    esc_findings = latest_review["findings"] if latest_review else findings
+                                    orig_scope = json.loads(task["scope"]) if isinstance(task["scope"], str) else (task["scope"] or {})
+                                    followup_scope = {
+                                        "original_task_id": task["id"],
+                                        "original_task_name": task["name"],
+                                        "original_task_scope": orig_scope,
+                                        "reviewer_findings": esc_findings,
+                                        "files": orig_scope.get("files", []),
+                                        "source_commit": end_sha
+                                    }
+                                    self.task_repo.update_status(task_id, "complete")
+                                    self.task_repo.create(
+                                        run_id=run_id,
+                                        feature_id=task["feature_id"],
+                                        name=f"Follow-up: {task['name']}",
+                                        role=task["role"],
+                                        risk=task["risk"],
+                                        scope=followup_scope,
+                                        dependencies=task.get("dependencies", []),
+                                        required_verification=task.get("required_verification")
+                                    )
+                                self.notify(run_id, "task_follow_up", f"Task '{task['name']}' reached attempt limit but escalation review granted extension.")
                             else:
+                                with self.db_lock:
+                                    self.task_repo.update_status(task_id, "blocked")
+                                self.notify(run_id, "blocked", f"Task '{task['name']}' reached attempt limit on {decision}.")
+                        else:
+                            with self.db_lock:
                                 self.task_repo.update_status(task_id, "failed")
                                 self.task_repo.update_status(task_id, "ready")
                     else:
@@ -1268,13 +1299,39 @@ Scope: {json.dumps(task['scope'])}
                     with self.db_lock:
                         self.attempt_repo.update_outcome(attempt_id, "failed", patch_path=patch_path)
                         failed_attempts = [a for a in attempts if a["outcome"] in ("failed", "abandoned")]
-                        if len(failed_attempts) + 1 >= self.config.retry_policy["max_attempts"]:
-                            self.task_repo.update_status(task_id, "blocked")
+                        is_limit = len(failed_attempts) + 1 >= self.config.retry_policy["max_attempts"]
+
+                    if is_limit:
+                        esc_decision = self.run_task_escalation(run_id, task_id, len(failed_attempts) + 1, "Execution failed verification.")
+                        if esc_decision == "follow_up":
+                            with self.db_lock:
+                                latest_review = self.review_repo.get_latest_for("task_escalation", task_id)
+                                esc_findings = latest_review["findings"] if latest_review else "Need another try."
+                                orig_scope = json.loads(task["scope"]) if isinstance(task["scope"], str) else (task["scope"] or {})
+                                followup_scope = {
+                                    **orig_scope,
+                                    "escalation_hint": esc_findings
+                                }
+                                self.task_repo.update_status(task_id, "complete")
+                                self.task_repo.create(
+                                    run_id=run_id,
+                                    feature_id=task["feature_id"],
+                                    name=f"Follow-up: {task['name']}",
+                                    role=task["role"],
+                                    risk=task["risk"],
+                                    scope=followup_scope,
+                                    dependencies=task.get("dependencies", []),
+                                    required_verification=task.get("required_verification")
+                                )
+                            self.notify(run_id, "task_follow_up", f"Task '{task['name']}' reached attempt limit but escalation review granted extension.")
                         else:
+                            with self.db_lock:
+                                self.task_repo.update_status(task_id, "blocked")
+                            self.notify(run_id, "blocked", f"Task '{task['name']}' failed {self.config.retry_policy['max_attempts']} times.")
+                    else:
+                        with self.db_lock:
                             self.task_repo.update_status(task_id, "failed")
                             self.task_repo.update_status(task_id, "ready")
-                    if len(failed_attempts) + 1 >= self.config.retry_policy["max_attempts"]:
-                        self.notify(run_id, "blocked", f"Task {task['name']} failed {self.config.retry_policy['max_attempts']} times.")
 
                 with self.git_lock:
                     remove_worktree(Path.cwd(), worktree_dir)
@@ -1286,16 +1343,57 @@ Scope: {json.dumps(task['scope'])}
                 self.attempt_repo.update_outcome(attempt_id, "failed", patch_path=patch_path)
                 failed_attempts = [a for a in attempts if a["outcome"] in ("failed", "abandoned")]
                 attempt_count = len(failed_attempts) + 1
-                if attempt_count >= self.config.retry_policy["max_attempts"]:
-                    self.task_repo.update_status(task_id, "blocked")
+                is_limit = attempt_count >= self.config.retry_policy["max_attempts"]
+
+            if is_limit:
+                esc_decision = self.run_task_escalation(run_id, task_id, attempt_count, "Execution threw an exception.")
+                if esc_decision == "follow_up":
+                    with self.db_lock:
+                        latest_review = self.review_repo.get_latest_for("task_escalation", task_id)
+                        esc_findings = latest_review["findings"] if latest_review else "Need another try."
+                        orig_scope = json.loads(task["scope"]) if isinstance(task["scope"], str) else (task["scope"] or {})
+                        followup_scope = {
+                            **orig_scope,
+                            "escalation_hint": esc_findings
+                        }
+                        self.task_repo.update_status(task_id, "complete")
+                        self.task_repo.create(
+                            run_id=run_id,
+                            feature_id=task["feature_id"],
+                            name=f"Follow-up: {task['name']}",
+                            role=task["role"],
+                            risk=task["risk"],
+                            scope=followup_scope,
+                            dependencies=task.get("dependencies", []),
+                            required_verification=task.get("required_verification")
+                        )
+                    self.notify(run_id, "task_follow_up", f"Task '{task['name']}' reached attempt limit but escalation review granted extension.")
                 else:
+                    with self.db_lock:
+                        self.task_repo.update_status(task_id, "blocked")
+                    self.notify(run_id, "blocked", f"Task '{task['name']}' failed {self.config.retry_policy['max_attempts']} times.")
+            else:
+                with self.db_lock:
                     self.task_repo.update_status(task_id, "failed")
                     self.task_repo.update_status(task_id, "ready")
-            if len(failed_attempts) + 1 >= self.config.retry_policy["max_attempts"]:
-                self.notify(run_id, "blocked", f"Task '{task['name']}' failed {self.config.retry_policy['max_attempts']} times.")
             with self.git_lock:
                 remove_worktree(Path.cwd(), worktree_dir)
             return False
+
+
+    def run_task_escalation(self, run_id: int, task_id: int, attempt_count: int, reason: str) -> str:
+        with self.db_lock:
+            task = self.task_repo.get(task_id)
+        
+        prompt = f'''This task '{task["name"]}' has reached its maximum attempt limit ({attempt_count} attempts).
+The last failure/rejection reason was:
+{reason}
+
+Please evaluate if this task is experiencing a HARD BLOCKER (e.g. missing credentials, weird path/environmental issues, fundamentally unsolvable without user intervention) or if the executor is just struggling with logic and could benefit from an extension (a follow-up task).
+
+If it's a hard blocker that requires human operator intervention, return "block" with findings explaining why.
+If the executor just needs another try or a specific hint to fix its mistake, return "follow_up" with findings explaining the hint.'''
+        return self.run_agent_review(run_id, "task_escalation", task_id, prompt)
 
     def run_agent_review(self, run_id: int, subject_type: str, subject_id: int, review_prompt: str) -> str:
         routes = self.config.routes.get("planning", [])
