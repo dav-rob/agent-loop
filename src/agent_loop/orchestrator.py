@@ -113,6 +113,33 @@ class Orchestrator:
         self.test_migration_repo = TestMigrationRepository(conn)
         self.test_run_repo = TestRunRepository(conn)
 
+    def reset_provider_errors(self) -> None:
+        """Resets auth_required and transient_failure provider states to available."""
+        providers = self.provider_repo.list_all()
+        for p in providers:
+            if p.get("quota_state") in {"auth_required", "transient_failure"}:
+                with self.db_lock:
+                    self.provider_repo.save(
+                        provider=p["provider"],
+                        model=p["model"],
+                        capability_snapshot=p.get("capability_snapshot", {}),
+                        availability=True,
+                        quota_state="available",
+                        last_probe=None
+                    )
+
+    def unblock_provider_blocked_tasks(self, run_id: int) -> None:
+        """Unblocks tasks that were blocked solely due to provider errors."""
+        tasks = self.task_repo.get_by_run(run_id)
+        all_attempts = self.attempt_repo.get_by_run(run_id)
+        for task in tasks:
+            if task["status"] == "blocked":
+                attempts = [a for a in all_attempts if a["task_id"] == task["id"]]
+                failed_attempts = [a for a in attempts if a["outcome"] in ("failed", "abandoned")]
+                if len(failed_attempts) < self.config.retry_policy["max_attempts"]:
+                    with self.db_lock:
+                        self.task_repo.update_status(task["id"], "ready")
+
     def plan_run(self, run_id: int) -> bool:
         run = self.run_repo.get(run_id)
         if not run:
@@ -624,7 +651,7 @@ Return ONLY a valid JSON object matching the requested schema. Do not include ma
                     
                     # Check total attempts for this task
                     cursor.execute(
-                        "SELECT count(*) FROM attempts WHERE task_id = ?;",
+                        "SELECT count(*) FROM attempts WHERE task_id = ? AND outcome IN ('failed', 'abandoned');",
                         (task_id,)
                     )
                     attempt_count = cursor.fetchone()[0]
@@ -793,13 +820,14 @@ Return ONLY a valid JSON object matching the requested schema. Do not include ma
         except Exception as exc:
             with self.db_lock:
                 self.attempt_repo.update_outcome(attempt_id, "failed")
-                attempt_count = len(attempts) + 1
+                failed_attempts = [a for a in attempts if a["outcome"] in ("failed", "abandoned")]
+                attempt_count = len(failed_attempts) + 1
                 if attempt_count >= self.config.retry_policy["max_attempts"]:
                     self.task_repo.update_status(task_id, "blocked")
                 else:
                     self.task_repo.update_status(task_id, "failed")
                     self.task_repo.update_status(task_id, "ready")
-            if len(attempts) + 1 >= self.config.retry_policy["max_attempts"]:
+            if len(failed_attempts) + 1 >= self.config.retry_policy["max_attempts"]:
                 self.notify(run_id, "blocked", f"Task '{task['name']}' failed during worktree setup: {exc}")
             return False
 
@@ -1089,7 +1117,7 @@ Scope: {json.dumps(task['scope'])}
                             availability=False,
                             quota_state="auth_required"
                         )
-                        self.attempt_repo.update_outcome(attempt_id, "failed", patch_path=patch_path)
+                        self.attempt_repo.update_outcome(attempt_id, "provider_error", patch_path=patch_path)
 
                     # Record which route failed auth so _pick_route skips it.
                     auth_failed_routes.add((provider, model))
@@ -1146,7 +1174,7 @@ Scope: {json.dumps(task['scope'])}
                                     capability_snapshot={"models": [model]},
                                     availability=False, quota_state="auth_required"
                                 )
-                                self.attempt_repo.update_outcome(attempt_id, "failed", patch_path=patch_path)
+                                self.attempt_repo.update_outcome(attempt_id, "provider_error", patch_path=patch_path)
                                 self.task_repo.update_status(task_id, "failed")
                                 self.task_repo.update_status(task_id, "ready")
                             alert_msg = (
@@ -1183,7 +1211,7 @@ Scope: {json.dumps(task['scope'])}
                             availability=False,
                             quota_state="transient_failure"
                         )
-                        self.attempt_repo.update_outcome(attempt_id, "failed", patch_path=patch_path)
+                        self.attempt_repo.update_outcome(attempt_id, "provider_error", patch_path=patch_path)
                         self.task_repo.update_status(task_id, "failed")
                         self.task_repo.update_status(task_id, "ready")
                     
@@ -1207,7 +1235,7 @@ Scope: {json.dumps(task['scope'])}
                             availability=False,
                             quota_state="unavailable"
                         )
-                        self.attempt_repo.update_outcome(attempt_id, "failed", patch_path=patch_path)
+                        self.attempt_repo.update_outcome(attempt_id, "provider_error", patch_path=patch_path)
                         self.task_repo.update_status(task_id, "failed")
                         self.task_repo.update_status(task_id, "ready")
                     
@@ -1224,12 +1252,13 @@ Scope: {json.dumps(task['scope'])}
                 else:
                     with self.db_lock:
                         self.attempt_repo.update_outcome(attempt_id, "failed", patch_path=patch_path)
-                        if len(attempts) + 1 >= self.config.retry_policy["max_attempts"]:
+                        failed_attempts = [a for a in attempts if a["outcome"] in ("failed", "abandoned")]
+                        if len(failed_attempts) + 1 >= self.config.retry_policy["max_attempts"]:
                             self.task_repo.update_status(task_id, "blocked")
                         else:
                             self.task_repo.update_status(task_id, "failed")
                             self.task_repo.update_status(task_id, "ready")
-                    if len(attempts) + 1 >= self.config.retry_policy["max_attempts"]:
+                    if len(failed_attempts) + 1 >= self.config.retry_policy["max_attempts"]:
                         self.notify(run_id, "blocked", f"Task {task['name']} failed {self.config.retry_policy['max_attempts']} times.")
 
                 with self.git_lock:
@@ -1240,13 +1269,14 @@ Scope: {json.dumps(task['scope'])}
             patch_path = self._preserve_uncommitted_changes(worktree_dir, logs_dir)
             with self.db_lock:
                 self.attempt_repo.update_outcome(attempt_id, "failed", patch_path=patch_path)
-                attempt_count = len(attempts) + 1
+                failed_attempts = [a for a in attempts if a["outcome"] in ("failed", "abandoned")]
+                attempt_count = len(failed_attempts) + 1
                 if attempt_count >= self.config.retry_policy["max_attempts"]:
                     self.task_repo.update_status(task_id, "blocked")
                 else:
                     self.task_repo.update_status(task_id, "failed")
                     self.task_repo.update_status(task_id, "ready")
-            if len(attempts) + 1 >= self.config.retry_policy["max_attempts"]:
+            if len(failed_attempts) + 1 >= self.config.retry_policy["max_attempts"]:
                 self.notify(run_id, "blocked", f"Task '{task['name']}' failed {self.config.retry_policy['max_attempts']} times.")
             with self.git_lock:
                 remove_worktree(Path.cwd(), worktree_dir)

@@ -148,7 +148,12 @@ class CodexAdapter(BaseAdapter):
         if schema_path.exists() and ("schema" in prompt.lower() or "planner" in prompt.lower()):
             cmd += ["--output-schema", str(schema_path)]
             
-        cmd.append(prompt)
+        use_stdin = False
+        if len(prompt) > 65000:
+            cmd.append("-")
+            use_stdin = True
+        else:
+            cmd.append(prompt)
 
         stdout_file = attempt_logs_dir / "stdout.log"
         stderr_file = attempt_logs_dir / "stderr.log"
@@ -159,7 +164,8 @@ class CodexAdapter(BaseAdapter):
             with stdout_file.open("w") as out_f, stderr_file.open("w") as err_f:
                 process = subprocess.run(
                     cmd,
-                    stdin=subprocess.DEVNULL,
+                    input=prompt.encode("utf-8") if use_stdin else None,
+                    stdin=subprocess.DEVNULL if not use_stdin else None,
                     stdout=out_f,
                     stderr=err_f,
                     timeout=timeout_seconds,
@@ -346,9 +352,12 @@ class AgyAdapter(BaseAdapter):
             "--dangerously-skip-permissions",
             "--model", model,
             "--log-file", str(agy_log_file),
-            "--add-dir", str(workspace_path),
-            prompt
+            "--add-dir", str(workspace_path)
         ]
+        if len(prompt) > 65000:
+            cmd.append(f"Please read your instructions and full context from the file at '{prompt_file.absolute()}'. Execute the requested task strictly based on the contents of that file.")
+        else:
+            cmd.append(prompt)
 
         try:
             # Pass stdin=DEVNULL to ensure non-interactive execution avoids hangs!
