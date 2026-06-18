@@ -504,6 +504,42 @@ def test_interrupted_attempt_recovery(db_conn, tmp_path):
     assert task_repo.get(task_id)["status"] == "blocked"
 
 
+def test_worktree_creation_failures_respect_retry_limit(db_conn, tmp_path, monkeypatch):
+    config = Config({
+        "db_path": ":memory:",
+        "retry_policy": {"max_attempts": 2, "escalation_threshold": 2},
+        "routes": {
+            "planning": [{"provider": "codex", "model": "gpt-5.5"}],
+            "implementation": [{"provider": "codex", "model": "gpt-5.4-mini"}],
+        },
+    })
+    orch = Orchestrator(db_conn, config, plan_path=tmp_path / "plan.md", progress_path=tmp_path / "progress.md")
+
+    run_repo = RunRepository(db_conn)
+    feat_repo = FeatureRepository(db_conn)
+    task_repo = TaskRepository(db_conn)
+    attempt_repo = AttemptRepository(db_conn)
+
+    run_id = run_repo.create("No base commit", "autonomous")
+    run_repo.update_status(run_id, "planning")
+    run_repo.update_status(run_id, "running")
+    feat_id = feat_repo.create(run_id, "Feature 1", "low")
+    task_id = task_repo.create(run_id, feat_id, "Inspect stack", "planning", "low")
+    task_repo.update_status(task_id, "ready")
+
+    monkeypatch.setattr(
+        "agent_loop.orchestrator.create_worktree",
+        MagicMock(side_effect=RuntimeError("invalid reference: main")),
+    )
+
+    assert orch._execute_task_impl(run_id, task_repo.get(task_id)) is False
+    assert task_repo.get(task_id)["status"] == "ready"
+
+    assert orch._execute_task_impl(run_id, task_repo.get(task_id)) is False
+    assert task_repo.get(task_id)["status"] == "blocked"
+    assert len(attempt_repo.get_by_run(run_id)) == 2
+
+
 def test_execute_task_uses_agent_loop_worktrees_by_default(db_conn, tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     config = Config({
@@ -805,7 +841,6 @@ def test_preserve_partial_work_on_recovery(db_conn, tmp_path, monkeypatch):
     patch_file = Path(attempt["patch_path"])
     assert patch_file.exists()
     assert patch_file.read_text() == dummy_diff
-
 
 
 

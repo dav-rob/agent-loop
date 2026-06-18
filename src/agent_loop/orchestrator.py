@@ -747,11 +747,17 @@ Return ONLY a valid JSON object matching the requested schema. Do not include ma
         try:
             with self.git_lock:
                 create_worktree(Path.cwd(), worktree_dir, branch_name)
-        except Exception:
+        except Exception as exc:
             with self.db_lock:
                 self.attempt_repo.update_outcome(attempt_id, "failed")
-                self.task_repo.update_status(task_id, "failed")
-                self.task_repo.update_status(task_id, "ready")
+                attempt_count = len(attempts) + 1
+                if attempt_count >= self.config.retry_policy["max_attempts"]:
+                    self.task_repo.update_status(task_id, "blocked")
+                else:
+                    self.task_repo.update_status(task_id, "failed")
+                    self.task_repo.update_status(task_id, "ready")
+            if len(attempts) + 1 >= self.config.retry_policy["max_attempts"]:
+                self.notify(run_id, "blocked", f"Task '{task['name']}' failed during worktree setup: {exc}")
             return False
 
         scope_data = {}
@@ -1117,8 +1123,14 @@ Scope: {json.dumps(task['scope'])}
             patch_path = self._preserve_uncommitted_changes(worktree_dir, logs_dir)
             with self.db_lock:
                 self.attempt_repo.update_outcome(attempt_id, "failed", patch_path=patch_path)
-                self.task_repo.update_status(task_id, "failed")
-                self.task_repo.update_status(task_id, "ready")
+                attempt_count = len(attempts) + 1
+                if attempt_count >= self.config.retry_policy["max_attempts"]:
+                    self.task_repo.update_status(task_id, "blocked")
+                else:
+                    self.task_repo.update_status(task_id, "failed")
+                    self.task_repo.update_status(task_id, "ready")
+            if len(attempts) + 1 >= self.config.retry_policy["max_attempts"]:
+                self.notify(run_id, "blocked", f"Task '{task['name']}' failed {self.config.retry_policy['max_attempts']} times.")
             with self.git_lock:
                 remove_worktree(Path.cwd(), worktree_dir)
             return False
