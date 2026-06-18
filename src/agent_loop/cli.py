@@ -27,6 +27,8 @@ def describe_goal(goal: str, max_length: int = 70) -> str:
         return one_line
     return one_line[: max_length - 3].rstrip() + "..."
 
+TERMINAL_RUN_STATUSES = {"complete", "failed", "cancelled"}
+
 def _read_ready_tty_lines(stdin: Any, pause_seconds: float = 0.05) -> List[str]:
     try:
         if not stdin.isatty():
@@ -121,6 +123,82 @@ def get_target_run_id(run_repo: RunRepository, run_id_arg: Optional[int]) -> int
         print("Error: No goals found in the database. Please start a goal first.", file=sys.stderr)
         sys.exit(1)
     return runs[0]["id"]
+
+def _start_args() -> argparse.Namespace:
+    return argparse.Namespace(
+        non_interactive=False,
+        goal=None,
+        intake=None,
+        unattended_policy="approve",
+    )
+
+def handle_default(args: argparse.Namespace, config: Config) -> None:
+    conn = get_db(config)
+    run_repo = RunRepository(conn)
+    runs = run_repo.list_all()
+    active_runs = [run for run in runs if run["status"] not in TERMINAL_RUN_STATUSES]
+
+    if not active_runs:
+        conn.close()
+        if not sys.stdin.isatty():
+            print("No goals in progress.")
+            print("Start a new goal: agent-loop start")
+            return
+        print("No goals in progress.")
+        choice = input("Start a new goal? (yes/no): ").strip().lower()
+        if choice in {"yes", "y"}:
+            handle_start(_start_args(), config)
+        return
+
+    run = active_runs[0]
+    run_id = run["id"]
+    run_count = len(active_runs)
+
+    render_plan_md(conn, run_id, config.plan_path)
+    render_progress_md(conn, run_id, config.progress_path)
+    conn.close()
+
+    goal_label = "goal" if run_count == 1 else "goals"
+    print(f"You have {run_count} {goal_label} in progress.")
+    print()
+    print(f"Status: {run['status']}")
+    print(f"Goal: {describe_goal(run['goal'], 200)}")
+    print()
+
+    if run["status"] == "awaiting_plan_approval":
+        print("There is a plan waiting for your approval.")
+        print(f"Plan file: {config.plan_path}")
+        print(f"Review with CLI: agent-loop plan {run_id}")
+        print(f"Approve and start: agent-loop approve {run_id}")
+        if not sys.stdin.isatty():
+            return
+
+        print()
+        print("[v] View plan  [a] Approve and start  [n] Start new goal  [q] Quit")
+        choice = input("Choice: ").strip().lower()
+        if choice == "v":
+            handle_plan(argparse.Namespace(run_id=run_id, details=False), config)
+        elif choice == "a":
+            handle_approve(argparse.Namespace(run_id=run_id), config)
+        elif choice == "n":
+            handle_start(_start_args(), config)
+        return
+
+    print(f"Resume this goal: agent-loop resume {run_id}")
+    print(f"Show status: agent-loop status {run_id}")
+    print("Start a new goal: agent-loop start")
+    if not sys.stdin.isatty():
+        return
+
+    print()
+    print("[r] Resume  [s] Status  [n] Start new goal  [q] Quit")
+    choice = input("Choice: ").strip().lower()
+    if choice == "r":
+        handle_resume(argparse.Namespace(run_id=run_id), config)
+    elif choice == "s":
+        handle_status(argparse.Namespace(run_id=run_id), config)
+    elif choice == "n":
+        handle_start(_start_args(), config)
 
 def handle_start(args: argparse.Namespace, config: Config) -> None:
     conn = get_db(config)
@@ -620,7 +698,7 @@ def main() -> None:
     )
     parser.add_argument("--config", type=Path, help="Path to config file")
     
-    subparsers = parser.add_subparsers(dest="command", required=True)
+    subparsers = parser.add_subparsers(dest="command")
 
     # start
     start_parser = subparsers.add_parser("start", help="Start a new goal")
@@ -673,10 +751,12 @@ def main() -> None:
     args = parser.parse_args()
     config = Config.load(args.config)
 
-    if config.execution_mode == "trusted-host" and args.command in {"start", "resume", "approve", "migration"}:
+    if config.execution_mode == "trusted-host" and args.command in {None, "start", "resume", "approve", "migration"}:
         print("Trusted-host execution: commands can access anything available to the current user.")
 
-    if args.command == "start":
+    if args.command is None:
+        handle_default(args, config)
+    elif args.command == "start":
         handle_start(args, config)
     elif args.command == "resume":
         handle_resume(args, config)
