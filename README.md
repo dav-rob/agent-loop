@@ -76,12 +76,14 @@ worktrees_dir = ".agent-loop/worktrees"
 
 [routes]
 planning = [
-    { provider = "codex", model = "gpt-5.5" },
-    { provider = "agy", model = "Claude Opus 4.6 Thinking" }
+    { provider = "codex", model = "gpt-5.5", reasoning_level = "high" },
+    { provider = "agy", model = "Claude Opus 4.6 (Thinking)", reasoning_level = "high" },
+    { provider = "agy", model = "Gemini 3.1 Pro (High)", reasoning_level = "high" }
 ]
 implementation = [
-    { provider = "agy", model = "Gemini 3.5 Flash High" },
-    { provider = "codex", model = "gpt-5.4-mini" }
+    { provider = "agy", model = "Gemini 3.1 Pro (High)", reasoning_level = "high" },
+    { provider = "agy", model = "Claude Sonnet 4.6 (Thinking)", reasoning_level = "high" },
+    { provider = "codex", model = "gpt-5.4-mini", reasoning_level = "high" }
 ]
 
 [retry_policy]

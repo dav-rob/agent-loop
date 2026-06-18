@@ -21,7 +21,8 @@ DEFAULT_CONFIG = {
             {"provider": "agy", "model": "Gemini 3.1 Pro (High)", "reasoning_level": "high"},
         ],
         "implementation": [
-            {"provider": "agy", "model": "Gemini 3.5 Flash (High)", "reasoning_level": "high"},
+            {"provider": "agy", "model": "Gemini 3.1 Pro (High)", "reasoning_level": "high"},
+            {"provider": "agy", "model": "Claude Sonnet 4.6 (Thinking)", "reasoning_level": "high"},
             {"provider": "codex", "model": "gpt-5.4-mini", "reasoning_level": "high"},
         ]
     },

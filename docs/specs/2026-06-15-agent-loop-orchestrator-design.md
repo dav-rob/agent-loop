@@ -152,8 +152,9 @@ Default planning, assessment, review, integration-conflict, and high-risk route:
 
 Default implementation route:
 
-1. `agy` Gemini 3.5 Flash High.
-2. Codex `gpt-5.4-mini` with high reasoning.
+1. `agy` Gemini 3.1 Pro High.
+2. `agy` Claude Sonnet 4.6 Thinking.
+3. Codex `gpt-5.4-mini` with high reasoning.
 
 The installed Codex catalog currently provides `gpt-5.4-mini`, not `gpt-5.5-mini`. All model names remain configurable so catalog changes do not require code changes.
 

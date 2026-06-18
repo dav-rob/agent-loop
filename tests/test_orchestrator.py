@@ -369,6 +369,42 @@ def test_final_review_gating_success_and_failure(db_conn, tmp_path):
         orch.run_loop(run_id)
         assert run_repo.get(run_id)["status"] == "complete"
 
+def test_feature_review_follow_up_prevents_final_review_until_task_runs(db_conn, tmp_path):
+    config = Config({
+        "db_path": ":memory:",
+        "logs_dir": str(tmp_path / "logs"),
+        "routes": {
+            "planning": [{"provider": "codex", "model": "gpt-5.5"}],
+            "implementation": [{"provider": "codex", "model": "gpt-5.4-mini"}],
+        },
+    })
+    orch = Orchestrator(db_conn, config, plan_path=tmp_path / "plan.md", progress_path=tmp_path / "progress.md")
+
+    run_repo = RunRepository(db_conn)
+    feat_repo = FeatureRepository(db_conn)
+    task_repo = TaskRepository(db_conn)
+
+    run_id = run_repo.create("Feature follow-up test", "autonomous")
+    run_repo.update_status(run_id, "planning")
+    run_repo.update_status(run_id, "running")
+    feat_id = feat_repo.create(run_id, "Feature 1", "low")
+    task_id = task_repo.create(run_id, feat_id, "Task 1", "implementation", "low")
+    task_repo.update_status(task_id, "complete", force=True)
+
+    with patch.object(orch, "run_feature_review", return_value="follow_up") as mock_feature_review, \
+         patch.object(orch, "run_final_review", return_value=True) as mock_final_review:
+        orch.run_loop(run_id)
+
+    mock_feature_review.assert_called_once_with(run_id, feat_id)
+    mock_final_review.assert_not_called()
+    assert run_repo.get(run_id)["status"] == "running"
+    assert feat_repo.get(feat_id)["review_status"] == "pending"
+
+    tasks = task_repo.get_by_run(run_id)
+    follow_up_tasks = [task for task in tasks if task["name"] == "Address feature review feedback for Feature 1"]
+    assert len(follow_up_tasks) == 1
+    assert follow_up_tasks[0]["status"] == "pending"
+
 def test_parallel_workers_safe_concurrency(db_conn, tmp_path, monkeypatch):
     import time
     mock_create_wt = MagicMock()
@@ -841,7 +877,6 @@ def test_preserve_partial_work_on_recovery(db_conn, tmp_path, monkeypatch):
     patch_file = Path(attempt["patch_path"])
     assert patch_file.exists()
     assert patch_file.read_text() == dummy_diff
-
 
 
 

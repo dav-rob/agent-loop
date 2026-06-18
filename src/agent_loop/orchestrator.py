@@ -861,7 +861,7 @@ Return ONLY a valid JSON object matching the requested schema. Do not include ma
             try:
                 res = subprocess.run(["git", "rev-parse", "HEAD"], cwd=worktree_dir, capture_output=True, text=True, check=True)
                 start_sha = res.stdout.strip()
-            except subprocess.CalledProcessError:
+            except Exception:
                 start_sha = None
 
         with self.db_lock:
@@ -920,7 +920,7 @@ Scope: {json.dumps(task['scope'])}
                     try:
                         res = subprocess.run(["git", "rev-parse", "HEAD"], cwd=worktree_dir, capture_output=True, text=True, check=True)
                         end_sha = res.stdout.strip()
-                    except subprocess.CalledProcessError:
+                    except Exception:
                         end_sha = None
 
                 with self.db_lock:
@@ -964,7 +964,7 @@ Scope: {json.dumps(task['scope'])}
                                 run_id=run_id,
                                 task=task,
                                 branch_name=branch_name,
-                                source_commit=sha,
+                                source_commit=end_sha,
                                 target_baseline=target_baseline,
                                 conflicting_files=conflicting_files
                             )
@@ -1060,7 +1060,7 @@ Scope: {json.dumps(task['scope'])}
                                     run_id=run_id,
                                     task=task,
                                     branch_name=branch_name,
-                                    source_commit=sha,
+                                    source_commit=end_sha,
                                     target_baseline=target_baseline,
                                     conflicting_files=conflicting_files
                                 )
@@ -2008,6 +2008,7 @@ Only return the raw JSON object. Do not include markdown wrappers.
                             self.run_repo.update_status(run_id, "blocked")
                             self.notify(run_id, "blocked", f"Feature '{feature['name']}' review was rejected. Run is blocked.")
 
+            tasks = self.task_repo.get_by_run(run_id)
             ready_tasks = [t for t in tasks if t["status"] == "ready"]
             running_tasks = [t for t in tasks if t["status"] == "running"]
             blocked_tasks = [t for t in tasks if t["status"] == "blocked"]

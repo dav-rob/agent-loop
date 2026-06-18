@@ -105,7 +105,7 @@ def _select_agy_model(config: Config) -> str:
     for route in config.routes.get("planning", []) + config.routes.get("implementation", []):
         if route.get("provider") == "agy":
             return route["model"]
-    return "Gemini 3.5 Flash (High)"
+    return "Gemini 3.1 Pro (High)"
 
 def _collect_adaptive_brainstorming_questions(goal: str, config: Config) -> Optional[List[Tuple[str, str]]]:
     try:
@@ -319,12 +319,7 @@ def handle_start(args: argparse.Namespace, config: Config) -> None:
             brief_output = ""
             try:
                 from agent_loop.adapters import AgyAdapter
-                routes = config.routes.get("planning", []) + config.routes.get("implementation", [])
-                selected_model = "Gemini 3.5 Flash (High)"
-                for r in routes:
-                    if r["provider"] == "agy":
-                        selected_model = r["model"]
-                        break
+                selected_model = _select_agy_model(config)
                 
                 adapter = AgyAdapter(config=config)
                 import tempfile
@@ -408,12 +403,7 @@ def handle_start(args: argparse.Namespace, config: Config) -> None:
                 brief_output = ""
                 try:
                     from agent_loop.adapters import AgyAdapter
-                    routes = config.routes.get("planning", []) + config.routes.get("implementation", [])
-                    selected_model = "Gemini 3.5 Flash (High)"
-                    for r in routes:
-                        if r["provider"] == "agy":
-                            selected_model = r["model"]
-                            break
+                    selected_model = _select_agy_model(config)
                     
                     adapter = AgyAdapter(config=config)
                     import tempfile
