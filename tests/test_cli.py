@@ -103,6 +103,15 @@ def test_cli_start_bootstraps_empty_git_repo(clean_workspace):
 
     after = subprocess.run(["git", "rev-parse", "--verify", "HEAD"], cwd=clean_workspace, capture_output=True, text=True)
     assert after.returncode == 0
+    assert (clean_workspace / ".gitignore").read_text() == ".agent-loop/\n"
+    committed_files = subprocess.run(
+        ["git", "ls-tree", "--name-only", "HEAD"],
+        cwd=clean_workspace,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert ".gitignore" in committed_files.stdout.splitlines()
 
 def test_cli_plan_details(clean_workspace, capsys):
     # Setup test run in db

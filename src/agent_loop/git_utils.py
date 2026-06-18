@@ -2,6 +2,8 @@ import subprocess
 from pathlib import Path
 from typing import Optional
 
+DEFAULT_GITIGNORE_ENTRY = ".agent-loop/"
+
 def run_git(args: list[str], cwd: Path) -> subprocess.CompletedProcess:
     return subprocess.run(
         ["git"] + args,
@@ -21,6 +23,19 @@ def init_git_repo(repo_path: Path) -> None:
     run_git(["add", "README.md"], repo_path)
     run_git(["commit", "-m", "Initial commit"], repo_path)
 
+def ensure_default_gitignore(repo_path: Path) -> bool:
+    gitignore_path = repo_path / ".gitignore"
+    existing = gitignore_path.read_text() if gitignore_path.exists() else ""
+    lines = existing.splitlines()
+    if DEFAULT_GITIGNORE_ENTRY in {line.strip() for line in lines}:
+        return False
+
+    prefix = existing
+    if prefix and not prefix.endswith("\n"):
+        prefix += "\n"
+    gitignore_path.write_text(prefix + DEFAULT_GITIGNORE_ENTRY + "\n")
+    return True
+
 def ensure_initial_commit(repo_path: Path) -> bool:
     try:
         run_git(["rev-parse", "--verify", "HEAD"], repo_path)
@@ -29,13 +44,16 @@ def ensure_initial_commit(repo_path: Path) -> bool:
         pass
 
     try:
-        run_git(["config", "--local", "user.name"], repo_path)
+        run_git(["config", "user.name"], repo_path)
     except subprocess.CalledProcessError:
         run_git(["config", "user.name", "Agent Loop"], repo_path)
     try:
-        run_git(["config", "--local", "user.email"], repo_path)
+        run_git(["config", "user.email"], repo_path)
     except subprocess.CalledProcessError:
         run_git(["config", "user.email", "agent-loop@local"], repo_path)
+
+    if ensure_default_gitignore(repo_path):
+        run_git(["add", ".gitignore"], repo_path)
 
     run_git(["commit", "--allow-empty", "-m", "agent-loop: initialize repository"], repo_path)
     return True
