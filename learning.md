@@ -7,6 +7,7 @@ Use this file to record learnings, so that agents do not have to repeat work alr
 - All commits must be fine-grained commits so that the purpose of each change can be tracked easily.
 - Schema is transactionally versioned and stored in SQLite.
 - Markdown views are generated directly from DB state. Product runtime views live under `.agent-loop/`; this repository also has root manual-loop `plan.md` and `progress.md` files.
+- For a target repository's live agent-loop state, `.agent-loop/agent-loop.db` is authoritative. On fresh context, inspect database-backed commands like `agent-loop status` and `agent-loop plan --details` before looking at `.agent-loop/logs/`; logs are evidence for attempts, not the source of truth for current goal/task status.
 - `agy` CLI requires passing `stdin=subprocess.DEVNULL` to run non-interactively without hanging.
 - Codex CLI supports `--json` output and structured schema constraints via `--output-schema`.
 - Transactional DDL in Python's `sqlite3` requires setting `isolation_level = None` temporarily to prevent Python's wrapper from executing implicit commits before DDL statements.

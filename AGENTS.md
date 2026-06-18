@@ -30,6 +30,19 @@ stores its own state under that repository's `.agent-loop/` directory. The
 current root-level `plan.md`, `progress.md`, and `learning.md` files are the
 manual development loop files for this repository.
 
+## Runtime source of truth
+
+The main repository of current application state is the SQLite database at
+`.agent-loop/agent-loop.db` in the target repository. The generated markdown
+files under `.agent-loop/` are human-readable views, and `.agent-loop/logs/`
+contains append-only evidence for attempts. Do not infer the current goal,
+task, status, or next action by scanning logs first.
+
+On a fresh context, inspect the database-backed state first with commands such
+as `agent-loop status`, `agent-loop plan --details`, or direct SQLite queries
+when needed. Use logs only after the database points to the relevant attempt or
+evidence path.
+
 ## Work loop
 
 Repeat:
