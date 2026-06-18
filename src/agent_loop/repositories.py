@@ -461,6 +461,23 @@ class ProviderStateRepository:
             "last_probe": row[6]
         }
 
+    def list_all(self) -> List[Dict[str, Any]]:
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT provider, model, capability_snapshot, availability, quota_state, quota_limit_reset, last_probe FROM provider_state;")
+        rows = cursor.fetchall()
+        result = []
+        for row in rows:
+            result.append({
+                "provider": row[0],
+                "model": row[1],
+                "capability_snapshot": json.loads(row[2]) if row[2] else {},
+                "availability": bool(row[3]),
+                "quota_state": row[4],
+                "quota_limit_reset": row[5],
+                "last_probe": row[6]
+            })
+        return result
+
     def save(self, provider: str, model: str, capability_snapshot: Dict[str, Any], availability: bool, quota_state: str = "available", quota_limit_reset: Optional[str] = None, last_probe: Optional[str] = None) -> None:
         cap_str = json.dumps(capability_snapshot)
         avail_int = 1 if availability else 0

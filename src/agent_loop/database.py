@@ -224,3 +224,4 @@ def migrate(conn: sqlite3.Connection) -> None:
                     raise RuntimeError(f"Migration version {i} failed: {e}") from e
     finally:
         conn.isolation_level = old_isolation
+

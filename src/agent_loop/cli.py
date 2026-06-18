@@ -536,6 +536,8 @@ def handle_resume(args: argparse.Namespace, config: Config) -> None:
     # Recovery: Reconcile active attempts. Interrupted 'running' attempts are marked 'abandoned'
     orch = Orchestrator(conn, config)
     abandoned_count = orch.reconcile_interrupted_run(run_id)
+    orch.reset_provider_errors()
+    orch.unblock_provider_blocked_tasks(run_id)
 
     if abandoned_count > 0:
         print(f"Reconciled state: marked {abandoned_count} interrupted running attempt(s) as abandoned.")
