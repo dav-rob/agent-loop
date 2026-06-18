@@ -1401,12 +1401,12 @@ Only return the raw JSON object. Do not include markdown wrappers.
         prompt = f"Please review task '{task_name}' diff:\n\n{diff}"
         return self.run_agent_review(run_id, "task", task_id, prompt)
 
-    def run_feature_review(self, run_id: int, feature_id: int) -> bool:
+    def run_feature_review(self, run_id: int, feature_id: int) -> str:
         with self.db_lock:
             feat = self.feature_repo.get(feature_id)
         prompt = f"Please review completed feature '{feat['name']}' with criteria: {feat['acceptance_criteria']}"
         decision = self.run_agent_review(run_id, "feature", feature_id, prompt)
-        return decision == "approved"
+        return decision
 
     def run_final_review(self, run_id: int) -> bool:
         with self.db_lock:
@@ -1967,9 +1967,25 @@ Only return the raw JSON object. Do not include markdown wrappers.
                 if feature["review_status"] == "pending":
                     feat_tasks = [t for t in tasks if t["feature_id"] == feature["id"]]
                     if feat_tasks and all(t["status"] == "complete" for t in feat_tasks):
-                        approved = self.run_feature_review(run_id, feature["id"])
-                        if approved:
+                        decision = self.run_feature_review(run_id, feature["id"])
+                        if decision == "approved":
                             self.feature_repo.update_review_status(feature["id"], "approved")
+                        elif decision in ("follow_up", "rejected"):
+                            # On follow_up or rejected, we create a new task to fix the acceptance criteria
+                            # and revert the feature to pending, so it tries again after the fix is implemented.
+                            self.feature_repo.update_review_status(feature["id"], "pending")
+                            with self.db_lock:
+                                self.task_repo.create(
+                                    run_id=run_id,
+                                    feature_id=feature["id"],
+                                    name=f"Address feature review feedback for {feature['name']}",
+                                    role="implementation",
+                                    risk="medium",
+                                    scope={"files": []},  # Let the agent figure out what to edit
+                                    dependencies=[],
+                                    required_verification="npm test"
+                                )
+                            self.notify(run_id, "feature_follow_up", f"Feature '{feature['name']}' review feedback needs addressing. Spawned follow-up task.")
                         else:
                             self.feature_repo.update_review_status(feature["id"], "rejected")
                             self.run_repo.update_status(run_id, "blocked")
