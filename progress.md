@@ -80,6 +80,14 @@ cause was `agy` command construction and diagnostics classification: `agy`
 treats the token immediately after `--print` as prompt text, and successful
 assistant output can mention `--print-timeout` without indicating provider
 failure.
+Live route monitoring in `test-loop` confirmed the default executor failover is
+three-step by design: `agy` Gemini 3.1 Pro High, then `agy` Claude Sonnet 4.6
+Thinking, then Codex gpt-5.4-mini. A stale state issue was found separately:
+tasks can remain `running` after all attempts are already terminal, which can
+starve ready Codex fallback tasks through worker/active-file accounting.
+Recovery now resets such stale running tasks to `ready` or `blocked` based on
+the retry limit. Resume now preserves `auth_required` provider states so known
+dead `agy` routes are not revived before Codex fallback can be selected.
 
 ## Next step
 
@@ -101,6 +109,7 @@ No further executor handoff is required for this request.
 - Runtime source-of-truth docs: tests not run; documentation-only update.
 - Default model routing and recent orchestrator fixes: confirmed local `agy models` labels; new route-order tests passed with 2 tests in 0.09s; focused CLI start/brainstorm tests passed with 3 tests in 0.79s; targeted orchestrator regressions passed with 2 tests in 1.13s; full suite passed with 106 tests in 9.34s.
 - Agy print-mode failover regression: focused adapter tests passed with 4 tests in 0.05s; full suite passed with 107 tests in 18.71s.
+- Executor/reviewer failover and stale recovery: focused route, sticky-auth, and recovery regressions passed with 4 tests in 0.16s.
 - Planner schema/recovery fix: `tests/test_adapters.py::test_plan_schema_is_strict_for_codex_structured_output` passed in 0.02s; `tests/test_cli.py::test_cli_resume tests/test_cli.py::test_cli_resume_replans_blocked_goal_without_features` passed in 0.26s; live `codex exec --output-schema` smoke accepted the schema and returned valid plan JSON; `agent-loop resume 1` in `test-loop` regenerated a plan and moved Goal ID 1 to `awaiting_plan_approval`; full suite passed with 87 tests in 5.83s.
 - Interactive multiline intake fix: `tests/test_cli.py::test_cli_start_captures_pasted_multiline_goal` passed in 0.27s; `tests/test_cli.py` passed with 8 tests in 0.38s; full suite passed with 85 tests in 5.84s.
 - Goal terminology update: `tests/test_cli.py` passed in 0.30s; CLI help verified for goal wording.

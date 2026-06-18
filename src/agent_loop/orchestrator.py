@@ -114,10 +114,10 @@ class Orchestrator:
         self.test_run_repo = TestRunRepository(conn)
 
     def reset_provider_errors(self) -> None:
-        """Resets auth_required and transient_failure provider states to available."""
+        """Resets transient provider states to available."""
         providers = self.provider_repo.list_all()
         for p in providers:
-            if p.get("quota_state") in {"auth_required", "transient_failure"}:
+            if p.get("quota_state") in {"transient_failure"}:
                 with self.db_lock:
                     self.provider_repo.save(
                         provider=p["provider"],
@@ -720,6 +720,39 @@ Return ONLY a valid JSON object matching the requested schema. Do not include ma
                         (att_id,)
                     )
                     self.conn.commit()
+
+        # 6. Repair stale task state left behind when an attempt was already
+        # marked terminal but the task itself remained running.
+        with self.db_lock:
+            cursor.execute(
+                """
+                SELECT t.id
+                FROM tasks t
+                WHERE t.run_id = ?
+                  AND t.status = 'running'
+                  AND NOT EXISTS (
+                      SELECT 1 FROM attempts a
+                      WHERE a.task_id = t.id
+                        AND a.outcome = 'running'
+                  );
+                """,
+                (run_id,)
+            )
+            stale_task_ids = [row[0] for row in cursor.fetchall()]
+
+            for task_id in stale_task_ids:
+                cursor.execute(
+                    "SELECT count(*) FROM attempts WHERE task_id = ? AND outcome IN ('failed', 'abandoned');",
+                    (task_id,)
+                )
+                attempt_count = cursor.fetchone()[0]
+                max_attempts = self.config.retry_policy["max_attempts"]
+                next_status = "blocked" if attempt_count >= max_attempts else "ready"
+                cursor.execute(
+                    "UPDATE tasks SET status = ? WHERE id = ?;",
+                    (next_status, task_id)
+                )
+            self.conn.commit()
                     
         return len(running_attempts)
 

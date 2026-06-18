@@ -20,6 +20,21 @@ def test_default_route_order_prefers_pro_executor_and_strong_reviewers():
     assert "Gemini 3.5 Flash (High)" not in all_models
 
 
+def test_default_routes_keep_three_step_failover_for_executor_and_reviewer():
+    routes = DEFAULT_CONFIG["routes"]
+
+    assert [(route["provider"], route["model"]) for route in routes["implementation"]] == [
+        ("agy", "Gemini 3.1 Pro (High)"),
+        ("agy", "Claude Sonnet 4.6 (Thinking)"),
+        ("codex", "gpt-5.4-mini"),
+    ]
+    assert [(route["provider"], route["model"]) for route in routes["planning"]] == [
+        ("codex", "gpt-5.5"),
+        ("agy", "Claude Opus 4.6 (Thinking)"),
+        ("agy", "Gemini 3.1 Pro (High)"),
+    ]
+
+
 def test_agy_model_fallback_does_not_use_flash():
     config = Config({"routes": {"planning": [], "implementation": []}})
 

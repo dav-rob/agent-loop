@@ -540,6 +540,35 @@ def test_interrupted_attempt_recovery(db_conn, tmp_path):
     assert task_repo.get(task_id)["status"] == "blocked"
 
 
+def test_recovery_resets_running_task_with_no_running_attempt(db_conn, tmp_path):
+    config = Config()
+    config.data["retry_policy"] = {"max_attempts": 3, "escalation_threshold": 2}
+    orch = Orchestrator(db_conn, config, plan_path=tmp_path / "plan.md", progress_path=tmp_path / "progress.md")
+
+    run_repo = RunRepository(db_conn)
+    feat_repo = FeatureRepository(db_conn)
+    task_repo = TaskRepository(db_conn)
+    attempt_repo = AttemptRepository(db_conn)
+
+    run_id = run_repo.create("Stale running task", "autonomous")
+    run_repo.update_status(run_id, "planning")
+    run_repo.update_status(run_id, "running")
+    feat_id = feat_repo.create(run_id, "Feature 1", "low")
+    task_id = task_repo.create(run_id, feat_id, "Task 1", "implementation", "low")
+    task_repo.update_status(task_id, "ready")
+    task_repo.update_status(task_id, "running")
+
+    att_id_1 = attempt_repo.create(run_id, task_id, "impl", "agy", "Gemini 3.1 Pro (High)", "high")
+    attempt_repo.update_outcome(att_id_1, "failed")
+    att_id_2 = attempt_repo.create(run_id, task_id, "impl", "agy", "Claude Sonnet 4.6 (Thinking)", "high")
+    attempt_repo.update_outcome(att_id_2, "failed")
+
+    count = orch.reconcile_interrupted_run(run_id)
+
+    assert count == 0
+    assert task_repo.get(task_id)["status"] == "ready"
+
+
 def test_worktree_creation_failures_respect_retry_limit(db_conn, tmp_path, monkeypatch):
     config = Config({
         "db_path": ":memory:",
@@ -625,6 +654,102 @@ def test_execute_task_uses_agent_loop_worktrees_by_default(db_conn, tmp_path, mo
     assert created_worktrees == [
         tmp_path / ".agent-loop" / "worktrees" / f"run-{run_id}-task-{task_id}-attempt-1"
     ]
+
+
+def test_implementation_route_failover_reaches_codex_after_agy_routes_unavailable(db_conn, tmp_path, monkeypatch):
+    config = Config({
+        "db_path": ":memory:",
+        "logs_dir": str(tmp_path / "logs"),
+        "routes": {
+            "implementation": [
+                {"provider": "agy", "model": "Gemini 3.1 Pro (High)", "reasoning_level": "high"},
+                {"provider": "agy", "model": "Claude Sonnet 4.6 (Thinking)", "reasoning_level": "high"},
+                {"provider": "codex", "model": "gpt-5.4-mini", "reasoning_level": "high"},
+            ],
+            "planning": [{"provider": "codex", "model": "gpt-5.5", "reasoning_level": "high"}],
+        },
+        "commands": {
+            "narrow_test": "",
+            "regression_test": "",
+        },
+    })
+    orch = Orchestrator(db_conn, config, plan_path=tmp_path / "plan.md", progress_path=tmp_path / "progress.md")
+
+    run_repo = RunRepository(db_conn)
+    feat_repo = FeatureRepository(db_conn)
+    task_repo = TaskRepository(db_conn)
+    attempt_repo = AttemptRepository(db_conn)
+
+    run_id = run_repo.create("Executor failover test", "autonomous")
+    run_repo.update_status(run_id, "planning")
+    run_repo.update_status(run_id, "running")
+    feat_id = feat_repo.create(run_id, "Feature 1", "low")
+    task_id = task_repo.create(run_id, feat_id, "Task 1", "implementation", "low")
+    task_repo.update_status(task_id, "ready")
+
+    orch.provider_repo.save(
+        "agy",
+        "Gemini 3.1 Pro (High)",
+        {"models": ["Gemini 3.1 Pro (High)"]},
+        False,
+        "auth_required",
+    )
+    orch.provider_repo.save(
+        "agy",
+        "Claude Sonnet 4.6 (Thinking)",
+        {"models": ["Claude Sonnet 4.6 (Thinking)"]},
+        False,
+        "auth_required",
+    )
+
+    mock_adapter = MagicMock()
+    mock_adapter.run_attempt.side_effect = [
+        AttemptResult(success=True, exit_code=0, output="done", error=""),
+        AttemptResult(success=True, exit_code=0, output='{"decision": "approved", "findings": "ok"}', error=""),
+    ]
+
+    monkeypatch.setattr("agent_loop.orchestrator.create_worktree", lambda repo_path, worktree_path, branch_name: None)
+    monkeypatch.setattr("agent_loop.orchestrator.commit_changes", lambda worktree_dir, message: "abc123")
+    monkeypatch.setattr("agent_loop.orchestrator.merge_branch", lambda repo_path, source_branch, target_branch: (True, []))
+    monkeypatch.setattr("agent_loop.orchestrator.remove_worktree", lambda repo_path, worktree_path: None)
+    monkeypatch.setattr("agent_loop.orchestrator.get_adapter", lambda provider, config: mock_adapter)
+
+    assert orch._execute_task_impl(run_id, task_repo.get(task_id)) is True
+
+    attempts = attempt_repo.get_by_run(run_id)
+    assert [(attempt["provider"], attempt["model"]) for attempt in attempts] == [
+        ("codex", "gpt-5.4-mini"),
+    ]
+    assert task_repo.get(task_id)["status"] == "complete"
+
+
+def test_reset_provider_errors_preserves_auth_required_routes(db_conn, tmp_path):
+    config = Config()
+    orch = Orchestrator(db_conn, config, plan_path=tmp_path / "plan.md", progress_path=tmp_path / "progress.md")
+
+    orch.provider_repo.save(
+        "agy",
+        "Gemini 3.1 Pro (High)",
+        {"models": ["Gemini 3.1 Pro (High)"]},
+        False,
+        "auth_required",
+    )
+    orch.provider_repo.save(
+        "agy",
+        "Claude Sonnet 4.6 (Thinking)",
+        {"models": ["Claude Sonnet 4.6 (Thinking)"]},
+        False,
+        "transient_failure",
+    )
+
+    orch.reset_provider_errors()
+
+    auth_state = orch.provider_repo.get("agy", "Gemini 3.1 Pro (High)")
+    transient_state = orch.provider_repo.get("agy", "Claude Sonnet 4.6 (Thinking)")
+    assert auth_state["availability"] is False
+    assert auth_state["quota_state"] == "auth_required"
+    assert transient_state["availability"] is True
+    assert transient_state["quota_state"] == "available"
 
 
 def test_merge_conflict_integration_lifecycle(db_conn, tmp_path, monkeypatch):
@@ -877,6 +1002,3 @@ def test_preserve_partial_work_on_recovery(db_conn, tmp_path, monkeypatch):
     patch_file = Path(attempt["patch_path"])
     assert patch_file.exists()
     assert patch_file.read_text() == dummy_diff
-
-
-
