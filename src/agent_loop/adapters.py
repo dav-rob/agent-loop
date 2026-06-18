@@ -222,6 +222,10 @@ class CodexAdapter(BaseAdapter):
                 for event in events:
                     if event.get("event") == "message" and event.get("role") == "assistant":
                         msg_parts.append(event.get("content", ""))
+                    elif event.get("type") == "item.completed":
+                        item = event.get("item", {})
+                        if item.get("type") == "agent_message":
+                            msg_parts.append(item.get("text", ""))
                 agent_msg = "".join(msg_parts) if msg_parts else stdout_content
 
             diagnostic_parts = [stderr_content]

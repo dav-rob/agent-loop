@@ -120,6 +120,36 @@ def test_codex_run_attempt_success(tmp_path):
         assert "-a" not in cmd_args
         assert "-s" not in cmd_args
 
+
+def test_codex_run_attempt_reads_agent_message_item_completed(tmp_path):
+    adapter = CodexAdapter()
+    logs_dir = tmp_path / "logs"
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    mock_proc = MagicMock()
+    mock_proc.returncode = 0
+
+    def run_side_effect(cmd, stdin, stdout, stderr, timeout, **kwargs):
+        stdout.write(
+            '{"type": "thread.started", "thread_id": "thread_1"}\n'
+            '{"type": "item.completed", "item": {"type": "agent_message", "text": "Current event output"}}\n'
+        )
+        return mock_proc
+
+    with patch("subprocess.run", side_effect=run_side_effect):
+        res = adapter.run_attempt(
+            model="gpt-5.5",
+            prompt="Say hello",
+            workspace_path=workspace,
+            attempt_logs_dir=logs_dir,
+            timeout_seconds=30
+        )
+
+    assert res.success is True
+    assert res.output == "Current event output"
+
+
 def test_codex_successful_output_may_discuss_timeouts(tmp_path):
     adapter = CodexAdapter()
     logs_dir = tmp_path / "logs"

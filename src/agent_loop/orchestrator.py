@@ -1343,7 +1343,9 @@ Scope: {json.dumps(task['scope'])}
                     with self.db_lock:
                         self.attempt_repo.update_outcome(attempt_id, "failed", patch_path=patch_path)
                         failed_attempts = [a for a in attempts if a["outcome"] in ("failed", "abandoned")]
-                        is_limit = len(failed_attempts) + 1 >= self.config.retry_policy["max_attempts"]
+                        task_scope = json.loads(task["scope"]) if isinstance(task["scope"], str) else (task["scope"] or {})
+                        task_max_attempts = task_scope.get("extended_limit", self.config.retry_policy["max_attempts"])
+                        is_limit = len(failed_attempts) + 1 >= task_max_attempts
 
                     if is_limit:
                         esc_decision = self.run_task_escalation(run_id, task_id, len(failed_attempts) + 1, "Execution failed verification.")
@@ -1351,22 +1353,16 @@ Scope: {json.dumps(task['scope'])}
                             with self.db_lock:
                                 latest_review = self.review_repo.get_latest_for("task_escalation", task_id)
                                 esc_findings = latest_review["findings"] if latest_review else "Need another try."
-                                orig_scope = json.loads(task["scope"]) if isinstance(task["scope"], str) else (task["scope"] or {})
-                                followup_scope = {
-                                    **orig_scope,
-                                    "escalation_hint": esc_findings
-                                }
-                                self.task_repo.update_status(task_id, "complete")
-                                self.task_repo.create(
-                                    run_id=run_id,
-                                    feature_id=task["feature_id"],
-                                    name=f"Follow-up: {task['name']}",
-                                    role=task["role"],
-                                    risk=task["risk"],
-                                    scope=followup_scope,
-                                    dependencies=task.get("dependencies", []),
-                                    required_verification=task.get("required_verification")
-                                )
+                                
+                                task_scope = json.loads(task["scope"]) if isinstance(task["scope"], str) else (task["scope"] or {})
+                                current_limit = task_scope.get("extended_limit", self.config.retry_policy["max_attempts"])
+                                task_scope["extended_limit"] = current_limit + 3
+                                task_scope["escalation_hint"] = esc_findings
+                                
+                                self.task_repo.update_scope(task_id, task_scope)
+                                
+                                self._reset_task_for_retry(task_id)
+                                    
                             self.notify(run_id, "task_follow_up", f"Task '{task['name']}' reached attempt limit but escalation review granted extension.")
                         else:
                             with self.db_lock:
@@ -1386,7 +1382,9 @@ Scope: {json.dumps(task['scope'])}
                 self.attempt_repo.update_outcome(attempt_id, "failed", patch_path=patch_path)
                 failed_attempts = [a for a in attempts if a["outcome"] in ("failed", "abandoned")]
                 attempt_count = len(failed_attempts) + 1
-                is_limit = attempt_count >= self.config.retry_policy["max_attempts"]
+                task_scope = json.loads(task["scope"]) if isinstance(task["scope"], str) else (task["scope"] or {})
+                task_max_attempts = task_scope.get("extended_limit", self.config.retry_policy["max_attempts"])
+                is_limit = attempt_count >= task_max_attempts
 
             if is_limit:
                 esc_decision = self.run_task_escalation(run_id, task_id, attempt_count, "Execution threw an exception.")
@@ -1394,22 +1392,16 @@ Scope: {json.dumps(task['scope'])}
                     with self.db_lock:
                         latest_review = self.review_repo.get_latest_for("task_escalation", task_id)
                         esc_findings = latest_review["findings"] if latest_review else "Need another try."
-                        orig_scope = json.loads(task["scope"]) if isinstance(task["scope"], str) else (task["scope"] or {})
-                        followup_scope = {
-                            **orig_scope,
-                            "escalation_hint": esc_findings
-                        }
-                        self.task_repo.update_status(task_id, "complete")
-                        self.task_repo.create(
-                            run_id=run_id,
-                            feature_id=task["feature_id"],
-                            name=f"Follow-up: {task['name']}",
-                            role=task["role"],
-                            risk=task["risk"],
-                            scope=followup_scope,
-                            dependencies=task.get("dependencies", []),
-                            required_verification=task.get("required_verification")
-                        )
+                        
+                        task_scope = json.loads(task["scope"]) if isinstance(task["scope"], str) else (task["scope"] or {})
+                        current_limit = task_scope.get("extended_limit", self.config.retry_policy["max_attempts"])
+                        task_scope["extended_limit"] = current_limit + 3
+                        task_scope["escalation_hint"] = esc_findings
+                        
+                        self.task_repo.update_scope(task_id, task_scope)
+                        
+                        self._reset_task_for_retry(task_id)
+                            
                     self.notify(run_id, "task_follow_up", f"Task '{task['name']}' reached attempt limit but escalation review granted extension.")
                 else:
                     with self.db_lock:

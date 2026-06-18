@@ -253,6 +253,11 @@ class TaskRepository:
         cursor.execute("UPDATE tasks SET status = ? WHERE id = ?;", (new_status, task_id))
         self.conn.commit()
 
+    def update_scope(self, task_id: int, new_scope: Dict[str, Any]) -> None:
+        cursor = self.conn.cursor()
+        cursor.execute("UPDATE tasks SET scope = ? WHERE id = ?;", (json.dumps(new_scope), task_id))
+        self.conn.commit()
+
 
 class AttemptRepository:
     def __init__(self, conn: sqlite3.Connection):
