@@ -21,6 +21,25 @@ def init_git_repo(repo_path: Path) -> None:
     run_git(["add", "README.md"], repo_path)
     run_git(["commit", "-m", "Initial commit"], repo_path)
 
+def ensure_initial_commit(repo_path: Path) -> bool:
+    try:
+        run_git(["rev-parse", "--verify", "HEAD"], repo_path)
+        return False
+    except subprocess.CalledProcessError:
+        pass
+
+    try:
+        run_git(["config", "--local", "user.name"], repo_path)
+    except subprocess.CalledProcessError:
+        run_git(["config", "user.name", "Agent Loop"], repo_path)
+    try:
+        run_git(["config", "--local", "user.email"], repo_path)
+    except subprocess.CalledProcessError:
+        run_git(["config", "user.email", "agent-loop@local"], repo_path)
+
+    run_git(["commit", "--allow-empty", "-m", "agent-loop: initialize repository"], repo_path)
+    return True
+
 def create_worktree(repo_path: Path, worktree_path: Path, branch_name: str, base_commit: str = "main") -> None:
     worktree_path.parent.mkdir(parents=True, exist_ok=True)
     # Check if branch exists

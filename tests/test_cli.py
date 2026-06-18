@@ -1,3 +1,4 @@
+import subprocess
 import sys
 from pathlib import Path
 from unittest.mock import patch, MagicMock
@@ -77,6 +78,31 @@ def test_cli_start_non_interactive(clean_workspace):
     assert not Path(".agent-loop.db").exists()
     assert not Path("plan.md").exists()
     assert not Path("progress.md").exists()
+
+def test_cli_start_bootstraps_empty_git_repo(clean_workspace):
+    subprocess.run(["git", "init", "-b", "main"], cwd=clean_workspace, check=True, capture_output=True)
+
+    before = subprocess.run(["git", "rev-parse", "--verify", "HEAD"], cwd=clean_workspace, capture_output=True, text=True)
+    assert before.returncode != 0
+
+    test_args = [
+        "agent-loop",
+        "start",
+        "--non-interactive",
+        "--goal",
+        "Build a compiler",
+    ]
+
+    with patch("agent_loop.cli.Orchestrator") as mock_orch_cls:
+        mock_orch = MagicMock()
+        mock_orch.plan_run.return_value = False
+        mock_orch_cls.return_value = mock_orch
+
+        with patch.object(sys, "argv", test_args):
+            main()
+
+    after = subprocess.run(["git", "rev-parse", "--verify", "HEAD"], cwd=clean_workspace, capture_output=True, text=True)
+    assert after.returncode == 0
 
 def test_cli_plan_details(clean_workspace, capsys):
     # Setup test run in db

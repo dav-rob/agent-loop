@@ -3,6 +3,7 @@ from pathlib import Path
 import pytest
 from agent_loop.git_utils import (
     init_git_repo,
+    ensure_initial_commit,
     create_worktree,
     remove_worktree,
     commit_changes,
@@ -48,6 +49,29 @@ def test_git_operations(tmp_path):
     
     # Verify file is merged into main repo
     assert (repo_path / "code.py").exists()
+
+def test_ensure_initial_commit_bootstraps_empty_repo(tmp_path):
+    repo_path = tmp_path / "empty_repo"
+    repo_path.mkdir()
+    subprocess.run(["git", "init", "-b", "main"], cwd=repo_path, check=True, capture_output=True)
+
+    before = subprocess.run(["git", "rev-parse", "--verify", "HEAD"], cwd=repo_path, capture_output=True, text=True)
+    assert before.returncode != 0
+
+    created = ensure_initial_commit(repo_path)
+    assert created is True
+    assert run_git(["config", "--local", "user.name"], repo_path).stdout.strip() == "Agent Loop"
+    assert run_git(["config", "--local", "user.email"], repo_path).stdout.strip() == "agent-loop@local"
+
+    after = subprocess.run(["git", "rev-parse", "--verify", "HEAD"], cwd=repo_path, capture_output=True, text=True)
+    assert after.returncode == 0
+
+    wt_path = tmp_path / "worktrees" / "task-branch"
+    create_worktree(repo_path, wt_path, "feature/task-1")
+    assert wt_path.exists()
+
+    created_again = ensure_initial_commit(repo_path)
+    assert created_again is False
 
 def test_git_merge_conflict(tmp_path):
     repo_path = tmp_path / "main_repo"
