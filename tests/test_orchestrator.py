@@ -939,6 +939,55 @@ def test_review_decision_states(db_conn, tmp_path, monkeypatch):
         assert task_repo.get(task_id4)["status"] == "blocked"
 
 
+def test_retry_limit_follow_up_uses_latest_escalation_findings(db_conn, tmp_path, monkeypatch):
+    config = Config()
+    config.data["retry_policy"] = {"max_attempts": 2, "escalation_threshold": 2}
+    orch = Orchestrator(db_conn, config, plan_path=tmp_path / "plan.md", progress_path=tmp_path / "progress.md")
+
+    run_repo = RunRepository(db_conn)
+    feat_repo = FeatureRepository(db_conn)
+    task_repo = TaskRepository(db_conn)
+
+    run_id = run_repo.create("Retry limit follow-up test", "autonomous")
+    feat_id = feat_repo.create(run_id, "Feat 1", "low")
+    task_id = task_repo.create(run_id, feat_id, "Task Max Followup", "implementation", "low", required_verification="")
+
+    mock_create_wt = MagicMock()
+    mock_commit = MagicMock(return_value="mock_sha_123")
+    mock_remove_wt = MagicMock()
+
+    monkeypatch.setattr("agent_loop.orchestrator.create_worktree", mock_create_wt)
+    monkeypatch.setattr("agent_loop.orchestrator.commit_changes", mock_commit)
+    monkeypatch.setattr("agent_loop.orchestrator.remove_worktree", mock_remove_wt)
+
+    with patch("agent_loop.orchestrator.get_adapter") as mock_get_adapter:
+        mock_adapter = MagicMock()
+        mock_get_adapter.return_value = mock_adapter
+
+        task_repo.update_status(task_id, "ready")
+        mock_adapter.run_attempt.side_effect = [
+            AttemptResult(success=True, exit_code=0, output="done 1", error=""),
+            AttemptResult(success=True, exit_code=0, output='{"decision": "rejected", "findings": "Bad code 1"}', error="")
+        ]
+        assert orch._execute_task_impl(run_id, task_repo.get(task_id)) is True
+        assert task_repo.get(task_id)["status"] == "ready"
+
+        mock_adapter.run_attempt.side_effect = [
+            AttemptResult(success=True, exit_code=0, output="done 2", error=""),
+            AttemptResult(success=True, exit_code=0, output='{"decision": "rejected", "findings": "Bad code 2"}', error=""),
+            AttemptResult(success=True, exit_code=0, output='{"decision": "follow_up", "findings": "Try a narrower update"}', error="")
+        ]
+
+        assert orch._execute_task_impl(run_id, task_repo.get(task_id)) is True
+
+    assert task_repo.get(task_id)["status"] == "complete"
+    tasks = task_repo.get_by_run(run_id)
+    followup_tasks = [t for t in tasks if t["name"] == "Follow-up: Task Max Followup"]
+    assert len(followup_tasks) == 1
+    assert followup_tasks[0]["status"] == "pending"
+    assert followup_tasks[0]["scope"]["reviewer_findings"] == "Try a narrower update"
+
+
 def test_preserve_partial_work_on_recovery(db_conn, tmp_path, monkeypatch):
     config = Config()
     orch = Orchestrator(db_conn, config, plan_path=tmp_path / "plan.md", progress_path=tmp_path / "progress.md")
