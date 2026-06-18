@@ -117,6 +117,9 @@ def merge_branch(repo_path: Path, source_branch: str, target_branch: str) -> tup
             match = re.search(r"CONFLICT.*in\s+(.+)$", line)
             if match:
                 conflicting_files.append(match.group(1).strip())
-        # Merge conflict occurred, abort the merge
-        run_git(["merge", "--abort"], repo_path)
+        # Merge conflict occurred, abort the merge if one is in progress
+        try:
+            run_git(["merge", "--abort"], repo_path)
+        except subprocess.CalledProcessError:
+            pass # No merge in progress to abort
         return False, conflicting_files
