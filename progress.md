@@ -44,6 +44,8 @@ Bare `agent-loop` now acts as a friendly dispatcher for the latest in-progress
 goal. It shows a 200-character goal description, status, the direct plan file
 path when approval is pending, and safe commands or interactive choices for
 viewing, approving, resuming, checking status, or starting a new goal.
+The pending-approval default screen now uses action labels such as `View Plan`
+and `Approve and Start` instead of teaching command syntax in the primary UI.
 
 ## Next step
 
@@ -56,6 +58,7 @@ No further executor handoff is required for this request.
 - Planner failure investigation: new adapter regressions first failed for Codex output mentioning timeouts and agy timeout formatting, then passed after the fix. Live `agent-loop resume 1` in `test-loop` moved the goal to `awaiting_plan_approval` with 8 features and 10 tasks.
 - Resume approval UX: `tests/test_cli.py::test_cli_resume_explains_awaiting_plan_approval tests/test_cli.py::test_cli_resume tests/test_cli.py::test_cli_resume_replans_blocked_goal_without_features tests/test_cli.py::test_cli_approve_command` passed with 4 tests in 0.20s.
 - Bare default command UX: new default-command tests passed with 2 tests in 0.30s; `tests/test_cli.py` passed with 13 tests in 0.40s.
+- Default pending-approval copy: focused default-command tests passed with 2 tests in 0.18s; `tests/test_cli.py` passed with 13 tests in 0.51s.
 - Planner schema/recovery fix: `tests/test_adapters.py::test_plan_schema_is_strict_for_codex_structured_output` passed in 0.02s; `tests/test_cli.py::test_cli_resume tests/test_cli.py::test_cli_resume_replans_blocked_goal_without_features` passed in 0.26s; live `codex exec --output-schema` smoke accepted the schema and returned valid plan JSON; `agent-loop resume 1` in `test-loop` regenerated a plan and moved Goal ID 1 to `awaiting_plan_approval`; full suite passed with 87 tests in 5.83s.
 - Interactive multiline intake fix: `tests/test_cli.py::test_cli_start_captures_pasted_multiline_goal` passed in 0.27s; `tests/test_cli.py` passed with 8 tests in 0.38s; full suite passed with 85 tests in 5.84s.
 - Goal terminology update: `tests/test_cli.py` passed in 0.30s; CLI help verified for goal wording.

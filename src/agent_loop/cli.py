@@ -168,13 +168,14 @@ def handle_default(args: argparse.Namespace, config: Config) -> None:
     if run["status"] == "awaiting_plan_approval":
         print("There is a plan waiting for your approval.")
         print(f"Plan file: {config.plan_path}")
-        print(f"Review with CLI: agent-loop plan {run_id}")
-        print(f"Approve and start: agent-loop approve {run_id}")
+        print("[v] View Plan")
+        print("[a] Approve and Start")
+        print("[n] Start New Goal")
+        print("[q] Quit")
         if not sys.stdin.isatty():
             return
 
         print()
-        print("[v] View plan  [a] Approve and start  [n] Start new goal  [q] Quit")
         choice = input("Choice: ").strip().lower()
         if choice == "v":
             handle_plan(argparse.Namespace(run_id=run_id, details=False), config)

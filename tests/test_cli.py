@@ -154,7 +154,7 @@ def test_goal_description_truncates_cleanly():
     assert describe_goal("Short goal") == "Short goal"
     assert describe_goal("A" * 80) == ("A" * 67) + "..."
 
-def test_cli_default_shows_awaiting_plan_approval_commands(clean_workspace, capsys):
+def test_cli_default_shows_awaiting_plan_approval_actions(clean_workspace, capsys):
     db_path = default_db_path()
     conn = get_connection(db_path)
     migrate(conn)
@@ -179,8 +179,10 @@ def test_cli_default_shows_awaiting_plan_approval_commands(clean_workspace, caps
     assert "Goal: Create a website that runs in the background" in captured.out
     assert "There is a plan waiting for your approval." in captured.out
     assert f"Plan file: {clean_workspace / default_state_dir() / 'plan.md'}" in captured.out
-    assert f"Review with CLI: agent-loop plan {run_id}" in captured.out
-    assert f"Approve and start: agent-loop approve {run_id}" in captured.out
+    assert "[v] View Plan" in captured.out
+    assert "[a] Approve and Start" in captured.out
+    assert "Review with CLI:" not in captured.out
+    assert "Approve and start: agent-loop" not in captured.out
 
 def test_cli_default_can_approve_awaiting_plan_interactively(clean_workspace):
     db_path = default_db_path()
