@@ -229,7 +229,7 @@ class CodexAdapter(BaseAdapter):
                 quota_exhausted = True
 
             auth_required = False
-            if any(a in lowered_all for a in ["login required", "unauthenticated", "missing credentials", "expired credentials", "expired token", "authentication required", "not logged in", "run antigravity-usage login", "run agy login"]):
+            if any(a in lowered_all for a in ["login required", "unauthenticated", "missing credentials", "expired credentials", "expired token", "authentication required", "not logged in", "run antigravity-usage login", "run agy login", "401 unauthorized", "http error: 401"]):
                 auth_required = True
 
             transient_failure = False
@@ -390,7 +390,7 @@ class AgyAdapter(BaseAdapter):
                 quota_reset = reset_match.group(1).strip()
 
             auth_required = False
-            if any(a in lowered_all for a in ["login required", "unauthenticated", "missing credentials", "expired credentials", "expired token", "authentication required", "not logged in", "run antigravity-usage login", "run agy login"]):
+            if any(a in lowered_all for a in ["login required", "unauthenticated", "missing credentials", "expired credentials", "expired token", "authentication required", "not logged in", "run antigravity-usage login", "run agy login", "401 unauthorized", "http error: 401"]):
                 auth_required = True
 
             transient_failure = False
