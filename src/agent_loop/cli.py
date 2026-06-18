@@ -390,6 +390,11 @@ def handle_resume(args: argparse.Namespace, config: Config) -> None:
         print("Resuming planning...")
         orch.plan_run(run_id)
         updated_run = run_repo.get(run_id)
+    if updated_run["status"] == "awaiting_plan_approval":
+        print(f"Goal {run_id} is awaiting plan approval.")
+        print(f"Review the plan: agent-loop plan {run_id}")
+        print(f"Full markdown plan: {config.plan_path}")
+        print(f"Approve and start execution: agent-loop approve {run_id}")
     if updated_run["status"] == "running":
         print("Resuming task execution...")
         orch.run_loop(run_id)

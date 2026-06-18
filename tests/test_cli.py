@@ -225,6 +225,35 @@ def test_cli_resume_replans_blocked_goal_without_features(clean_workspace):
     assert run_repo.get(run_id)["status"] == "awaiting_plan_approval"
     conn.close()
 
+def test_cli_resume_explains_awaiting_plan_approval(clean_workspace, capsys):
+    db_path = default_db_path()
+    conn = get_connection(db_path)
+    migrate(conn)
+
+    run_repo = RunRepository(conn)
+    run_id = run_repo.create("Approve planned work", "brainstorm")
+    run_repo.update_status(run_id, "planning")
+    run_repo.update_status(run_id, "awaiting_plan_approval")
+    conn.close()
+
+    test_args = ["agent-loop", "resume", str(run_id)]
+    with patch("agent_loop.cli.Orchestrator") as mock_orch_cls:
+        mock_orch = MagicMock()
+        mock_orch.reconcile_interrupted_run.return_value = 0
+        mock_orch_cls.return_value = mock_orch
+
+        with patch.object(sys, "argv", test_args):
+            main()
+
+        mock_orch.plan_run.assert_not_called()
+        mock_orch.run_loop.assert_not_called()
+
+    captured = capsys.readouterr()
+    assert "Goal 1 is awaiting plan approval." in captured.out
+    assert "Review the plan:" in captured.out
+    assert "agent-loop plan 1" in captured.out
+    assert "agent-loop approve 1" in captured.out
+
 
 def test_cli_intake_and_approval(clean_workspace):
     # Test interactive wizard with brainstorm_ui_lab intake and plan approval
