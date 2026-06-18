@@ -344,10 +344,10 @@ class AgyAdapter(BaseAdapter):
         stdout_file = attempt_logs_dir / "stdout.log"
         stderr_file = attempt_logs_dir / "stderr.log"
 
-        # Build command: agy --print --dangerously-skip-permissions --model <model> --log-file <log_file> --add-dir <workspace> "<prompt>"
+        # Build command with flags first, then --print <prompt>.  agy treats the
+        # token immediately after --print as the prompt text.
         cmd = [
             self.binary_path,
-            "--print",
             "--print-timeout", f"{int(timeout_seconds)}s",
             "--dangerously-skip-permissions",
             "--model", model,
@@ -355,9 +355,10 @@ class AgyAdapter(BaseAdapter):
             "--add-dir", str(workspace_path)
         ]
         if len(prompt) > 65000:
-            cmd.append(f"Please read your instructions and full context from the file at '{prompt_file.absolute()}'. Execute the requested task strictly based on the contents of that file.")
+            print_prompt = f"Please read your instructions and full context from the file at '{prompt_file.absolute()}'. Execute the requested task strictly based on the contents of that file."
         else:
-            cmd.append(prompt)
+            print_prompt = prompt
+        cmd += ["--print", print_prompt]
 
         try:
             # Pass stdin=DEVNULL to ensure non-interactive execution avoids hangs!
@@ -382,10 +383,14 @@ class AgyAdapter(BaseAdapter):
             stdout_file.write_text(stdout_content)
             stderr_file.write_text(stderr_content)
 
-            # Quota classification on stdout/stderr/log
-            combined_text = stdout_content + "\n" + stderr_content
+            # Quota/error classification should inspect diagnostics. Successful
+            # assistant output can discuss errors or timeouts without indicating
+            # provider failure.
+            combined_text = stderr_content
             if agy_log_file.exists():
                 combined_text += "\n" + agy_log_file.read_text(errors="ignore")
+            if process.returncode != 0:
+                combined_text += "\n" + stdout_content
 
             lowered_all = combined_text.lower()
             quota_exhausted = False

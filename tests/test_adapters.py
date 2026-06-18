@@ -208,6 +208,34 @@ def test_agy_run_attempt_success(tmp_path):
         assert Path(cmd_args[add_dir_idx + 1]) == workspace.resolve()
         assert "--dangerously-skip-permissions" in cmd_args
 
+def test_agy_successful_output_may_discuss_print_timeout(tmp_path):
+    adapter = AgyAdapter()
+    logs_dir = tmp_path / "logs"
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    mock_proc = MagicMock()
+    mock_proc.returncode = 0
+
+    def run_side_effect(cmd, stdin, stdout, stderr, timeout, **kwargs):
+        stdout.write("Use --print-timeout 30m for long-running tasks.\n")
+        return mock_proc
+
+    with patch("subprocess.run", side_effect=run_side_effect) as mock_subprocess:
+        res = adapter.run_attempt(
+            model="Gemini 3.1 Pro (High)",
+            prompt="Say hello",
+            workspace_path=workspace,
+            attempt_logs_dir=logs_dir
+        )
+
+    cmd_args = mock_subprocess.call_args[0][0]
+    print_idx = cmd_args.index("--print")
+    assert cmd_args[print_idx + 1] == "Say hello"
+    assert res.success is True
+    assert res.transient_failure is False
+    assert res.quota_exhausted is False
+
 def test_agy_print_timeout_uses_go_duration(tmp_path):
     adapter = AgyAdapter(binary_path="/custom/agy")
     workspace = tmp_path / "workspace"

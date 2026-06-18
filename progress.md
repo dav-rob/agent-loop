@@ -74,6 +74,12 @@ non-Git worktree directories when collecting review diff SHAs, to use the final
 task SHA when creating integration tasks, and to refresh task state after
 feature-review follow-up tasks are created so final review cannot run before
 the follow-up work.
+Live failover monitoring in `test-loop` showed Gemini 3.1 Pro High being marked
+unavailable while Antigravity quota still reported remaining capacity. The root
+cause was `agy` command construction and diagnostics classification: `agy`
+treats the token immediately after `--print` as prompt text, and successful
+assistant output can mention `--print-timeout` without indicating provider
+failure.
 
 ## Next step
 
@@ -94,6 +100,7 @@ No further executor handoff is required for this request.
 - Adaptive brainstorm intake: focused brainstorm tests passed with 3 tests in 0.99s.
 - Runtime source-of-truth docs: tests not run; documentation-only update.
 - Default model routing and recent orchestrator fixes: confirmed local `agy models` labels; new route-order tests passed with 2 tests in 0.09s; focused CLI start/brainstorm tests passed with 3 tests in 0.79s; targeted orchestrator regressions passed with 2 tests in 1.13s; full suite passed with 106 tests in 9.34s.
+- Agy print-mode failover regression: focused adapter tests passed with 4 tests in 0.05s; full suite passed with 107 tests in 18.71s.
 - Planner schema/recovery fix: `tests/test_adapters.py::test_plan_schema_is_strict_for_codex_structured_output` passed in 0.02s; `tests/test_cli.py::test_cli_resume tests/test_cli.py::test_cli_resume_replans_blocked_goal_without_features` passed in 0.26s; live `codex exec --output-schema` smoke accepted the schema and returned valid plan JSON; `agent-loop resume 1` in `test-loop` regenerated a plan and moved Goal ID 1 to `awaiting_plan_approval`; full suite passed with 87 tests in 5.83s.
 - Interactive multiline intake fix: `tests/test_cli.py::test_cli_start_captures_pasted_multiline_goal` passed in 0.27s; `tests/test_cli.py` passed with 8 tests in 0.38s; full suite passed with 85 tests in 5.84s.
 - Goal terminology update: `tests/test_cli.py` passed in 0.30s; CLI help verified for goal wording.
