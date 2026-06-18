@@ -56,6 +56,9 @@ The empty-repo bootstrap also commits a default `.gitignore` entry for
 `.agent-loop/`, uses the user's effective Git identity when available, falls
 back to a local agent-loop identity only when needed, and skips existing repos
 that already have `HEAD`.
+Workspace setup now also initializes Git when the target directory has no
+repository at all, then applies the same idempotent `.gitignore` and bootstrap
+commit path.
 
 ## Next step
 
@@ -72,6 +75,7 @@ No further executor handoff is required for this request.
 - Worktree setup retry limit: `tests/test_orchestrator.py::test_worktree_creation_failures_respect_retry_limit tests/test_orchestrator.py::test_interrupted_attempt_recovery` passed with 2 tests in 0.16s; `tests/test_orchestrator.py` passed with 14 tests in 3.12s. Live `test-loop` runaway process was stopped and Goal 1 was marked blocked with task 1 blocked after 657 failed attempts.
 - Empty-repo bootstrap: focused git/CLI bootstrap tests passed with 2 tests in 0.59s; `tests/test_git_utils.py tests/test_cli.py tests/test_orchestrator.py` passed with 31 tests in 5.16s. Live `test-loop` received an `agent-loop: initialize repository` empty commit and a worktree smoke test succeeded.
 - Empty-repo `.gitignore` and identity behavior: `tests/test_git_utils.py tests/test_cli.py` passed with 20 tests in 2.73s.
+- Missing-Git bootstrap: focused missing/empty repo tests passed with 8 tests in 2.50s; `tests/test_git_utils.py tests/test_cli.py` passed with 23 tests in 5.18s.
 - Planner schema/recovery fix: `tests/test_adapters.py::test_plan_schema_is_strict_for_codex_structured_output` passed in 0.02s; `tests/test_cli.py::test_cli_resume tests/test_cli.py::test_cli_resume_replans_blocked_goal_without_features` passed in 0.26s; live `codex exec --output-schema` smoke accepted the schema and returned valid plan JSON; `agent-loop resume 1` in `test-loop` regenerated a plan and moved Goal ID 1 to `awaiting_plan_approval`; full suite passed with 87 tests in 5.83s.
 - Interactive multiline intake fix: `tests/test_cli.py::test_cli_start_captures_pasted_multiline_goal` passed in 0.27s; `tests/test_cli.py` passed with 8 tests in 0.38s; full suite passed with 85 tests in 5.84s.
 - Goal terminology update: `tests/test_cli.py` passed in 0.30s; CLI help verified for goal wording.

@@ -3,6 +3,7 @@ from pathlib import Path
 import pytest
 from agent_loop.git_utils import (
     init_git_repo,
+    ensure_git_repository,
     ensure_initial_commit,
     create_worktree,
     remove_worktree,
@@ -124,6 +125,22 @@ def test_ensure_initial_commit_skips_repos_with_head(tmp_path):
     assert created is False
     assert run_git(["rev-parse", "HEAD"], repo_path).stdout.strip() == initial_head
     assert not (repo_path / ".gitignore").exists()
+
+def test_ensure_git_repository_skips_existing_repo(tmp_path):
+    repo_path = tmp_path / "existing_repo"
+    repo_path.mkdir()
+    subprocess.run(["git", "init", "-b", "main"], cwd=repo_path, check=True, capture_output=True)
+
+    created = ensure_git_repository(repo_path)
+    assert created is False
+
+def test_ensure_git_repository_initializes_missing_repo(tmp_path):
+    repo_path = tmp_path / "missing_repo"
+    repo_path.mkdir()
+
+    created = ensure_git_repository(repo_path)
+    assert created is True
+    assert run_git(["rev-parse", "--is-inside-work-tree"], repo_path).stdout.strip() == "true"
 
 def test_git_merge_conflict(tmp_path):
     repo_path = tmp_path / "main_repo"

@@ -23,6 +23,14 @@ def init_git_repo(repo_path: Path) -> None:
     run_git(["add", "README.md"], repo_path)
     run_git(["commit", "-m", "Initial commit"], repo_path)
 
+def ensure_git_repository(repo_path: Path) -> bool:
+    try:
+        run_git(["rev-parse", "--is-inside-work-tree"], repo_path)
+        return False
+    except subprocess.CalledProcessError:
+        run_git(["init", "-b", "main"], repo_path)
+        return True
+
 def ensure_default_gitignore(repo_path: Path) -> bool:
     gitignore_path = repo_path / ".gitignore"
     existing = gitignore_path.read_text() if gitignore_path.exists() else ""

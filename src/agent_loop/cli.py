@@ -20,7 +20,7 @@ from agent_loop.repositories import (
 from agent_loop.views import render_plan_md, render_progress_md
 from agent_loop.orchestrator import Orchestrator
 from agent_loop.handoffs import validate_handoff
-from agent_loop.git_utils import ensure_initial_commit, run_git
+from agent_loop.git_utils import ensure_git_repository, ensure_initial_commit
 
 def describe_goal(goal: str, max_length: int = 70) -> str:
     one_line = " ".join((goal or "").split())
@@ -96,7 +96,7 @@ def _collect_brainstorming_notes() -> str:
 
 def ensure_workspace(config: Config) -> None:
     try:
-        run_git(["rev-parse", "--is-inside-work-tree"], Path.cwd())
+        ensure_git_repository(Path.cwd())
         ensure_initial_commit(Path.cwd())
     except Exception:
         pass
