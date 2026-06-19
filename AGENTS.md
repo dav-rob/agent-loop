@@ -6,6 +6,17 @@ Work autonomously from the user's goal until complete, blocked, or unsafe.
 
 Do not stop for conversational input unless a stop condition is hit.
 
+## Current context handoff
+
+Before resuming any work related to the June 18 live `agent-loop` monitoring,
+failover/failback debugging, or the target repository
+`/Users/davidroberts/projects/quick-scripts/test-loop`, read
+`context-summary.md` in this repository.
+
+That file records the six local commits ahead of `origin/main`, the blocked
+target run state, the agy/Codex routing findings, and cautions about not
+restarting the live loop blindly.
+
 ## Product language
 
 Use `goal` for user-facing documentation, CLI help, and explanations. A user
