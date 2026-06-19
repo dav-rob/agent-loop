@@ -1009,7 +1009,7 @@ def test_reset_task_for_retry_is_idempotent_when_already_ready(db_conn, tmp_path
     assert task_repo.get(task_id)["status"] == "ready"
 
 
-def test_execution_failure_follow_up_extends_task_limit(db_conn, tmp_path, monkeypatch):
+def test_execution_failure_follow_up_escalates_attempts(db_conn, tmp_path, monkeypatch):
     config = Config()
     config.data["retry_policy"] = {"max_attempts": 1, "escalation_threshold": 1}
     orch = Orchestrator(db_conn, config, plan_path=tmp_path / "plan.md", progress_path=tmp_path / "progress.md")
@@ -1017,6 +1017,7 @@ def test_execution_failure_follow_up_extends_task_limit(db_conn, tmp_path, monke
     run_repo = RunRepository(db_conn)
     feat_repo = FeatureRepository(db_conn)
     task_repo = TaskRepository(db_conn)
+    attempt_repo = AttemptRepository(db_conn)
 
     run_id = run_repo.create("Execution follow-up test", "autonomous")
     feat_id = feat_repo.create(run_id, "Feat 1", "low")
@@ -1047,9 +1048,13 @@ def test_execution_failure_follow_up_extends_task_limit(db_conn, tmp_path, monke
 
     task = task_repo.get(task_id)
     assert task["status"] == "ready"
-    assert task["scope"]["extended_limit"] == 4
+    assert task["scope"].get("extended_limit") is None
     assert task["scope"]["escalation_hint"] == "Fix type errors"
     assert [t for t in task_repo.get_by_run(run_id) if t["name"].startswith("Follow-up:")] == []
+    
+    attempts = attempt_repo.get_by_run(run_id)
+    assert len(attempts) == 1
+    assert attempts[0]["outcome"] == "escalated"
 
 
 def test_preserve_partial_work_on_recovery(db_conn, tmp_path, monkeypatch):

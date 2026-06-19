@@ -375,6 +375,19 @@ class AttemptRepository:
             )
         self.conn.commit()
 
+    def escalate_failed_attempts(self, task_id: int) -> None:
+        """Mark all previous failed or abandoned attempts for a task as 'escalated' so they don't count against retry limits."""
+        cursor = self.conn.cursor()
+        cursor.execute(
+            """
+            UPDATE attempts 
+            SET outcome = 'escalated', updated_at = CURRENT_TIMESTAMP 
+            WHERE task_id = ? AND outcome IN ('failed', 'abandoned');
+            """,
+            (task_id,)
+        )
+        self.conn.commit()
+
 
 class TestRunRepository:
     __test__ = False
