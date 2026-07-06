@@ -1,2 +1,0 @@
-[console_scripts]
-agent-loop = agent_loop.cli:main
