@@ -375,6 +375,25 @@ class AttemptRepository:
             )
         self.conn.commit()
 
+    def update_route_metadata(
+        self,
+        attempt_id: int,
+        route: Optional[str],
+        provider: Optional[str],
+        model: Optional[str],
+        reasoning_level: Optional[str],
+    ) -> None:
+        cursor = self.conn.cursor()
+        cursor.execute(
+            """
+            UPDATE attempts
+            SET route = ?, provider = ?, model = ?, reasoning_level = ?, updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?;
+            """,
+            (route, provider, model, reasoning_level, attempt_id),
+        )
+        self.conn.commit()
+
     def escalate_failed_attempts(self, task_id: int) -> None:
         """Mark all previous failed or abandoned attempts for a task as 'escalated' so they don't count against retry limits."""
         cursor = self.conn.cursor()

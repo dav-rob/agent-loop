@@ -75,21 +75,40 @@ logs_dir = ".agent-loop/logs"
 worktrees_dir = ".agent-loop/worktrees"
 
 [routes]
-planning = [
+intake = [
+    { provider = "agy", model = "Gemini 3.1 Pro (High)", reasoning_level = "high" },
+    { provider = "agy", model = "Claude Sonnet 4.6 (Thinking)", reasoning_level = "high" },
+    { provider = "codex", model = "gpt-5.4-mini", reasoning_level = "high" }
+]
+planner = [
     { provider = "codex", model = "gpt-5.5", reasoning_level = "high" },
     { provider = "agy", model = "Claude Opus 4.6 (Thinking)", reasoning_level = "high" },
     { provider = "agy", model = "Gemini 3.1 Pro (High)", reasoning_level = "high" }
 ]
-implementation = [
+executor = [
     { provider = "agy", model = "Gemini 3.1 Pro (High)", reasoning_level = "high" },
     { provider = "agy", model = "Claude Sonnet 4.6 (Thinking)", reasoning_level = "high" },
     { provider = "codex", model = "gpt-5.4-mini", reasoning_level = "high" }
+]
+executor_escalated = [
+    { provider = "codex", model = "gpt-5.5", reasoning_level = "high" },
+    { provider = "agy", model = "Claude Opus 4.6 (Thinking)", reasoning_level = "high" },
+    { provider = "agy", model = "Gemini 3.1 Pro (High)", reasoning_level = "high" }
+]
+reviewer = [
+    { provider = "codex", model = "gpt-5.5", reasoning_level = "high" },
+    { provider = "agy", model = "Claude Opus 4.6 (Thinking)", reasoning_level = "high" },
+    { provider = "agy", model = "Gemini 3.1 Pro (High)", reasoning_level = "high" }
 ]
 
 [retry_policy]
 max_attempts = 3
 escalation_threshold = 2
 ```
+
+`agent-loop start` creates a default `agent-loop.toml` with all supported route
+profiles. Older `planning` and `implementation` route buckets are still accepted
+as compatibility aliases.
 
 ## Slack Webhook Setup
 

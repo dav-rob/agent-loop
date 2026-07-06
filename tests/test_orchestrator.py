@@ -91,7 +91,7 @@ def test_orchestrator_planning_success(db_conn, tmp_path):
 
     orch = Orchestrator(db_conn, config, plan_path=tmp_path / "plan.md", progress_path=tmp_path / "progress.md")
     
-    with patch("agent_loop.orchestrator.get_adapter") as mock_get_adapter:
+    with patch("agent_loop.routing.get_adapter") as mock_get_adapter:
         mock_adapter = MagicMock()
         mock_adapter.run_attempt.return_value = mock_result
         mock_get_adapter.return_value = mock_adapter
@@ -118,6 +118,146 @@ def test_orchestrator_planning_success(db_conn, tmp_path):
         assert len(decisions) == 1
         assert decisions[0]["summary"] == "Use OAuth2 client credentials flow"
         assert decisions[0]["is_autonomous"] is True
+
+
+def test_planning_uses_router_planner_profile(db_conn, tmp_path):
+    run_repo = RunRepository(db_conn)
+    run_id = run_repo.create("Implement login page", "none")
+    config = Config({"db_path": ":memory:", "logs_dir": str(tmp_path / "logs")})
+    plan_json = {
+        "objective": "Implement login page",
+        "decisions": [],
+        "features": [
+            {"name": "Auth", "risk": "low", "acceptance_criteria": "Works", "dependencies": []}
+        ],
+        "tasks": [
+            {
+                "name": "Write auth",
+                "feature_name": "Auth",
+                "role": "implementation",
+                "risk": "low",
+                "scope": {"files": []},
+                "dependencies": [],
+                "required_verification": "pytest",
+            }
+        ],
+    }
+    routed = MagicMock()
+    routed.success = True
+    routed.output = json.dumps(plan_json)
+    routed.error = ""
+
+    orch = Orchestrator(db_conn, config, plan_path=tmp_path / "plan.md", progress_path=tmp_path / "progress.md")
+
+    with patch("agent_loop.orchestrator.ModelRouter") as mock_router_cls:
+        mock_router = MagicMock()
+        mock_router.run.return_value = routed
+        mock_router_cls.return_value = mock_router
+
+        assert orch.plan_run(run_id) is True
+
+    assert mock_router.run.call_args.kwargs["profile"] == "planner"
+
+
+def test_review_uses_router_reviewer_profile(db_conn, tmp_path):
+    run_repo = RunRepository(db_conn)
+    run_id = run_repo.create("Implement login page", "none")
+    config = Config({"db_path": ":memory:", "logs_dir": str(tmp_path / "logs")})
+    routed = MagicMock()
+    routed.success = True
+    routed.output = json.dumps({"decision": "approved", "findings": "Looks good"})
+    routed.error = ""
+    routed.provider = "codex"
+    routed.model = "gpt-5.5"
+
+    orch = Orchestrator(db_conn, config, plan_path=tmp_path / "plan.md", progress_path=tmp_path / "progress.md")
+
+    with patch("agent_loop.orchestrator.ModelRouter") as mock_router_cls:
+        mock_router = MagicMock()
+        mock_router.run.return_value = routed
+        mock_router_cls.return_value = mock_router
+
+        decision = orch.run_agent_review(run_id, "final", run_id, "Review it")
+
+    assert decision == "approved"
+    assert mock_router.run.call_args.kwargs["profile"] == "reviewer"
+    reviews = orch.review_repo.get_by_run(run_id)
+    assert reviews[0]["reviewer_route"] == "codex:gpt-5.5"
+
+
+def test_execution_profile_stays_executor_before_escalation(db_conn, tmp_path):
+    config = Config({"db_path": ":memory:", "logs_dir": str(tmp_path / "logs")})
+    orch = Orchestrator(db_conn, config, plan_path=tmp_path / "plan.md", progress_path=tmp_path / "progress.md")
+    task = {"role": "implementation", "risk": "high", "scope": {"files": []}}
+    attempts = [
+        {"outcome": "failed"},
+        {"outcome": "failed"},
+    ]
+
+    assert orch.execution_profile_for_task(task, attempts) == "executor"
+
+
+def test_execution_profile_uses_escalated_profile_after_escalation_hint(db_conn, tmp_path):
+    config = Config({"db_path": ":memory:", "logs_dir": str(tmp_path / "logs")})
+    orch = Orchestrator(db_conn, config, plan_path=tmp_path / "plan.md", progress_path=tmp_path / "progress.md")
+    task = {
+        "role": "implementation",
+        "risk": "medium",
+        "scope": json.dumps({"files": [], "escalation_hint": "Use a stronger model"}),
+    }
+
+    assert orch.execution_profile_for_task(task, []) == "executor_escalated"
+
+
+def test_execution_profile_uses_planner_for_planning_tasks(db_conn, tmp_path):
+    config = Config({"db_path": ":memory:", "logs_dir": str(tmp_path / "logs")})
+    orch = Orchestrator(db_conn, config, plan_path=tmp_path / "plan.md", progress_path=tmp_path / "progress.md")
+    task = {"role": "planning", "risk": "high", "scope": {"files": []}}
+
+    assert orch.execution_profile_for_task(task, []) == "planner"
+
+
+def test_task_execution_uses_router_executor_profile_and_records_selected_route(db_conn, tmp_path, monkeypatch):
+    monkeypatch.setattr("agent_loop.orchestrator.create_worktree", lambda repo, worktree, branch: Path(worktree).mkdir(parents=True, exist_ok=True))
+    monkeypatch.setattr("agent_loop.orchestrator.commit_changes", lambda worktree, message: "mock_sha")
+    monkeypatch.setattr("agent_loop.orchestrator.merge_branch", lambda repo, branch, target: (True, []))
+    monkeypatch.setattr("agent_loop.orchestrator.remove_worktree", lambda repo, worktree: None)
+
+    run_repo = RunRepository(db_conn)
+    feat_repo = FeatureRepository(db_conn)
+    task_repo = TaskRepository(db_conn)
+
+    run_id = run_repo.create("Build engine", "none")
+    feat_id = feat_repo.create(run_id, "Core", "low")
+    task_id = task_repo.create(run_id, feat_id, "Implement CLI", "implementation", "low", scope={"files": []})
+    task_repo.update_status(task_id, "ready")
+    task = task_repo.get(task_id)
+
+    config = Config({"db_path": ":memory:", "logs_dir": str(tmp_path / "logs")})
+    orch = Orchestrator(db_conn, config, plan_path=tmp_path / "plan.md", progress_path=tmp_path / "progress.md")
+    routed = MagicMock()
+    routed.success = True
+    routed.output = ""
+    routed.error = ""
+    routed.provider = "agy"
+    routed.model = "Claude Sonnet 4.5"
+    routed.reasoning_level = "medium"
+
+    with patch("agent_loop.orchestrator.ModelRouter") as mock_router_cls, \
+         patch.object(orch, "_ensure_workspace_deps"), \
+         patch.object(orch, "run_task_review", return_value="approved"):
+        mock_router = MagicMock()
+        mock_router.run.return_value = routed
+        mock_router_cls.return_value = mock_router
+
+        assert orch._execute_task_impl(run_id, task) is True
+
+    assert mock_router.run.call_args.kwargs["profile"] == "executor"
+    attempts = AttemptRepository(db_conn).get_by_run(run_id)
+    assert len(attempts) == 1
+    assert attempts[0]["route"] == "executor"
+    assert attempts[0]["provider"] == "agy"
+    assert attempts[0]["model"] == "Claude Sonnet 4.5"
 
 def test_orchestrator_planning_route_failover(db_conn, tmp_path):
     run_repo = RunRepository(db_conn)
@@ -147,7 +287,7 @@ def test_orchestrator_planning_route_failover(db_conn, tmp_path):
 
     orch = Orchestrator(db_conn, config, plan_path=tmp_path / "plan.md", progress_path=tmp_path / "progress.md")
     
-    with patch("agent_loop.orchestrator.get_adapter") as mock_get_adapter:
+    with patch("agent_loop.routing.get_adapter") as mock_get_adapter:
         mock_codex = MagicMock()
         mock_codex.run_attempt.return_value = mock_fail
         
@@ -216,7 +356,7 @@ def test_orchestrator_task_execution_loop(db_conn, tmp_path, monkeypatch):
     # Mock success run for Codex adapter
     mock_success = AttemptResult(success=True, exit_code=0, output='{"decision": "approved", "findings": "LGTM"}', error="")
     
-    with patch("agent_loop.orchestrator.get_adapter") as mock_get_adapter:
+    with patch("agent_loop.routing.get_adapter") as mock_get_adapter:
         mock_adapter = MagicMock()
         mock_adapter.run_attempt.return_value = mock_success
         mock_get_adapter.return_value = mock_adapter
@@ -297,7 +437,7 @@ def test_reviews_fail_closed(db_conn, tmp_path):
     run_repo = RunRepository(db_conn)
     run_id = run_repo.create("Build engine", "autonomous")
     
-    with patch("agent_loop.orchestrator.get_adapter") as mock_get_adapter:
+    with patch("agent_loop.routing.get_adapter") as mock_get_adapter:
         mock_adapter = MagicMock()
         mock_get_adapter.return_value = mock_adapter
         
@@ -463,7 +603,7 @@ def test_parallel_workers_safe_concurrency(db_conn, tmp_path, monkeypatch):
             task_execution_times.append((start, end))
         return AttemptResult(success=True, exit_code=0, output='{"decision": "approved", "findings": "LGTM"}', error="")
 
-    with patch("agent_loop.orchestrator.get_adapter") as mock_get_adapter:
+    with patch("agent_loop.routing.get_adapter") as mock_get_adapter:
         mock_adapter = MagicMock()
         mock_adapter.run_attempt.side_effect = mock_run_attempt
         mock_get_adapter.return_value = mock_adapter
@@ -647,7 +787,7 @@ def test_execute_task_uses_agent_loop_worktrees_by_default(db_conn, tmp_path, mo
     monkeypatch.setattr("agent_loop.orchestrator.commit_changes", lambda worktree_dir, message: "abc123")
     monkeypatch.setattr("agent_loop.orchestrator.merge_branch", lambda repo_path, source_branch, target_branch: (True, []))
     monkeypatch.setattr("agent_loop.orchestrator.remove_worktree", lambda repo_path, worktree_path: None)
-    monkeypatch.setattr("agent_loop.orchestrator.get_adapter", lambda provider, config: mock_adapter)
+    monkeypatch.setattr("agent_loop.routing.get_adapter", lambda provider, config: mock_adapter)
 
     assert orch._execute_task_impl(run_id, task) is True
 
@@ -712,7 +852,7 @@ def test_implementation_route_failover_reaches_codex_after_agy_routes_unavailabl
     monkeypatch.setattr("agent_loop.orchestrator.commit_changes", lambda worktree_dir, message: "abc123")
     monkeypatch.setattr("agent_loop.orchestrator.merge_branch", lambda repo_path, source_branch, target_branch: (True, []))
     monkeypatch.setattr("agent_loop.orchestrator.remove_worktree", lambda repo_path, worktree_path: None)
-    monkeypatch.setattr("agent_loop.orchestrator.get_adapter", lambda provider, config: mock_adapter)
+    monkeypatch.setattr("agent_loop.routing.get_adapter", lambda provider, config: mock_adapter)
 
     assert orch._execute_task_impl(run_id, task_repo.get(task_id)) is True
 
@@ -791,7 +931,7 @@ def test_merge_conflict_integration_lifecycle(db_conn, tmp_path, monkeypatch):
 
     mock_impl_result = AttemptResult(success=True, exit_code=0, output='{"decision": "approved", "findings": "LGTM"}', error="")
 
-    with patch("agent_loop.orchestrator.get_adapter") as mock_get_adapter:
+    with patch("agent_loop.routing.get_adapter") as mock_get_adapter:
         mock_adapter = MagicMock()
         mock_adapter.run_attempt.return_value = mock_impl_result
         mock_get_adapter.return_value = mock_adapter
@@ -822,7 +962,7 @@ def test_merge_conflict_integration_lifecycle(db_conn, tmp_path, monkeypatch):
     # Make the integration task ready
     task_repo.update_status(integration_task["id"], "ready")
 
-    with patch("agent_loop.orchestrator.get_adapter") as mock_get_adapter:
+    with patch("agent_loop.routing.get_adapter") as mock_get_adapter:
         mock_adapter = MagicMock()
         mock_adapter.run_attempt.return_value = mock_impl_result
         mock_get_adapter.return_value = mock_adapter
@@ -859,7 +999,7 @@ def test_review_decision_states(db_conn, tmp_path, monkeypatch):
     monkeypatch.setattr("agent_loop.orchestrator.merge_branch", mock_merge)
     monkeypatch.setattr("agent_loop.orchestrator.remove_worktree", mock_remove_wt)
 
-    with patch("agent_loop.orchestrator.get_adapter") as mock_get_adapter:
+    with patch("agent_loop.routing.get_adapter") as mock_get_adapter:
         mock_adapter = MagicMock()
         mock_get_adapter.return_value = mock_adapter
 
@@ -960,7 +1100,7 @@ def test_retry_limit_follow_up_uses_latest_escalation_findings(db_conn, tmp_path
     monkeypatch.setattr("agent_loop.orchestrator.commit_changes", mock_commit)
     monkeypatch.setattr("agent_loop.orchestrator.remove_worktree", mock_remove_wt)
 
-    with patch("agent_loop.orchestrator.get_adapter") as mock_get_adapter:
+    with patch("agent_loop.routing.get_adapter") as mock_get_adapter:
         mock_adapter = MagicMock()
         mock_get_adapter.return_value = mock_adapter
 
@@ -1035,7 +1175,7 @@ def test_execution_failure_follow_up_escalates_attempts(db_conn, tmp_path, monke
     monkeypatch.setattr("agent_loop.orchestrator.remove_worktree", MagicMock())
     monkeypatch.setattr(orch, "run_verification", MagicMock(return_value=False))
 
-    with patch("agent_loop.orchestrator.get_adapter") as mock_get_adapter:
+    with patch("agent_loop.routing.get_adapter") as mock_get_adapter:
         mock_adapter = MagicMock()
         mock_adapter.run_attempt.side_effect = [
             AttemptResult(success=True, exit_code=0, output="implementation done", error=""),

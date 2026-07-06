@@ -88,6 +88,10 @@ starve ready Codex fallback tasks through worker/active-file accounting.
 Recovery now resets such stale running tasks to `ready` or `blocked` based on
 the retry limit. Resume now preserves `auth_required` provider states so known
 dead `agy` routes are not revived before Codex fallback can be selected.
+Spec intake model calls now use provider-neutral route fallback with useful
+diagnostics. Intake preserves the old preference for configured `agy` routes,
+falls back to later configured routes such as Codex, and writes model-call logs
+under `.agent-loop/logs/intake/` instead of disposable temp directories.
 
 ## Next step
 
@@ -95,6 +99,7 @@ No further executor handoff is required for this request.
 
 ## Tests run
 
+- Route-profile config and centralized model routing: focused routing/config/intake/quota/orchestrator slices passed with 36 tests; full suite initially exposed stale tests that were still patching old adapter paths or expecting legacy intake modes. Those were reconciled to the central router and current spec/none intake menu. Final verification: `PYTHONPATH=src ../agent-loop/.venv/bin/python -m pytest -q` passed with 134 tests in 19.84s.
 - Status description cleanup: `tests/test_cli.py::test_cli_status_uses_goal_language tests/test_cli.py::test_goal_description_truncates_cleanly` passed in 0.22s; `tests/test_cli.py` passed with 9 tests in 0.29s; real `agent-loop status 1` in `test-loop` showed a single curtailed description; full suite passed with 87 tests in 5.81s.
 - Multi-turn brainstorming intake: focused CLI/UI Lab workflow tests passed with 5 tests in 0.60s; full suite passed with 88 tests in 14.18s.
 - Planner failure investigation: new adapter regressions first failed for Codex output mentioning timeouts and agy timeout formatting, then passed after the fix. Live `agent-loop resume 1` in `test-loop` moved the goal to `awaiting_plan_approval` with 8 features and 10 tasks.
@@ -113,6 +118,7 @@ No further executor handoff is required for this request.
 - Retry-limit escalation follow-up crash: new regression first failed on the live crash path, then passed after adding `ReviewRepository.get_latest_for()`; `tests/test_config.py tests/test_orchestrator.py` passed with 22 tests in 3.06s.
 - Idempotent retry reset crash: added regression for already-ready retry cleanup; focused config/orchestrator suite passed with 23 tests in 6.17s.
 - Codex event parsing and execution follow-up extension: added adapter and orchestrator regressions; `tests/test_adapters.py tests/test_config.py tests/test_orchestrator.py` passed with 38 tests in 38.45s.
+- Intake model fallback: `tests/test_intake.py tests/test_adapters.py` passed with 21 tests in 4.11s. Live brainstorm smoke from `test-loop-intake-revamp` fell back after `agy` auth-required diagnostics and produced a compact spec instead of the auto-draft failure.
 - Planner schema/recovery fix: `tests/test_adapters.py::test_plan_schema_is_strict_for_codex_structured_output` passed in 0.02s; `tests/test_cli.py::test_cli_resume tests/test_cli.py::test_cli_resume_replans_blocked_goal_without_features` passed in 0.26s; live `codex exec --output-schema` smoke accepted the schema and returned valid plan JSON; `agent-loop resume 1` in `test-loop` regenerated a plan and moved Goal ID 1 to `awaiting_plan_approval`; full suite passed with 87 tests in 5.83s.
 - Interactive multiline intake fix: `tests/test_cli.py::test_cli_start_captures_pasted_multiline_goal` passed in 0.27s; `tests/test_cli.py` passed with 8 tests in 0.38s; full suite passed with 85 tests in 5.84s.
 - Goal terminology update: `tests/test_cli.py` passed in 0.30s; CLI help verified for goal wording.

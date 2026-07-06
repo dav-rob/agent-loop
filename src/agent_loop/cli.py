@@ -101,81 +101,7 @@ def _extract_json_object(text: str) -> Dict[str, Any]:
             return json.loads(cleaned[start:end + 1])
         raise
 
-def _select_agy_model(config: Config) -> str:
-    for route in config.routes.get("planning", []) + config.routes.get("implementation", []):
-        if route.get("provider") == "agy":
-            return route["model"]
-    return "Gemini 3.1 Pro (High)"
-
-def _collect_adaptive_brainstorming_questions(goal: str, config: Config) -> Optional[List[Tuple[str, str]]]:
-    try:
-        from agent_loop.adapters import AgyAdapter
-        import tempfile
-
-        prompt = f"""
-You are helping with agent-loop intake. Act like a sharp product/engineering coworker.
-Given this broad goal, produce 3 to 5 concise follow-up questions that will help the planner make a useful implementation plan.
-
-Rules:
-- Ask only questions that are relevant to this specific goal.
-- Prefer concrete decisions, success criteria, scope boundaries, integrations, data, verification, and first usable outcome.
-- Do not ask generic questions if the goal already answers them.
-- Keep each question one sentence.
-- Return ONLY JSON in this shape:
-{{"questions":[{{"label":"short label","question":"question text"}}]}}
-
-Goal:
-{goal}
-"""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            tmp_path = Path(tmpdir)
-            result = AgyAdapter(config=config).run_attempt(
-                model=_select_agy_model(config),
-                prompt=prompt,
-                workspace_path=tmp_path,
-                attempt_logs_dir=tmp_path / "logs",
-                timeout_seconds=120.0,
-            )
-        if not result.success:
-            return None
-
-        data = _extract_json_object(result.output)
-        raw_questions = data.get("questions", [])
-        questions: List[Tuple[str, str]] = []
-        for item in raw_questions:
-            label = " ".join(str(item.get("label", "")).split()).strip(":-")
-            question = " ".join(str(item.get("question", "")).split())
-            if label and question:
-                if not question.endswith(("?", ":")):
-                    question += "?"
-                questions.append((label[:60], f"{question} (Optional): "))
-        if 2 <= len(questions) <= 6:
-            return questions
-    except Exception:
-        return None
-    return None
-
-def _collect_brainstorming_notes(goal: str = "", config: Optional[Config] = None) -> str:
-    questions = None
-    if config is not None:
-        try:
-            if sys.stdin.isatty():
-                print("Generating tailored brainstorming questions...")
-                questions = _collect_adaptive_brainstorming_questions(goal, config)
-        except Exception:
-            questions = None
-    if not questions:
-        questions = _fallback_brainstorm_questions()
-
-    answers = []
-    for label, prompt in questions:
-        answer = input(prompt).strip()
-        if answer:
-            answers.append(f"- {label}: {answer}")
-
-    if not answers:
-        return ""
-    return "Brainstorming Notes:\n" + "\n".join(answers)
+# _collect_brainstorming_notes has been replaced by agent_loop.intake
 
 def ensure_workspace(config: Config) -> None:
     try:
@@ -196,6 +122,9 @@ def ensure_workspace(config: Config) -> None:
             "Use this file to record durable facts for this repository's agent-loop goals.\n",
             encoding="utf-8"
         )
+    config_path = Path("agent-loop.toml")
+    if not config_path.exists():
+        Config.write_default_toml(config_path)
     _sync_workspace_skills(config)
 
 def get_db(config: Config) -> sqlite3.Connection:
@@ -294,48 +223,44 @@ def handle_default(args: argparse.Namespace, config: Config) -> None:
 def handle_start(args: argparse.Namespace, config: Config) -> None:
     conn = get_db(config)
     run_repo = RunRepository(conn)
+    from agent_loop.intake import run_spec_intake
 
     if args.non_interactive:
         if not args.goal:
             print("Error: --goal is required for non-interactive mode.", file=sys.stderr)
             sys.exit(1)
 
-        # Make --intake effective in non-interactive mode
-        if args.intake == "ui_lab":
-            is_ui_work = any(x in args.goal.lower() for x in ["ui", "interface", "ux", "web", "frontend", "front-end", "screen", "view", "page", "styling", "css", "html", "design", "layout"])
-            if not is_ui_work:
-                print("Error: UI Lab is only offered for UI goals.", file=sys.stderr)
-                sys.exit(1)
-            intake_mode = "brainstorm_ui_lab"
-        elif args.intake == "brainstorm":
-            intake_mode = "brainstorm"
-        elif args.intake == "autonomous":
-            intake_mode = "autonomous"
-        else:
-            intake_mode = "non_interactive"
+        # Mapping legacy aliases
+        intake_mode = args.intake
+        force_ui = None
+        if intake_mode == "ui_lab":
+            print("Warning: 'ui_lab' intake mode is deprecated. Use 'spec' instead. Defaulting to 'spec' with UI enabled.")
+            intake_mode = "spec"
+            force_ui = True
+        elif intake_mode == "brainstorm":
+            print("Warning: 'brainstorm' intake mode is deprecated. Use 'spec' instead.")
+            intake_mode = "spec"
+        elif intake_mode == "autonomous" or intake_mode == "non_interactive":
+            print("Warning: 'autonomous' intake mode is deprecated. Use 'none' instead.")
+            intake_mode = "none"
+
+        if intake_mode not in {"none", "spec"}:
+            intake_mode = "none"
 
         goal = args.goal
-        if intake_mode == "brainstorm_ui_lab":
-            brief_output = ""
-            try:
-                from agent_loop.adapters import AgyAdapter
-                selected_model = _select_agy_model(config)
-                
-                adapter = AgyAdapter(config=config)
-                import tempfile
-                with tempfile.TemporaryDirectory() as tmpdir:
-                    tmp_path = Path(tmpdir)
-                    res = adapter.run_attempt(
-                        model=selected_model,
-                        prompt=f"/brief {args.goal}",
-                        workspace_path=tmp_path,
-                        attempt_logs_dir=tmp_path / "logs"
-                    )
-                    if res.success:
-                        brief_output = res.output
-            except Exception:
-                pass
-            goal = f"{args.goal}\n\nUI Lab Brief:\n{brief_output or 'Default Brief'}"
+        if intake_mode == "spec":
+            # Non-interactive spec mode
+            from agent_loop.intake import run_brainstorm_discussion, run_spec_review
+            # Empty transcript to skip discussion and go straight to drafting
+            print("Drafting non-interactive spec...")
+            from agent_loop.intake import draft_compact_spec
+            spec = draft_compact_spec(goal, "", config)
+            if not getattr(args, "no_spec_review", False):
+                status, spec = run_spec_review(spec, config)
+                if status == "needs-user-answer":
+                    print("Error: Spec review needs a user answer, but running in non-interactive mode. Cannot proceed.", file=sys.stderr)
+                    sys.exit(1)
+            goal = spec
 
         cfg_snap = config.data.copy()
         cfg_snap["unattended_policy"] = args.unattended_policy
@@ -356,106 +281,40 @@ def handle_start(args: argparse.Namespace, config: Config) -> None:
                 print("Error: Goal cannot be empty.", file=sys.stderr)
                 sys.exit(1)
 
-        # Make --intake effective in interactive mode
-        if args.intake:
-            if args.intake == "ui_lab":
-                is_ui_work = any(x in goal.lower() for x in ["ui", "interface", "ux", "web", "frontend", "front-end", "screen", "view", "page", "styling", "css", "html", "design", "layout"])
-                if not is_ui_work:
-                    print("Error: UI Lab is only offered for UI goals.", file=sys.stderr)
-                    sys.exit(1)
-                intake_mode = "brainstorm_ui_lab"
-            elif args.intake == "autonomous":
-                intake_mode = "autonomous"
-            else:
-                intake_mode = "brainstorm"
-        else:
-            is_ui_work = any(x in goal.lower() for x in ["ui", "interface", "ux", "web", "frontend", "front-end", "screen", "view", "page", "styling", "css", "html", "design", "layout"])
+        intake_mode = args.intake
+        force_ui = None
+        if intake_mode == "ui_lab":
+            print("Warning: 'ui_lab' intake mode is deprecated. Use 'spec' instead. Defaulting to 'spec' with UI enabled.")
+            intake_mode = "spec"
+            force_ui = True
+        elif intake_mode == "brainstorm":
+            print("Warning: 'brainstorm' intake mode is deprecated. Use 'spec' instead.")
+            intake_mode = "spec"
+        elif intake_mode == "autonomous":
+            print("Warning: 'autonomous' intake mode is deprecated. Use 'none' instead.")
+            intake_mode = "none"
+
+        if not intake_mode:
             print("\nSelect Intake Mode:")
-            print("1) Brainstorm (Default)")
-            if is_ui_work:
-                print("2) Brainstorm with UI Lab")
-                print("3) Autonomous")
-                choice = input("Choice [1-3]: ").strip()
-                if choice == "2":
-                    intake_mode = "brainstorm_ui_lab"
-                elif choice == "3":
-                    intake_mode = "autonomous"
-                else:
-                    intake_mode = "brainstorm"
+            print("1) Spec (Discuss and define requirements first)")
+            print("2) None (Start planning immediately)")
+            choice = input("Choice [1-2]: ").strip()
+            if choice == "2":
+                intake_mode = "none"
             else:
-                print("2) Autonomous")
-                choice = input("Choice [1-2]: ").strip()
-                if choice == "2":
-                    intake_mode = "autonomous"
-                else:
-                    intake_mode = "brainstorm"
+                intake_mode = "spec"
+                
+        if args.ui:
+            force_ui = True
+        elif args.no_ui:
+            force_ui = False
 
-        # Implement concise brainstorm interaction for brainstorm modes
-        if intake_mode in {"brainstorm", "brainstorm_ui_lab"}:
-            print("\n--- Brainstorming Questions ---")
-            notes = _collect_brainstorming_notes(goal, config)
-            if notes:
-                goal = f"{goal}\n{notes}"
-
-            if intake_mode == "brainstorm_ui_lab":
-                import re
-                print("\nRunning UI Lab brief workflow...")
-                brief_output = ""
-                try:
-                    from agent_loop.adapters import AgyAdapter
-                    selected_model = _select_agy_model(config)
-                    
-                    adapter = AgyAdapter(config=config)
-                    import tempfile
-                    with tempfile.TemporaryDirectory() as tmpdir:
-                        tmp_path = Path(tmpdir)
-                        res = adapter.run_attempt(
-                            model=selected_model,
-                            prompt=f"/brief {goal}",
-                            workspace_path=tmp_path,
-                            attempt_logs_dir=tmp_path / "logs"
-                        )
-                        if res.success:
-                            brief_output = res.output
-                except Exception as e:
-                    print(f"Warning: Could not invoke UI Lab brief workflow automatically: {e}")
-                
-                # Parse questions
-                questions = []
-                if brief_output:
-                    in_q_section = False
-                    for line in brief_output.splitlines():
-                        line_strip = line.strip()
-                        if "UI Questions" in line_strip:
-                            in_q_section = True
-                            continue
-                        if in_q_section:
-                            if line_strip.startswith("###") or (line_strip.startswith("##") and not "UI Questions" in line_strip):
-                                in_q_section = False
-                                continue
-                            if line_strip.startswith(("-", "*")) or (line_strip and line_strip[0].isdigit()):
-                                q_text = re.sub(r"^[\-\*\d\.\s]+", "", line_strip).strip()
-                                if q_text.endswith("?"):
-                                    questions.append(q_text)
-                
-                if not questions:
-                    questions = [
-                        "Should this feel fast or thoughtful?",
-                        "Should this feel like a tool or a guide?",
-                        "Should people see everything immediately or should detail appear gradually?",
-                        "What would make this feel wrong?",
-                        "What apps do you like?",
-                        "What apps do you dislike?"
-                    ]
-                
-                print("\n--- UI Lab Brief Questionnaire ---")
-                answers = []
-                for q in questions:
-                    ans = input(f"{q} ").strip()
-                    answers.append(f"- {q}: {ans}")
-                
-                goal_refinement = f"\n\nUI Lab Brief:\n{brief_output or 'Default Brief'}\n\nUser Answers:\n" + "\n".join(answers)
-                goal = f"{goal}{goal_refinement}"
+        if intake_mode == "spec":
+            spec_review = not getattr(args, "no_spec_review", False)
+            approved_spec = run_spec_intake(goal, config, force_ui=force_ui, spec_review=spec_review)
+            if not approved_spec:
+                sys.exit(1)
+            goal = approved_spec
 
         cfg_snap = config.data.copy()
         cfg_snap["unattended_policy"] = "ask"
@@ -787,8 +646,11 @@ def main() -> None:
     start_parser = subparsers.add_parser("start", help="Start a new goal")
     start_parser.add_argument("--non-interactive", action="store_true", help="Run without wizard prompts")
     start_parser.add_argument("--goal", type=str, help="Broad goal to execute")
-    start_parser.add_argument("--intake", choices=["brainstorm", "ui_lab", "autonomous"], help="Intake mode")
+    start_parser.add_argument("--intake", choices=["none", "spec", "brainstorm", "ui_lab", "autonomous"], help="Intake mode")
     start_parser.add_argument("--unattended-policy", choices=["approve", "reject"], default="approve", help="Unattended policy for plan approval")
+    start_parser.add_argument("--ui", action="store_true", help="Force UI brainstorming branch")
+    start_parser.add_argument("--no-ui", action="store_true", help="Skip UI brainstorming branch")
+    start_parser.add_argument("--no-spec-review", action="store_true", help="Skip internal spec review")
 
     # resume
     resume_parser = subparsers.add_parser("resume", help="Resume an existing goal")

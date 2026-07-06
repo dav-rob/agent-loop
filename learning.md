@@ -30,6 +30,7 @@ Use this file to record learnings, so that agents do not have to repeat work alr
 - Default failover is intentionally three-step per side: executor routes are `agy` Gemini 3.1 Pro High, then `agy` Claude Sonnet 4.6 Thinking, then Codex `gpt-5.4-mini`; planning/reviewer routes are Codex `gpt-5.5`, then `agy` Claude Opus 4.6 Thinking, then `agy` Gemini 3.1 Pro High. A Gemini executor failure should try Sonnet before Codex, and Codex is selected after both executor `agy` routes are unavailable.
 - Recovery must also repair stale task state: if a task is `running` but has no `running` attempts left, `agent-loop resume` should reset it to `ready` or `blocked` based on the retry limit so ready Codex fallbacks are not starved by stale active-file/worker accounting.
 - `agent-loop resume` must not automatically reset `auth_required` provider routes to `available`; that would revive known-dead routes and prevent failover from reaching later providers. Only transient provider errors should be reset automatically.
+- Spec intake model calls should use configured route fallback rather than a hardcoded adapter. Keep `agy` as the preferred intake provider when configured, fall back to later routes such as Codex, and emit non-empty diagnostics for auth/quota/transient/unavailable failures.
 - Retry-limit escalation follow-up depends on fetching the latest `task_escalation` review. `ReviewRepository.get_latest_for()` must exist and return the full review row; without it, a live resume can crash after writing escalation follow-up reviews, leaving the task stuck in `reviewing` and ready follow-up work unscheduled.
 - Task retry reset must be idempotent. A concurrent recovery or failure path can already have moved a task back to `ready`; failure cleanup should leave `ready` tasks ready instead of attempting the invalid transition `ready -> failed`.
 - Codex JSON output may contain current event records such as `{"type":"item.completed","item":{"type":"agent_message","text":"..."}}`; the adapter must extract that text instead of passing the JSON event stream to review/planning parsers.
@@ -48,6 +49,9 @@ Use this file to record learnings, so that agents do not have to repeat work alr
 
 - Mocks are used for git utilities and subprocess adapters to avoid hitting rate limits.
 - Valid run status transitions must go through `planning` -> `running` -> `reviewing` -> `complete`.
+- If tests suddenly take much longer than their usual runtime, assume a hang or
+  unexpected external process until proven otherwise; inspect running processes
+  and the active test before waiting.
 
 ## Architecture notes
 

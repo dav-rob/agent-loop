@@ -13,6 +13,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from agent_loop.database import get_connection
 from agent_loop.config import Config
 from agent_loop.adapters import get_adapter, AttemptResult, resolve_binary
+from agent_loop.routing import ModelRouter
 from agent_loop.git_utils import (
     create_worktree,
     remove_worktree,
@@ -113,6 +114,25 @@ class Orchestrator:
         self.test_migration_repo = TestMigrationRepository(conn)
         self.test_run_repo = TestRunRepository(conn)
 
+    def _model_router(self) -> ModelRouter:
+        return ModelRouter(config=self.config, provider_repo=self.provider_repo)
+
+    def execution_profile_for_task(self, task: Dict[str, Any], attempts: List[Dict[str, Any]]) -> str:
+        if task.get("role") == "planning":
+            return "planner"
+
+        scope_data = task.get("scope") or {}
+        if isinstance(scope_data, str):
+            try:
+                scope_data = json.loads(scope_data)
+            except Exception:
+                scope_data = {}
+
+        if isinstance(scope_data, dict) and scope_data.get("escalation_hint"):
+            return "executor_escalated"
+
+        return "executor"
+
     def reset_provider_errors(self) -> None:
         """Resets transient provider states to available."""
         providers = self.provider_repo.list_all()
@@ -148,105 +168,91 @@ class Orchestrator:
         self.run_repo.update_status(run_id, "planning")
         render_progress_md(self.conn, run_id, self.progress_path)
 
-        routes = self.config.routes.get("planning", [])
-        
         planning_prompt = f"""
 You are the Agent Loop Planner.
-Analyze the user's broad goal: "{run['goal']}"
-Create a structured plan consisting of features, tasks within features, dependencies, risk levels, and verification commands.
-Be concise.
-Return ONLY a valid JSON object matching the requested schema. Do not include markdown formatting or wrapper around the JSON.
+
+Input:
+{run['goal']}
+
+The input may be either:
+* a raw goal from none mode
+* an approved compact spec from spec mode
+
+Create the smallest executable feature/task DAG that satisfies the input.
+
+Rules:
+* Do not ask the user questions.
+* Do not create a prose spec.
+* Prefer fewer tasks.
+* Use planning-role tasks only for architecture/risk decomposition, integration/conflict work, or genuinely high-risk ambiguity.
+* Keep tasks scoped and independently verifiable.
+* Return ONLY schema-valid JSON matching the requested schema.
+* Do not include markdown.
 """
 
-        schema_path = Path(__file__).parent / "plan_schema.json"
+        result = self._model_router().run(
+            profile="planner",
+            prompt=planning_prompt,
+            workspace_path=Path.cwd().resolve(),
+            logs_root=self.config.logs_dir / str(run_id) / "planning",
+        )
 
-        last_error = ""
-        for route in routes:
-            provider = route["provider"]
-            model = route["model"]
+        try:
+            if not result.success:
+                self.run_repo.update_status(run_id, "blocked")
+                render_progress_md(self.conn, run_id, self.progress_path)
+                return False
 
-            p_state = self.provider_repo.get(provider, model)
-            if p_state and not p_state["availability"]:
-                # Simple availability skip
-                continue
+            plan_data = json.loads(result.output)
+            features = plan_data.get("features", [])
+            tasks = plan_data.get("tasks", [])
+            if not validate_dag(features, tasks):
+                self.run_repo.update_status(run_id, "blocked")
+                render_progress_md(self.conn, run_id, self.progress_path)
+                return False
 
-            try:
-                adapter = get_adapter(provider, self.config)
-                attempt_logs_dir = (self.config.logs_dir / str(run_id) / "planning" / f"attempt_{provider}_{model}").resolve()
-                attempt_logs_dir.mkdir(parents=True, exist_ok=True)
-
-                result: AttemptResult = adapter.run_attempt(
-                    model=model,
-                    prompt=planning_prompt,
-                    workspace_path=Path.cwd().resolve(),
-                    attempt_logs_dir=attempt_logs_dir,
-                    reasoning_level=route.get("reasoning_level")
+            for dec in plan_data.get("decisions", []):
+                self.decision_repo.create(
+                    run_id=run_id,
+                    decision_type=dec["decision_type"],
+                    is_autonomous=(run["intake_mode"] == "autonomous"),
+                    summary=dec["summary"],
+                    details=dec.get("details")
                 )
 
-                if not result.success:
-                    if result.quota_exhausted:
-                        self.provider_repo.save(
-                            provider=provider,
-                            model=model,
-                            capability_snapshot={"models": [model]},
-                            availability=False,
-                            quota_limit_reset=result.quota_reset
-                        )
-                    last_error = result.error
-                    continue
+            feature_ids = {}
+            for feat in features:
+                f_id = self.feature_repo.create(
+                    run_id=run_id,
+                    name=feat["name"],
+                    risk=feat["risk"],
+                    acceptance_criteria=feat.get("acceptance_criteria"),
+                    dependencies=feat.get("dependencies", [])
+                )
+                feature_ids[feat["name"]] = f_id
 
-                plan_data = json.loads(result.output)
-                
-                features = plan_data.get("features", [])
-                tasks = plan_data.get("tasks", [])
-                if not validate_dag(features, tasks):
-                    last_error = "Invalid DAG: detected cycles or invalid dependencies."
-                    continue
+            for task in tasks:
+                self.task_repo.create(
+                    run_id=run_id,
+                    feature_id=feature_ids[task["feature_name"]],
+                    name=task["name"],
+                    role=task["role"],
+                    risk=task["risk"],
+                    scope=task.get("scope"),
+                    dependencies=task.get("dependencies", []),
+                    required_verification=task.get("required_verification")
+                )
 
-                for dec in plan_data.get("decisions", []):
-                    self.decision_repo.create(
-                        run_id=run_id,
-                        decision_type=dec["decision_type"],
-                        is_autonomous=(run["intake_mode"] == "autonomous"),
-                        summary=dec["summary"],
-                        details=dec.get("details")
-                    )
+            if run["intake_mode"] in {"autonomous", "non_interactive"}:
+                self.run_repo.update_status(run_id, "running")
+            else:
+                self.run_repo.update_status(run_id, "awaiting_plan_approval")
 
-                feature_ids = {}
-                for feat in features:
-                    f_id = self.feature_repo.create(
-                        run_id=run_id,
-                        name=feat["name"],
-                        risk=feat["risk"],
-                        acceptance_criteria=feat.get("acceptance_criteria"),
-                        dependencies=feat.get("dependencies", [])
-                    )
-                    feature_ids[feat["name"]] = f_id
-
-                for task in tasks:
-                    self.task_repo.create(
-                        run_id=run_id,
-                        feature_id=feature_ids[task["feature_name"]],
-                        name=task["name"],
-                        role=task["role"],
-                        risk=task["risk"],
-                        scope=task.get("scope"),
-                        dependencies=task.get("dependencies", []),
-                        required_verification=task.get("required_verification")
-                    )
-
-                if run["intake_mode"] in {"autonomous", "non_interactive"}:
-                    self.run_repo.update_status(run_id, "running")
-                else:
-                    self.run_repo.update_status(run_id, "awaiting_plan_approval")
-
-                render_plan_md(self.conn, run_id, self.plan_path)
-                render_progress_md(self.conn, run_id, self.progress_path)
-                return True
-
-            except Exception as e:
-                last_error = str(e)
-                continue
+            render_plan_md(self.conn, run_id, self.plan_path)
+            render_progress_md(self.conn, run_id, self.progress_path)
+            return True
+        except Exception:
+            pass
 
         self.run_repo.update_status(run_id, "blocked")
         render_progress_md(self.conn, run_id, self.progress_path)
@@ -807,47 +813,16 @@ Return ONLY a valid JSON object matching the requested schema. Do not include ma
             render_progress_md(self.conn, run_id, self.progress_path)
 
             attempts = [a for a in self.attempt_repo.get_by_run(run_id) if a["task_id"] == task_id]
-        is_high_reasoning = (task["risk"] == "high") or (len(attempts) >= self.config.retry_policy["escalation_threshold"])
-
-        route_key = "planning" if (task["role"] == "planning" or is_high_reasoning) else "implementation"
-        routes = self.config.routes.get(route_key, [])
-
-        # auth_failed_routes tracks providers that returned auth_required during
-        # this invocation so we can skip them when selecting the next route.
-        auth_failed_routes: set = set()
-
-        def _pick_route():
-            for r in routes:
-                key = (r["provider"], r["model"])
-                if key in auth_failed_routes:
-                    continue
-                with self.db_lock:
-                    p_state = self.provider_repo.get(r["provider"], r["model"])
-                # Skip routes that are known auth_required or unavailable
-                if p_state and p_state.get("quota_state") in {"auth_required"}:
-                    continue
-                if not p_state or p_state["availability"]:
-                    return r
-            return None
-
-        selected_route = _pick_route()
-        if not selected_route:
-            with self.db_lock:
-                self._reset_task_for_retry(task_id)
-            return False
-
-        provider = selected_route["provider"]
-        model = selected_route["model"]
-        reasoning_level = selected_route.get("reasoning_level")
+        profile = self.execution_profile_for_task(task, attempts)
 
         with self.db_lock:
             attempt_id = self.attempt_repo.create(
                 run_id=run_id,
                 task_id=task_id,
-                route=route_key,
-                provider=provider,
-                model=model,
-                reasoning_level=reasoning_level,
+                route=profile,
+                provider=None,
+                model=None,
+                reasoning_level=None,
                 worktree_path=None,
                 logs_path=None
             )
@@ -943,14 +918,24 @@ Scope: {json.dumps(task['scope'])}
             prompt += "\nPlease implement this task in the workspace. You MUST make atomic, fine-grained git commits with descriptive messages as you progress through the task. Run verification to confirm success before exiting.\n"
 
         try:
-            adapter = get_adapter(provider, self.config)
-            result = adapter.run_attempt(
-                model=model,
+            routed_result = self._model_router().run(
+                profile=profile,
                 prompt=prompt,
                 workspace_path=worktree_dir,
-                attempt_logs_dir=logs_dir,
-                reasoning_level=reasoning_level
+                logs_root=logs_dir,
             )
+            result = routed_result.result
+            provider = routed_result.provider
+            model = routed_result.model
+            reasoning_level = routed_result.reasoning_level
+            with self.db_lock:
+                self.attempt_repo.update_route_metadata(
+                    attempt_id=attempt_id,
+                    route=profile,
+                    provider=provider,
+                    model=model,
+                    reasoning_level=reasoning_level,
+                )
 
             verification_success = True
             if task["required_verification"]:
@@ -1204,106 +1189,39 @@ Scope: {json.dumps(task['scope'])}
 
                 elif result.auth_required:
                     with self.db_lock:
-                        self.provider_repo.save(
-                            provider=provider,
-                            model=model,
-                            capability_snapshot={"models": [model]},
-                            availability=False,
-                            quota_state="auth_required"
-                        )
-                        self.attempt_repo.update_outcome(attempt_id, "provider_error", patch_path=patch_path)
-
-                    # Record which route failed auth so _pick_route skips it.
-                    auth_failed_routes.add((provider, model))
-                    fallback_route = _pick_route()
-
-                    if fallback_route:
-                        # Notify but continue to the next route rather than giving up.
-                        alert_msg = (
-                            f"Auth failed for {provider}:{model} — falling back to "
-                            f"{fallback_route['provider']}:{fallback_route['model']}\n"
-                            f"Evidence Path: {logs_dir / 'stderr.log'}"
-                        )
-                        self.notify(run_id, f"quota_alert:{provider}:{model}:auth_required", alert_msg)
-
-                        # Reset task to running and retry with the fallback route.
-                        with self.db_lock:
-                            self.task_repo.update_status(task_id, "failed")
-                            self.task_repo.update_status(task_id, "running")
-                        selected_route = fallback_route
-                        provider = fallback_route["provider"]
-                        model = fallback_route["model"]
-                        reasoning_level = fallback_route.get("reasoning_level")
-                        with self.db_lock:
-                            attempt_id = self.attempt_repo.create(
-                                run_id=run_id,
-                                task_id=task_id,
-                                route=route_key,
+                        if provider and model:
+                            self.provider_repo.save(
                                 provider=provider,
                                 model=model,
-                                reasoning_level=reasoning_level,
-                                worktree_path=str(worktree_dir),
-                                logs_path=str(logs_dir)
+                                capability_snapshot={"models": [model]},
+                                availability=False,
+                                quota_state="auth_required"
                             )
-                        adapter = get_adapter(provider, self.config)
-                        result = adapter.run_attempt(
-                            model=model,
-                            prompt=prompt,
-                            workspace_path=worktree_dir,
-                            attempt_logs_dir=logs_dir,
-                            reasoning_level=reasoning_level
-                        )
-                        # Fall through: the new result will be evaluated by the
-                        # next iteration of the enclosing if/elif chain via a
-                        # re-raise of the same logic.  We achieve this by
-                        # re-entering the result-dispatch block.
-                        patch_path = self._preserve_uncommitted_changes(worktree_dir, logs_dir)
-                        if result.success:
-                            pass  # handled below by the normal success path
-                        elif result.auth_required:
-                            auth_failed_routes.add((provider, model))
-                            with self.db_lock:
-                                self.provider_repo.save(
-                                    provider=provider, model=model,
-                                    capability_snapshot={"models": [model]},
-                                    availability=False, quota_state="auth_required"
-                                )
-                                self.attempt_repo.update_outcome(attempt_id, "provider_error", patch_path=patch_path)
-                                self._reset_task_for_retry(task_id)
-                            alert_msg = (
-                                f"Quota Alert - Run: {run_id}, Task: {task_id} ({task['name']})\n"
-                                f"All fallback routes exhausted (auth_required).\n"
-                                f"Evidence Path: {logs_dir / 'stderr.log'}"
-                            )
-                            self.notify(run_id, f"quota_alert:{provider}:{model}:auth_required", alert_msg)
-                        else:
-                            # Let the worktree cleanup and return happen below.
-                            pass
-                    else:
-                        # No fallback available — block task.
-                        with self.db_lock:
-                            self._reset_task_for_retry(task_id)
-                        alert_msg = (
-                            f"Quota Alert - Run: {run_id}, Task: {task_id} ({task['name']})\n"
-                            f"Provider: {provider} | Model: {model}\n"
-                            f"Classification: auth_required\n"
-                            f"Evidence Path: {logs_dir / 'stderr.log'}\n"
-                            f"Known Reset: N/A\n"
-                            f"Fallback Action: No more routes available — task re-queued\n"
-                            f"Expected Resume Behavior: Will resume after operator runs login command"
-                        )
-                        self.notify(run_id, f"quota_alert:{provider}:{model}:auth_required", alert_msg)
+                        self.attempt_repo.update_outcome(attempt_id, "abandoned", patch_path=patch_path)
+                        self._reset_task_for_retry(task_id)
+
+                    alert_msg = (
+                        f"Quota Alert - Run: {run_id}, Task: {task_id} ({task['name']})\n"
+                        f"Provider: {provider or 'unknown'} | Model: {model or 'unknown'}\n"
+                        f"Classification: auth_required\n"
+                        f"Evidence Path: {logs_dir / 'stderr.log'}\n"
+                        f"Known Reset: N/A\n"
+                        f"Fallback Action: No more routes available for profile '{profile}' — task re-queued\n"
+                        f"Expected Resume Behavior: Will resume after operator runs login command"
+                    )
+                    self.notify(run_id, f"quota_alert:{provider}:{model}:auth_required", alert_msg)
 
                 elif result.transient_failure:
                     with self.db_lock:
-                        self.provider_repo.save(
-                            provider=provider,
-                            model=model,
-                            capability_snapshot={"models": [model]},
-                            availability=False,
-                            quota_state="transient_failure"
-                        )
-                        self.attempt_repo.update_outcome(attempt_id, "provider_error", patch_path=patch_path)
+                        if provider and model:
+                            self.provider_repo.save(
+                                provider=provider,
+                                model=model,
+                                capability_snapshot={"models": [model]},
+                                availability=False,
+                                quota_state="transient_failure"
+                            )
+                        self.attempt_repo.update_outcome(attempt_id, "abandoned", patch_path=patch_path)
                         self._reset_task_for_retry(task_id)
                     
                     alert_msg = (
@@ -1319,14 +1237,15 @@ Scope: {json.dumps(task['scope'])}
 
                 elif result.unavailable:
                     with self.db_lock:
-                        self.provider_repo.save(
-                            provider=provider,
-                            model=model,
-                            capability_snapshot={"models": [model]},
-                            availability=False,
-                            quota_state="unavailable"
-                        )
-                        self.attempt_repo.update_outcome(attempt_id, "provider_error", patch_path=patch_path)
+                        if provider and model:
+                            self.provider_repo.save(
+                                provider=provider,
+                                model=model,
+                                capability_snapshot={"models": [model]},
+                                availability=False,
+                                quota_state="unavailable"
+                            )
+                        self.attempt_repo.update_outcome(attempt_id, "abandoned", patch_path=patch_path)
                         self._reset_task_for_retry(task_id)
                     
                     alert_msg = (
@@ -1422,20 +1341,6 @@ If the executor just needs another try or a specific hint to fix its mistake, re
         return self.run_agent_review(run_id, "task_escalation", task_id, prompt)
 
     def run_agent_review(self, run_id: int, subject_type: str, subject_id: int, review_prompt: str) -> str:
-        routes = self.config.routes.get("planning", [])
-        selected_route = None
-        for r in routes:
-            p_state = self.provider_repo.get(r["provider"], r["model"])
-            if not p_state or p_state.get("availability") != False:
-                selected_route = r
-                break
-        if not selected_route:
-            raise ValueError("No available review route found. All configured planning/review routes are known-unavailable.")
-
-        provider = selected_route["provider"]
-        model = selected_route["model"]
-        reasoning_level = selected_route.get("reasoning_level")
-        
         review_logs_dir = self.config.logs_dir / str(run_id) / "reviews" / f"{subject_type}_{subject_id}"
         review_logs_dir.mkdir(parents=True, exist_ok=True)
         
@@ -1444,8 +1349,9 @@ If the executor just needs another try or a specific hint to fix its mistake, re
             str(review_logs_dir / "stderr.log")
         ]
         
+        provider = None
+        model = None
         try:
-            adapter = get_adapter(provider, self.config)
             prompt = f"""
 You are the Agent Loop Reviewer.
 {review_prompt}
@@ -1459,13 +1365,14 @@ Output a JSON response in the following format:
 The "decision" must be one of: "approved", "rejected", "follow_up", "assessment", "block".
 Only return the raw JSON object. Do not include markdown wrappers.
 """
-            result = adapter.run_attempt(
-                model=model,
+            result = self._model_router().run(
+                profile="escalation_reviewer" if subject_type == "task_escalation" else "reviewer",
                 prompt=prompt,
                 workspace_path=Path.cwd(),
-                attempt_logs_dir=review_logs_dir,
-                reasoning_level=reasoning_level
+                logs_root=review_logs_dir,
             )
+            provider = result.provider
+            model = result.model
             
             decision = "rejected"
             findings = "Diff checked"
@@ -1502,7 +1409,7 @@ Only return the raw JSON object. Do not include markdown wrappers.
                 subject_type=subject_type,
                 subject_id=subject_id,
                 decision=decision,
-                reviewer_route=f"{provider}:{model}",
+                reviewer_route=f"{provider}:{model}" if provider and model else None,
                 findings=findings,
                 evidence_paths=evidence_paths
             )
@@ -1513,7 +1420,7 @@ Only return the raw JSON object. Do not include markdown wrappers.
                 subject_type=subject_type,
                 subject_id=subject_id,
                 decision="rejected",
-                reviewer_route=f"{provider}:{model}",
+                reviewer_route=f"{provider}:{model}" if provider and model else None,
                 findings=f"Review crashed with exception: {e}",
                 evidence_paths=evidence_paths
             )
@@ -1624,7 +1531,7 @@ Only return the raw JSON object. Do not include markdown wrappers.
                 )
                 combined = res.stdout + "\n" + res.stderr
                 if res.returncode != 0 or any(x in combined.lower() for x in ["login required", "unauthenticated", "expired credentials", "authentication required", "not logged in", "run antigravity-usage login"]):
-                    routes = self.config.routes.get("implementation", []) + self.config.routes.get("planning", [])
+                    routes = self.config.all_model_routes()
                     for r in routes:
                         if r["provider"] == "agy":
                             self.provider_repo.save(
@@ -1639,7 +1546,7 @@ Only return the raw JSON object. Do not include markdown wrappers.
                 data = json.loads(res.stdout)
                 models_data = data.get("models", [])
                 
-                routes = self.config.routes.get("implementation", []) + self.config.routes.get("planning", [])
+                routes = self.config.all_model_routes()
                 agy_routes = [r for r in routes if r["provider"] == "agy"]
                 for r in agy_routes:
                     model = r["model"]
@@ -1762,7 +1669,7 @@ Only return the raw JSON object. Do not include markdown wrappers.
                         secondary_exhausted = secondary.get("usedPercent", 0) >= 100
                         rate_limit_reached = rl_data.get("rateLimitReachedType") is not None
                         
-                        routes = self.config.routes.get("implementation", []) + self.config.routes.get("planning", [])
+                        routes = self.config.all_model_routes()
                         codex_routes = [r for r in routes if r["provider"] == "codex"]
                         
                         if primary_exhausted or secondary_exhausted or rate_limit_reached:
@@ -1801,53 +1708,53 @@ Only return the raw JSON object. Do not include markdown wrappers.
                 pass
 
     def get_required_routes(self, run_id: int) -> List[Dict[str, Any]]:
+        run = self.run_repo.get(run_id)
         tasks = self.task_repo.get_by_run(run_id)
         features = self.feature_repo.get_by_run(run_id)
         
-        required_route_keys = set()
+        required_profiles = set()
+
+        if run and run["status"] == "planning":
+            required_profiles.add("planner")
         
         # 1. Ready tasks
         ready_tasks = [t for t in tasks if t["status"] == "ready"]
         for task in ready_tasks:
             attempts = [a for a in self.attempt_repo.get_by_run(run_id) if a["task_id"] == task["id"]]
-            is_high_reasoning = (task["risk"] == "high") or (len(attempts) >= self.config.retry_policy["escalation_threshold"])
-            route_key = "planning" if (task["role"] == "planning" or is_high_reasoning) else "implementation"
-            required_route_keys.add(route_key)
+            required_profiles.add(self.execution_profile_for_task(task, attempts))
             
-        # 2. Running tasks (they will need reviews, which require planning routes)
-        running_tasks = [t for t in tasks if t["status"] == "running"]
-        if running_tasks:
-            required_route_keys.add("planning")
+        # 2. Running/reviewing tasks will need review capacity.
+        review_bound_tasks = [t for t in tasks if t["status"] in {"running", "reviewing"}]
+        if review_bound_tasks:
+            required_profiles.add("reviewer")
             
         # 3. Features pending review
         for feature in features:
             if feature["review_status"] == "pending":
                 feat_tasks = [t for t in tasks if t["feature_id"] == feature["id"]]
                 if feat_tasks and all(t["status"] == "complete" for t in feat_tasks):
-                    required_route_keys.add("planning")
+                    required_profiles.add("reviewer")
                     
         # 4. Final review
         if tasks and all(t["status"] == "complete" for t in tasks):
             rejected_features = [f for f in features if f["review_status"] == "rejected"]
             if not rejected_features:
-                required_route_keys.add("planning")
+                required_profiles.add("reviewer")
                 
-        # Map route keys to actual routes from config
         required_routes = []
-        # Preserve order from config routes
-        for key in ["planning", "implementation"]:
-            if key in required_route_keys:
-                for r in self.config.routes.get(key, []):
+        for profile in ["planner", "executor", "executor_escalated", "reviewer", "escalation_reviewer"]:
+            if profile in required_profiles:
+                for r in self.config.routes_for(profile):
                     rc = r.copy()
-                    rc["capability"] = key
+                    rc["capability"] = profile
                     required_routes.append(rc)
                 
-        # If no specific work is ready but the run is running/waiting_for_quota, default to both
+        # If no specific work is ready but the run is active, keep broad runtime capacity available.
         if not required_routes:
-            for key in ["implementation", "planning"]:
-                for r in self.config.routes.get(key, []):
+            for profile in ["executor", "planner", "reviewer"]:
+                for r in self.config.routes_for(profile):
                     rc = r.copy()
-                    rc["capability"] = key
+                    rc["capability"] = profile
                     required_routes.append(rc)
             
         return required_routes

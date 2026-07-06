@@ -391,10 +391,12 @@ class AgyAdapter(BaseAdapter):
             # assistant output can discuss errors or timeouts without indicating
             # provider failure.
             combined_text = stderr_content
-            if agy_log_file.exists():
-                combined_text += "\n" + agy_log_file.read_text(errors="ignore")
-            if process.returncode != 0:
+            # If the process failed, OR it unexpectedly returned empty output, check the log file
+            # to figure out why. (agy sometimes exits 0 on silent failures).
+            if process.returncode != 0 or not stdout_content.strip():
                 combined_text += "\n" + stdout_content
+                if agy_log_file.exists():
+                    combined_text += "\n" + agy_log_file.read_text(errors="ignore")
 
             lowered_all = combined_text.lower()
             quota_exhausted = False
@@ -419,7 +421,7 @@ class AgyAdapter(BaseAdapter):
             if any(x in lowered_all for x in ["model not found", "model unavailable", "unsupported model", "invalid model", "does not exist", "404 not found", "model not supported"]):
                 unavailable = True
 
-            success = (process.returncode == 0) and not quota_exhausted and not auth_required and not transient_failure and not unavailable
+            success = (process.returncode == 0) and bool(stdout_content.strip()) and not quota_exhausted and not auth_required and not transient_failure and not unavailable
 
             return AttemptResult(
                 success=success,

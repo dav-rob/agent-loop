@@ -368,7 +368,7 @@ def test_review_actions_comprehensive(db_conn, tmp_path):
          patch("agent_loop.orchestrator.commit_changes", mock_commit), \
          patch("agent_loop.orchestrator.merge_branch", mock_merge), \
          patch("agent_loop.orchestrator.remove_worktree", mock_remove_wt), \
-         patch("agent_loop.orchestrator.get_adapter") as mock_get_adapter:
+         patch("agent_loop.routing.get_adapter") as mock_get_adapter:
         
         mock_adapter = MagicMock()
         mock_get_adapter.return_value = mock_adapter
@@ -495,10 +495,10 @@ def test_quota_gating_capabilities(db_conn, tmp_path):
     req = orch.get_required_routes(run_id)
     assert len(req) == 2
     caps = {r["capability"] for r in req}
-    assert caps == {"planning", "implementation"}
+    assert caps == {"planner", "executor"}
     
     # Scenario 1: One capability is available, other is limited.
-    # agy (planning) is available, codex (implementation) is limited.
+    # agy (planner) is available, codex (executor) is limited.
     p_repo.save("agy", "Gemini 3.5 Flash", {}, False, "available")
     p_repo.save("codex", "gpt-5.4-mini", {}, False, "limited_known_reset")
     
@@ -511,7 +511,7 @@ def test_quota_gating_capabilities(db_conn, tmp_path):
         assert res is True
         assert len(sleep_calls) == 1
         
-    # Scenario 2: Auth required for planning capability, implementation is available.
+    # Scenario 2: Auth required for planner capability, executor is available.
     # Should stop/block immediately and return False.
     p_repo.save("agy", "Gemini 3.5 Flash", {}, False, "auth_required")
     p_repo.save("codex", "gpt-5.4-mini", {}, False, "available")
@@ -654,126 +654,68 @@ def test_ui_lab_brief_workflow_paths(tmp_path, monkeypatch):
     import sys
     from agent_loop.cli import main
     monkeypatch.chdir(tmp_path)
-    
-    # 1. UI Lab intake mode selected for a UI goal: should succeed and run AgyAdapter
-    user_inputs = [
-        "2",
-        "Product admins",
-        "Fast and clean",
-        "Use existing auth",
-        "Avoid heavy animation",
-        "Run UI tests",
-        "fast",
-        "tool",
-        "immediately",
-        "slow",
-        "Dark neon",
-        "disliked_app",
-        "y"
-    ]
-    input_gen = (val for val in user_inputs)
-    
+
+    db_path = Path(".agent-loop") / "agent-loop.db"
+
+    def read_single_run():
+        conn = get_connection(db_path)
+        run = RunRepository(conn).list_all()[0]
+        conn.close()
+        return run
+
+    def clear_db():
+        if db_path.exists():
+            db_path.unlink()
+
     mock_orch = MagicMock()
     mock_orch.plan_run.return_value = True
-    
+
+    # 1. Interactive option 2 is now the supported "none" intake mode.
+    input_gen = iter(["2"])
+    with patch("builtins.input", side_effect=lambda *args, **kwargs: next(input_gen)), \
+         patch("agent_loop.cli.Orchestrator", return_value=mock_orch):
+        with patch.object(sys, "argv", ["agent-loop", "start", "--goal", "Create a web login page"]):
+            main()
+    run = read_single_run()
+    assert run["intake_mode"] == "none"
+    assert run["goal"] == "Create a web login page"
+    clear_db()
+
+    # 2. Interactive option 1 is spec intake.
+    input_gen = iter(["1"])
     with patch("builtins.input", side_effect=lambda *args, **kwargs: next(input_gen)), \
          patch("agent_loop.cli.Orchestrator", return_value=mock_orch), \
-         patch("agent_loop.adapters.AgyAdapter") as mock_agy_adapter_cls:
-        
-        mock_adapter_instance = MagicMock()
-        mock_agy_adapter_cls.return_value = mock_adapter_instance
-        from agent_loop.adapters import AttemptResult
-        mock_adapter_instance.run_attempt.return_value = AttemptResult(
-            success=True,
-            exit_code=0,
-            output="UI Questions\n- Q1?\n- Q2?\n- Q3?\n- Q4?\n- Q5?\n- Q6?",
-            error=""
-        )
-        
-        test_args = ["agent-loop", "start", "--goal", "Create a web login page"]
-        with patch.object(sys, "argv", test_args):
+         patch("agent_loop.intake.run_spec_intake", return_value="# Compact Spec\n\n## Outcome\nBuild a compiler") as mock_spec:
+        with patch.object(sys, "argv", ["agent-loop", "start", "--goal", "Build a compiler"]):
             main()
-            
-        mock_adapter_instance.run_attempt.assert_called_once()
-        
-    db_path = Path(".agent-loop") / "agent-loop.db"
-    conn = get_connection(db_path)
-    run_repo = RunRepository(conn)
-    runs = run_repo.list_all()
-    assert len(runs) == 1
-    assert runs[0]["intake_mode"] == "brainstorm_ui_lab"
-    assert "Fast and clean" in runs[0]["goal"]
-    conn.close()
-    
-    if db_path.exists():
-        db_path.unlink()
-        
-    # 2. UI Lab intake mode requested via flag (--intake ui_lab) for a non-UI goal: should fail/exit
-    with pytest.raises(SystemExit) as excinfo:
-        test_args = ["agent-loop", "start", "--goal", "Implement a prime number generator", "--intake", "ui_lab"]
-        with patch.object(sys, "argv", test_args):
-            main()
-    assert excinfo.value.code == 1
-    
-    # 3. Brainstorm intake mode (Option 1) for a non-UI goal
-    user_inputs = [
-        "1",
-        "Compiler maintainers",
-        "Only needs standard lexer",
-        "",
-        "",
-        "",
-        "y"
-    ]
-    input_gen = (val for val in user_inputs)
-    with patch("builtins.input", side_effect=lambda *args, **kwargs: next(input_gen)), \
-         patch("agent_loop.cli.Orchestrator", return_value=mock_orch):
-        test_args = ["agent-loop", "start", "--goal", "Build a compiler"]
-        with patch.object(sys, "argv", test_args):
-            main()
-            
-    conn = get_connection(db_path)
-    run_repo = RunRepository(conn)
-    runs = run_repo.list_all()
-    assert len(runs) == 1
-    assert runs[0]["intake_mode"] == "brainstorm"
-    assert "Only needs standard lexer" in runs[0]["goal"]
-    conn.close()
-    
-    if db_path.exists():
-        db_path.unlink()
-        
-    # 4. Autonomous intake mode (Option 3) for a UI goal
-    user_inputs = ["3"]
-    input_gen = (val for val in user_inputs)
-    with patch("builtins.input", side_effect=lambda *args, **kwargs: next(input_gen)), \
-         patch("agent_loop.cli.Orchestrator", return_value=mock_orch):
-        test_args = ["agent-loop", "start", "--goal", "Create a page"]
-        with patch.object(sys, "argv", test_args):
-            main()
-            
-    conn = get_connection(db_path)
-    run_repo = RunRepository(conn)
-    runs = run_repo.list_all()
-    assert len(runs) == 1
-    assert runs[0]["intake_mode"] == "autonomous"
-    conn.close()
-    
-    if db_path.exists():
-        db_path.unlink()
+    run = read_single_run()
+    assert run["intake_mode"] == "spec"
+    assert "Build a compiler" in run["goal"]
+    assert mock_spec.call_args.kwargs["force_ui"] is None
+    clear_db()
 
-    # 5. Non-interactive policy path
-    with patch("agent_loop.cli.Orchestrator", return_value=mock_orch):
-        test_args = ["agent-loop", "start", "--goal", "Build a compiler", "--non-interactive"]
-        with patch.object(sys, "argv", test_args):
+    # 3. Legacy ui_lab maps to spec intake with UI enabled.
+    with patch("agent_loop.cli.Orchestrator", return_value=mock_orch), \
+         patch("agent_loop.intake.run_spec_intake", return_value="# Compact Spec\n\n## Outcome\nCreate UI") as mock_spec:
+        with patch.object(sys, "argv", ["agent-loop", "start", "--goal", "Create a page", "--intake", "ui_lab"]):
             main()
-            
-    conn = get_connection(db_path)
-    run_repo = RunRepository(conn)
-    runs = run_repo.list_all()
-    assert len(runs) == 1
-    assert runs[0]["intake_mode"] == "non_interactive"
-    conn.close()
+    run = read_single_run()
+    assert run["intake_mode"] == "spec"
+    assert mock_spec.call_args.kwargs["force_ui"] is True
+    clear_db()
+
+    # 4. Legacy autonomous and non-interactive default both map to none.
+    with patch("agent_loop.cli.Orchestrator", return_value=mock_orch):
+        with patch.object(sys, "argv", ["agent-loop", "start", "--goal", "Build a compiler", "--intake", "autonomous"]):
+            main()
+    assert read_single_run()["intake_mode"] == "none"
+    clear_db()
+
+    with patch("agent_loop.cli.Orchestrator", return_value=mock_orch):
+        with patch.object(sys, "argv", ["agent-loop", "start", "--goal", "Build a compiler", "--non-interactive"]):
+            main()
+    assert read_single_run()["intake_mode"] == "none"
+    clear_db()
 
 
 def test_safe_preservation_failures(db_conn, tmp_path, monkeypatch):
@@ -848,7 +790,7 @@ def test_architectural_assessment_resolution(db_conn, tmp_path, monkeypatch):
     monkeypatch.setattr("agent_loop.orchestrator.remove_worktree", mock_remove_wt)
     monkeypatch.setattr(orch, "run_verification", lambda *args, **kwargs: True)
 
-    with patch("agent_loop.orchestrator.get_adapter") as mock_get_adapter:
+    with patch("agent_loop.routing.get_adapter") as mock_get_adapter:
         mock_adapter = MagicMock()
         mock_get_adapter.return_value = mock_adapter
 
@@ -940,12 +882,12 @@ def test_quota_gating_by_role(db_conn, tmp_path):
 
     orch = Orchestrator(db_conn, config, plan_path=tmp_path / "plan.md", progress_path=tmp_path / "progress.md")
 
-    # Under risk-only routing, this low-risk planning task would select route_key = "implementation"
+    # Under risk-only routing, this low-risk planning task would select the executor profile
     # because risk is "low" and attempts = 0.
-    # But under role-based capability routing, it must select "planning"!
+    # But under role-based capability routing, it must select planner.
     req = orch.get_required_routes(run_id)
     assert len(req) == 1
-    assert req[0]["capability"] == "planning"
+    assert req[0]["capability"] == "planner"
     assert req[0]["model"] == "planning-model"
 
 
@@ -1215,7 +1157,7 @@ def test_end_to_end_fixture_lifecycle(db_conn, tmp_path, monkeypatch):
     transitions.append(("task", task2, "ready"))
 
     # ── Phase 3: Execute task1 (implementation + verification + approved) ─────
-    with patch("agent_loop.orchestrator.get_adapter") as mock_adapter_factory:
+    with patch("agent_loop.routing.get_adapter") as mock_adapter_factory:
         adapter = MagicMock()
         mock_adapter_factory.return_value = adapter
 
@@ -1233,7 +1175,7 @@ def test_end_to_end_fixture_lifecycle(db_conn, tmp_path, monkeypatch):
     transitions.append(("task", task1, "complete"))
 
     # ── Phase 4: Review action — task2 gets follow-up ─────────────────────────
-    with patch("agent_loop.orchestrator.get_adapter") as mock_adapter_factory:
+    with patch("agent_loop.routing.get_adapter") as mock_adapter_factory:
         adapter = MagicMock()
         mock_adapter_factory.return_value = adapter
 
@@ -1260,7 +1202,7 @@ def test_end_to_end_fixture_lifecycle(db_conn, tmp_path, monkeypatch):
 
     # ── Phase 5: Serialized integration (follow-up task execution) ────────────
     task_repo.update_status(followup["id"], "ready")
-    with patch("agent_loop.orchestrator.get_adapter") as mock_adapter_factory:
+    with patch("agent_loop.routing.get_adapter") as mock_adapter_factory:
         adapter = MagicMock()
         mock_adapter_factory.return_value = adapter
 
@@ -1338,7 +1280,7 @@ def test_end_to_end_fixture_lifecycle(db_conn, tmp_path, monkeypatch):
     run_repo.update_status(run_id, "reviewing")
     transitions.append(("run", run_id, "reviewing"))
 
-    with patch("agent_loop.orchestrator.get_adapter") as mock_adapter_factory:
+    with patch("agent_loop.routing.get_adapter") as mock_adapter_factory:
         adapter = MagicMock()
         mock_adapter_factory.return_value = adapter
         adapter.run_attempt.return_value = AttemptResult(
@@ -1403,7 +1345,7 @@ def test_planning_role_selects_planning_route(db_conn, tmp_path, monkeypatch):
     orch = Orchestrator(db_conn, config, plan_path=tmp_path / "plan.md", progress_path=tmp_path / "progress.md")
     monkeypatch.setattr(orch, "run_verification", MagicMock(return_value=True))
 
-    with patch("agent_loop.orchestrator.get_adapter") as mock_adapter_factory:
+    with patch("agent_loop.routing.get_adapter") as mock_adapter_factory:
         adapter = MagicMock()
         mock_adapter_factory.return_value = adapter
         adapter.run_attempt.side_effect = [
@@ -1414,11 +1356,11 @@ def test_planning_role_selects_planning_route(db_conn, tmp_path, monkeypatch):
         task = task_repo.get(task_id)
         orch._execute_task_impl(run_id, task)
 
-    # Inspect the persisted attempt — route and provider must be planning
+    # Inspect the persisted attempt — route and provider must be planner
     attempts = [a for a in orch.attempt_repo.get_by_run(run_id) if a["task_id"] == task_id]
     assert len(attempts) == 1
-    assert attempts[0]["route"] == "planning", \
-        f"Expected route='planning' but got route='{attempts[0]['route']}'"
+    assert attempts[0]["route"] == "planner", \
+        f"Expected route='planner' but got route='{attempts[0]['route']}'"
     assert attempts[0]["provider"] == "agy", \
         f"Expected provider='agy' but got provider='{attempts[0]['provider']}'"
     assert attempts[0]["model"] == "planning-model", \
@@ -1684,7 +1626,7 @@ def test_genuine_lifecycle_via_run_loop(db_conn, tmp_path, monkeypatch):
         return adapter_mock
 
     # ── Run planning then the full run_loop ────────────────────────────────────
-    with patch("agent_loop.orchestrator.get_adapter", side_effect=fake_get_adapter):
+    with patch("agent_loop.routing.get_adapter", side_effect=fake_get_adapter):
         plan_ok = orch.plan_run(run_id)
         assert plan_ok, "plan_run must succeed"
 
@@ -1729,8 +1671,5 @@ def test_genuine_lifecycle_via_run_loop(db_conn, tmp_path, monkeypatch):
     test_runs = orch.test_run_repo.get_by_run(run_id)
     assert any(tr["exit_status"] == 0 for tr in test_runs), \
         "Regression test must have passed (exit_status=0)"
-
-
-
 
 
