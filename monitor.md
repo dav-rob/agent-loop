@@ -29,8 +29,13 @@ In the target project:
 - `.agent-loop/agent-loop.db`: authoritative goal, task, attempt, review, provider, and test state.
 - `.agent-loop/plan.md`: readable plan generated from the database.
 - `.agent-loop/progress.md`: readable current status, blockers, test results, and next step.
+- `.agent-loop/handoffs/`: per-task handover reports rendered from the database, with executor summaries, reviewer findings, verification, commits, and task-scope blocking rationale.
 - `.agent-loop/learning.md`: durable facts learned during the goal.
 - `.agent-loop/logs/`: prompts, stdout/stderr, model logs, reviews, patches, and test output.
+  Provider-specific logs may appear inside each attempt directory, such as
+  `codex.log`, `codex_events.jsonl`, and `last_message.txt` for Codex, or
+  `agy.log` for Antigravity/agy. Treat these as execution evidence for that
+  provider; the database still decides current state.
 - `worktrees/`: isolated task worktrees used while executing tasks.
 - `agent-loop.toml`: committed project configuration, including model routes and worktree paths.
 
@@ -55,6 +60,7 @@ Check active worktrees and logs:
 ```sh
 find worktrees -maxdepth 2 -type d | sort
 find .agent-loop/logs -maxdepth 4 -type f | sort
+find .agent-loop/handoffs -maxdepth 1 -type f -name '*.md' -print -exec sed -n '1,220p' {} \;
 ```
 
 ## Monitoring Report
@@ -66,6 +72,7 @@ Include:
 - Current goal status and what the loop is meant to be doing next.
 - Active task or review, including the route/provider/model when available.
 - Recent attempts, test results, commits, and whether they show real progress.
+- Relevant handover entries, especially whether reviewer rejections explain why findings block the current task now.
 - Whether generated views, database state, worktrees, logs, and live processes agree with each other.
 - Any concerns, such as repeated failures, no files changing, stale `running` tasks, unexpected long-running processes, auth/quota/model errors, malformed verification commands, missing credentials, or a blocked approval state.
 - A clear judgement: `going as expected`, `waiting for user action`, `concerning but still progressing`, or `likely stuck/broken`.

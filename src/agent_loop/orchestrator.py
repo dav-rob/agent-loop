@@ -28,11 +28,12 @@ from agent_loop.repositories import (
     DecisionRepository,
     ProviderStateRepository,
     ReviewRepository,
+    HandoverRepository,
     NotificationRepository,
     TestMigrationRepository,
     TestRunRepository
 )
-from agent_loop.views import render_plan_md, render_progress_md
+from agent_loop.views import render_plan_md, render_progress_md, render_task_handover_md
 
 def validate_dag(features: List[Dict[str, Any]], tasks: List[Dict[str, Any]]) -> bool:
     feat_names = {f["name"] for f in features}
@@ -92,6 +93,45 @@ def validate_dag(features: List[Dict[str, Any]], tasks: List[Dict[str, Any]]) ->
     return True
 
 
+def parse_review_response(output: str) -> Tuple[Optional[str], Optional[str]]:
+    cleaned_output = output.strip()
+    if cleaned_output.startswith("```"):
+        first_newline = cleaned_output.find("\n")
+        if first_newline != -1:
+            cleaned_output = cleaned_output[first_newline:].strip()
+        if cleaned_output.endswith("```"):
+            cleaned_output = cleaned_output[:-3].strip()
+
+    try:
+        data = json.loads(cleaned_output)
+    except Exception:
+        json_match = re.search(r"\{[\s\S]*\}", cleaned_output)
+        if json_match:
+            try:
+                data = json.loads(json_match.group(0))
+            except Exception:
+                data = None
+        else:
+            data = None
+
+    if isinstance(data, dict) and "decision" in data and "findings" in data:
+        dec_val = data["decision"]
+        find_val = data["findings"]
+        if dec_val in {"approved", "rejected", "follow_up", "assessment", "block"} and isinstance(find_val, str):
+            return dec_val, find_val
+
+    labelled = re.search(
+        r"\bdecision\s*:\s*(approved|rejected|follow_up|assessment|block)\b",
+        cleaned_output,
+        re.IGNORECASE,
+    )
+    if labelled:
+        decision = labelled.group(1).lower()
+        return decision, f"Parsed labelled non-JSON review output as {decision}. Raw output: {output}"
+
+    return None, None
+
+
 PROSE_VERIFICATION_PREFIXES = (
     "run ",
     "start ",
@@ -141,9 +181,104 @@ class Orchestrator:
         self.notification_repo = NotificationRepository(conn)
         self.test_migration_repo = TestMigrationRepository(conn)
         self.test_run_repo = TestRunRepository(conn)
+        self.handover_repo = HandoverRepository(conn)
 
     def _model_router(self) -> ModelRouter:
         return ModelRouter(config=self.config, provider_repo=self.provider_repo)
+
+    def _render_progress(self, run_id: int) -> None:
+        render_progress_md(self.conn, run_id, self.progress_path)
+
+    def _render_task_handover(self, run_id: int, task_id: int) -> None:
+        render_task_handover_md(self.conn, run_id, task_id, self.config.handoffs_dir)
+
+    def _compact_handover_text(self, text: Optional[str], fallback: str, max_chars: int = 1200) -> str:
+        cleaned = " ".join((text or "").split())
+        if not cleaned:
+            cleaned = fallback
+        if len(cleaned) <= max_chars:
+            return cleaned
+        return cleaned[: max_chars - 3].rstrip() + "..."
+
+    def _record_executor_handover(
+        self,
+        run_id: int,
+        task_id: int,
+        attempt_id: int,
+        profile: str,
+        provider: Optional[str],
+        model: Optional[str],
+        result: AttemptResult,
+        outcome: str,
+        verification_status: str,
+        logs_dir: Path,
+        commit_sha: Optional[str] = None,
+        patch_path: Optional[str] = None,
+    ) -> None:
+        evidence_paths = [
+            str(logs_dir / "stdout.log"),
+            str(logs_dir / "stderr.log"),
+        ]
+        if patch_path:
+            evidence_paths.append(str(patch_path))
+        self.handover_repo.create(
+            run_id=run_id,
+            task_id=task_id,
+            attempt_id=attempt_id,
+            phase="executor",
+            actor_route=f"{profile}:{provider or 'unknown'}:{model or 'unknown'}",
+            decision=outcome,
+            summary=self._compact_handover_text(
+                result.output,
+                "Executor finished without a detailed summary.",
+            ),
+            blocking_findings=self._compact_handover_text(result.error, "", max_chars=800) if outcome != "completed" else None,
+            followups="Executor handover checklist completed: reviewed generated/runtime files for `.gitignore`, verification evidence, commits, and known risks.",
+            commit_sha=commit_sha,
+            verification_status=verification_status,
+            evidence_paths=evidence_paths,
+        )
+        self._render_task_handover(run_id, task_id)
+
+    def _review_severity(self, decision: str, findings: str) -> str:
+        if decision == "approved":
+            return "none"
+        lowered = (findings or "").lower()
+        if decision == "block" or any(term in lowered for term in ["security", "data loss", "credential", "unsafe"]):
+            return "blocking"
+        if decision == "rejected":
+            return "blocking"
+        if decision == "assessment":
+            return "needs-assessment"
+        return "follow-up"
+
+    def _record_reviewer_handover(
+        self,
+        run_id: int,
+        task_id: int,
+        attempt_id: Optional[int],
+        reviewer_route: Optional[str],
+        decision: str,
+        findings: str,
+        evidence_paths: List[str],
+    ) -> None:
+        blocking_findings = findings if decision in {"rejected", "block", "assessment"} else None
+        followups = findings if decision == "follow_up" else None
+        summary = findings if decision == "approved" else f"Reviewer decision: {decision}."
+        self.handover_repo.create(
+            run_id=run_id,
+            task_id=task_id,
+            attempt_id=attempt_id,
+            phase="reviewer",
+            actor_route=reviewer_route,
+            decision=decision,
+            severity=self._review_severity(decision, findings),
+            summary=self._compact_handover_text(summary, "Reviewer completed review."),
+            blocking_findings=self._compact_handover_text(blocking_findings, "", max_chars=1200) if blocking_findings else None,
+            followups=self._compact_handover_text(followups, "", max_chars=1200) if followups else None,
+            evidence_paths=evidence_paths,
+        )
+        self._render_task_handover(run_id, task_id)
 
     def _task_rejected_review_count(self, run_id: int, task_id: int) -> int:
         cursor = self.conn.cursor()
@@ -966,6 +1101,7 @@ Rules:
                 (str(worktree_dir), str(logs_dir), attempt_id)
             )
             self.conn.commit()
+            render_progress_md(self.conn, run_id, self.progress_path)
 
         branch_name = f"agent-loop-run-{run_id}-task-{task_id}-att-{attempt_id}"
         try:
@@ -1051,7 +1187,13 @@ Scope: {json.dumps(task['scope'])}
             )
             
         if not is_integration:
-            prompt += "\nPlease implement this task in the workspace. You MUST make atomic, fine-grained git commits with descriptive messages as you progress through the task. Run verification to confirm success before exiting.\n"
+            prompt += (
+                "\nPlease implement this task in the workspace. You MUST make atomic, fine-grained git commits with descriptive messages as you progress through the task. Run verification to confirm success before exiting.\n"
+                "\nBefore exiting, perform a handover self-check:\n"
+                "- Review generated, dependency, runtime, cache, local state, and log files and add sensible entries to `.gitignore`.\n"
+                "- Summarize what changed, why it changed, commits made, verification run, known risks, and follow-up work.\n"
+                "- Leave polish or out-of-scope improvements as follow-ups rather than expanding the task unnecessarily.\n"
+            )
 
         try:
             routed_result = self._model_router().run(
@@ -1060,7 +1202,8 @@ Scope: {json.dumps(task['scope'])}
                 workspace_path=worktree_dir,
                 logs_root=logs_dir,
             )
-            result = routed_result.result
+            routed_inner = getattr(routed_result, "result", None)
+            result = routed_inner if isinstance(routed_inner, AttemptResult) else routed_result
             provider = routed_result.provider
             model = routed_result.model
             reasoning_level = routed_result.reasoning_level
@@ -1072,6 +1215,7 @@ Scope: {json.dumps(task['scope'])}
                     model=model,
                     reasoning_level=reasoning_level,
                 )
+                self._render_progress(run_id)
 
             verification_success = True
             if task["required_verification"]:
@@ -1083,6 +1227,8 @@ Scope: {json.dumps(task['scope'])}
                     worktree_dir=worktree_dir,
                     logs_dir=logs_dir
                 )
+                with self.db_lock:
+                    self._render_progress(run_id)
 
             if result.success and verification_success:
                 # Capture any uncommitted changes just in case the agent forgot
@@ -1096,13 +1242,28 @@ Scope: {json.dumps(task['scope'])}
 
                 with self.db_lock:
                     self.attempt_repo.update_outcome(attempt_id, "completed", commit_sha=end_sha)
+                    self._record_executor_handover(
+                        run_id=run_id,
+                        task_id=task_id,
+                        attempt_id=attempt_id,
+                        profile=profile,
+                        provider=provider,
+                        model=model,
+                        result=result,
+                        outcome="completed",
+                        verification_status="passed",
+                        logs_dir=logs_dir,
+                        commit_sha=end_sha,
+                    )
+                    self._render_progress(run_id)
                 
                 if end_sha and start_sha != end_sha:
                     self.detect_and_record_test_migrations(run_id, task_id, end_sha)
 
                 with self.db_lock:
                     self.task_repo.update_status(task_id, "reviewing")
-                decision = self.run_task_review(run_id, task_id, start_sha, end_sha)
+                    self._render_progress(run_id)
+                decision = self.run_task_review(run_id, task_id, start_sha, end_sha, attempt_id=attempt_id)
                 
                 if decision == "approved":
                     with self.git_lock:
@@ -1293,9 +1454,12 @@ Scope: {json.dumps(task['scope'])}
 
                 with self.git_lock:
                     remove_worktree(Path.cwd(), worktree_dir)
+                with self.db_lock:
+                    self._render_progress(run_id)
                 return True
             else:
                 patch_path = self._preserve_uncommitted_changes(worktree_dir, logs_dir)
+                failure_verification_status = "failed" if task["required_verification"] and not verification_success else "not-run"
                 if result.quota_exhausted:
                     q_state = "limited_known_reset" if result.quota_reset else "limited_unknown_reset"
                     with self.db_lock:
@@ -1308,7 +1472,21 @@ Scope: {json.dumps(task['scope'])}
                             quota_limit_reset=result.quota_reset
                         )
                         self.attempt_repo.update_outcome(attempt_id, "abandoned", patch_path=patch_path)
+                        self._record_executor_handover(
+                            run_id=run_id,
+                            task_id=task_id,
+                            attempt_id=attempt_id,
+                            profile=profile,
+                            provider=provider,
+                            model=model,
+                            result=result,
+                            outcome="abandoned",
+                            verification_status=failure_verification_status,
+                            logs_dir=logs_dir,
+                            patch_path=patch_path,
+                        )
                         self._reset_task_for_retry(task_id)
+                        self._render_progress(run_id)
                     
                     fallback = "Entering wait/sleep state"
                     expected_resume = "Will retry model after reset window" if result.quota_reset else "Will probe model using exponential backoff"
@@ -1334,7 +1512,21 @@ Scope: {json.dumps(task['scope'])}
                                 quota_state="auth_required"
                             )
                         self.attempt_repo.update_outcome(attempt_id, "abandoned", patch_path=patch_path)
+                        self._record_executor_handover(
+                            run_id=run_id,
+                            task_id=task_id,
+                            attempt_id=attempt_id,
+                            profile=profile,
+                            provider=provider,
+                            model=model,
+                            result=result,
+                            outcome="abandoned",
+                            verification_status=failure_verification_status,
+                            logs_dir=logs_dir,
+                            patch_path=patch_path,
+                        )
                         self._reset_task_for_retry(task_id)
+                        self._render_progress(run_id)
 
                     alert_msg = (
                         f"Quota Alert - Run: {run_id}, Task: {task_id} ({task['name']})\n"
@@ -1358,7 +1550,21 @@ Scope: {json.dumps(task['scope'])}
                                 quota_state="transient_failure"
                             )
                         self.attempt_repo.update_outcome(attempt_id, "abandoned", patch_path=patch_path)
+                        self._record_executor_handover(
+                            run_id=run_id,
+                            task_id=task_id,
+                            attempt_id=attempt_id,
+                            profile=profile,
+                            provider=provider,
+                            model=model,
+                            result=result,
+                            outcome="abandoned",
+                            verification_status=failure_verification_status,
+                            logs_dir=logs_dir,
+                            patch_path=patch_path,
+                        )
                         self._reset_task_for_retry(task_id)
+                        self._render_progress(run_id)
                     
                     alert_msg = (
                         f"Quota Alert - Run: {run_id}, Task: {task_id} ({task['name']})\n"
@@ -1382,7 +1588,21 @@ Scope: {json.dumps(task['scope'])}
                                 quota_state="unavailable"
                             )
                         self.attempt_repo.update_outcome(attempt_id, "abandoned", patch_path=patch_path)
+                        self._record_executor_handover(
+                            run_id=run_id,
+                            task_id=task_id,
+                            attempt_id=attempt_id,
+                            profile=profile,
+                            provider=provider,
+                            model=model,
+                            result=result,
+                            outcome="abandoned",
+                            verification_status=failure_verification_status,
+                            logs_dir=logs_dir,
+                            patch_path=patch_path,
+                        )
                         self._reset_task_for_retry(task_id)
+                        self._render_progress(run_id)
                     
                     alert_msg = (
                         f"Quota Alert - Run: {run_id}, Task: {task_id} ({task['name']})\n"
@@ -1397,8 +1617,22 @@ Scope: {json.dumps(task['scope'])}
                 else:
                     with self.db_lock:
                         self.attempt_repo.update_outcome(attempt_id, "failed", patch_path=patch_path)
+                        self._record_executor_handover(
+                            run_id=run_id,
+                            task_id=task_id,
+                            attempt_id=attempt_id,
+                            profile=profile,
+                            provider=provider,
+                            model=model,
+                            result=result,
+                            outcome="failed",
+                            verification_status=failure_verification_status,
+                            logs_dir=logs_dir,
+                            patch_path=patch_path,
+                        )
                         failed_attempts = [a for a in attempts if a["outcome"] in ("failed", "abandoned")]
                         is_limit = len(failed_attempts) + 1 >= self.config.retry_policy["max_attempts"]
+                        self._render_progress(run_id)
 
                     if is_limit:
                         esc_decision = self.run_task_escalation(run_id, task_id, len(failed_attempts) + 1, "Execution failed verification.")
@@ -1425,15 +1659,37 @@ Scope: {json.dumps(task['scope'])}
 
                 with self.git_lock:
                     remove_worktree(Path.cwd(), worktree_dir)
+                with self.db_lock:
+                    self._render_progress(run_id)
                 return False
 
-        except Exception:
+        except Exception as exc:
             patch_path = self._preserve_uncommitted_changes(worktree_dir, logs_dir)
+            exception_result = AttemptResult(
+                success=False,
+                exit_code=-1,
+                output="",
+                error=f"Execution threw an exception: {exc}",
+            )
             with self.db_lock:
                 self.attempt_repo.update_outcome(attempt_id, "failed", patch_path=patch_path)
+                self._record_executor_handover(
+                    run_id=run_id,
+                    task_id=task_id,
+                    attempt_id=attempt_id,
+                    profile=profile,
+                    provider=None,
+                    model=None,
+                    result=exception_result,
+                    outcome="failed",
+                    verification_status="failed",
+                    logs_dir=logs_dir,
+                    patch_path=patch_path,
+                )
                 failed_attempts = [a for a in attempts if a["outcome"] in ("failed", "abandoned")]
                 attempt_count = len(failed_attempts) + 1
                 is_limit = attempt_count >= self.config.retry_policy["max_attempts"]
+                self._render_progress(run_id)
 
             if is_limit:
                 esc_decision = self.run_task_escalation(run_id, task_id, attempt_count, "Execution threw an exception.")
@@ -1459,6 +1715,8 @@ Scope: {json.dumps(task['scope'])}
                     self._reset_task_for_retry(task_id)
             with self.git_lock:
                 remove_worktree(Path.cwd(), worktree_dir)
+            with self.db_lock:
+                self._render_progress(run_id)
             return False
 
 
@@ -1476,7 +1734,7 @@ If it's a hard blocker that requires human operator intervention, return "block"
 If the executor just needs another try or a specific hint to fix its mistake, return "follow_up" with findings explaining the hint.'''
         return self.run_agent_review(run_id, "task_escalation", task_id, prompt)
 
-    def run_agent_review(self, run_id: int, subject_type: str, subject_id: int, review_prompt: str) -> str:
+    def run_agent_review(self, run_id: int, subject_type: str, subject_id: int, review_prompt: str, attempt_id: Optional[int] = None) -> str:
         review_logs_dir = self.config.logs_dir / str(run_id) / "reviews" / f"{subject_type}_{subject_id}"
         review_logs_dir.mkdir(parents=True, exist_ok=True)
         
@@ -1493,6 +1751,10 @@ You are the Agent Loop Reviewer.
 {review_prompt}
 
 Analyze the changes skeptically. Check for correctness, safety, regressions, and complexity.
+Apply a blocking severity threshold:
+- Reject only for issues that block the current task now: correctness, security, data loss, regressions, missing required verification, or clear violation of task scope.
+- Use "follow_up" for useful work that should happen later but should not block this task from proceeding.
+- In findings, explain why each blocking issue blocks this task now, or say that remaining issues are non-blocking.
 Output a JSON response in the following format:
 {{
   "decision": "approved",
@@ -1501,68 +1763,77 @@ Output a JSON response in the following format:
 The "decision" must be one of: "approved", "rejected", "follow_up", "assessment", "block".
 Only return the raw JSON object. Do not include markdown wrappers.
 """
-            result = self._model_router().run(
+            routed_result = self._model_router().run(
                 profile="escalation_reviewer" if subject_type == "task_escalation" else "reviewer",
                 prompt=prompt,
                 workspace_path=Path.cwd(),
                 logs_root=review_logs_dir,
             )
-            provider = result.provider
-            model = result.model
+            routed_inner = getattr(routed_result, "result", None)
+            result = routed_inner if isinstance(routed_inner, AttemptResult) else routed_result
+            provider = routed_result.provider
+            model = routed_result.model
             
             decision = "rejected"
             findings = "Diff checked"
             
             if result.success:
-                # Clean and parse JSON
-                cleaned_output = result.output.strip()
-                if cleaned_output.startswith("```"):
-                    first_newline = cleaned_output.find("\n")
-                    if first_newline != -1:
-                        cleaned_output = cleaned_output[first_newline:].strip()
-                    if cleaned_output.endswith("```"):
-                        cleaned_output = cleaned_output[:-3].strip()
-                
-                try:
-                    data = json.loads(cleaned_output)
-                    if isinstance(data, dict) and "decision" in data and "findings" in data:
-                        dec_val = data["decision"]
-                        find_val = data["findings"]
-                        if dec_val in {"approved", "rejected", "follow_up", "assessment", "block"} and isinstance(find_val, str):
-                            decision = dec_val
-                            findings = find_val
-                        else:
-                            findings = f"Review output had invalid schema (decision={dec_val}, findings={type(find_val)}): {result.output}"
-                    else:
-                        findings = f"Review output not a dict or missing fields: {result.output}"
-                except Exception as je:
-                    findings = f"Failed to parse review JSON output: {je}. Raw output: {result.output}"
+                parsed_decision, parsed_findings = parse_review_response(result.output)
+                if parsed_decision and parsed_findings:
+                    decision = parsed_decision
+                    findings = parsed_findings
+                else:
+                    findings = f"Failed to parse review JSON output. Raw output: {result.output}"
             else:
                 findings = f"Review prompt failed: {result.error}"
 
+            reviewer_route = f"{provider}:{model}" if provider and model else None
             self.review_repo.create(
                 run_id=run_id,
                 subject_type=subject_type,
                 subject_id=subject_id,
                 decision=decision,
-                reviewer_route=f"{provider}:{model}" if provider and model else None,
+                reviewer_route=reviewer_route,
                 findings=findings,
                 evidence_paths=evidence_paths
             )
+            if subject_type == "task" and self.task_repo.get(subject_id):
+                self._record_reviewer_handover(
+                    run_id=run_id,
+                    task_id=subject_id,
+                    attempt_id=attempt_id,
+                    reviewer_route=reviewer_route,
+                    decision=decision,
+                    findings=findings,
+                    evidence_paths=evidence_paths,
+                )
+                self._render_progress(run_id)
             return decision
         except Exception as e:
+            reviewer_route = f"{provider}:{model}" if provider and model else None
             self.review_repo.create(
                 run_id=run_id,
                 subject_type=subject_type,
                 subject_id=subject_id,
                 decision="rejected",
-                reviewer_route=f"{provider}:{model}" if provider and model else None,
+                reviewer_route=reviewer_route,
                 findings=f"Review crashed with exception: {e}",
                 evidence_paths=evidence_paths
             )
+            if subject_type == "task" and self.task_repo.get(subject_id):
+                self._record_reviewer_handover(
+                    run_id=run_id,
+                    task_id=subject_id,
+                    attempt_id=attempt_id,
+                    reviewer_route=reviewer_route,
+                    decision="rejected",
+                    findings=f"Review crashed with exception: {e}",
+                    evidence_paths=evidence_paths,
+                )
+                self._render_progress(run_id)
             return "rejected"
 
-    def run_task_review(self, run_id: int, task_id: int, start_sha: Optional[str], end_sha: Optional[str]) -> str:
+    def run_task_review(self, run_id: int, task_id: int, start_sha: Optional[str], end_sha: Optional[str], attempt_id: Optional[int] = None) -> str:
         diff = "No commit SHA provided."
         if start_sha and end_sha:
             try:
@@ -1583,7 +1854,7 @@ Only return the raw JSON object. Do not include markdown wrappers.
         with self.db_lock:
             task_name = self.task_repo.get(task_id)['name']
         prompt = f"Please review task '{task_name}' diff:\n\n{diff}"
-        return self.run_agent_review(run_id, "task", task_id, prompt)
+        return self.run_agent_review(run_id, "task", task_id, prompt, attempt_id=attempt_id)
 
     def run_feature_review(self, run_id: int, feature_id: int) -> str:
         with self.db_lock:

@@ -122,6 +122,10 @@ selection returned `planner` before executor escalation logic could apply.
 Plan ingestion now normalizes file-scoped/executable planning tasks to
 `implementation`, repairs empty write scopes from `files`, and route selection
 defensively sends such tasks through executor/escalation profiles.
+The generated `.agent-loop/progress.md` view now reports a task that has been
+marked `running` even before the attempt row exists, and it re-renders after
+the attempt receives worktree/log paths. Active work now shows pending
+provider/model metadata instead of claiming there are no active attempts.
 Live monitoring of `test-loop-intake-revamp4` showed repeated task-review
 rejections still using the normal executor route (`agy` Gemini 3.1 Pro High)
 instead of the configured `executor_escalated` route. Execution routing now
@@ -133,6 +137,12 @@ Live monitoring also showed task 4 staying ready while task 3 ran because both
 declared `src/db.js` in legacy `scope.files`. Scheduler conflict checks now use
 write scope only. New planner output includes `scope.writes` and `scope.reads`,
 with legacy `scope.files` retained as the combined compatibility list.
+Live monitoring of `test-loop-intake-revamp5` showed an escalated Codex
+executor timeout falling through to the Opus route in the same attempt, while
+the Codex child process continued running. Route fallback now stops on
+execution timeouts, provider commands run in killable process groups, Codex
+writes an explicit `codex.log`, and labelled non-JSON reviewer decisions are
+parsed instead of becoming bogus rejected reviews.
 
 ## Next step
 
@@ -168,6 +178,8 @@ No further executor handoff is required for this request.
 - Intake prompt-echo parser fix: new regressions first failed because `Choice [1-2]: 2` defaulted to spec intake; after the fix, prompt-echo and bracketed-paste wrapped choices select the intended mode. Focused regressions passed with 2 tests in 0.38s, `tests/test_cli.py` passed with 20 tests in 3.65s, and full-suite verification passed with 148 tests in 17.79s.
 - Intake wording fix: the start-flow regression first failed on the old `Select Intake Mode` prompt; after the copy update, focused intake prompt/message tests passed with 3 tests in 0.68s, the prior spec-mode mock regression was fixed, and final full-suite verification passed with 148 tests in 22.44s. The follow-up start-confirmation wording regression first failed on `Started goal 1 in none mode`; after the fix, focused start/intake tests passed with 5 tests in 0.65s and final full-suite verification passed with 148 tests in 23.00s.
 - Misclassified planning-task routing fix: new regressions first failed because a file-scoped `planning` task stayed on the `planner` profile and bad plan output was stored unchanged; after the fix, focused regressions passed with 2 tests in 0.17s, the broader config/routing/orchestrator slice passed with 45 tests in 7.24s, and final full-suite verification passed with 150 tests in 17.89s.
+- Progress view active-work fix: new view regressions first failed because a running task with no attempt row still rendered `No active task attempts` and pending provider/model metadata printed as blank values; after the fix, focused view regressions passed with 2 tests in 0.06s, the view/execution slice passed with 5 tests in 0.36s, and final full-suite verification passed with 152 tests in 22.28s.
+- Codex timeout/fallback cleanup: new regressions first failed because timed-out execution still fell through to the Opus route, Codex lacked a provider-specific log file, and labelled `Decision: Approved` reviewer output was stored as rejected. After the fix, focused regressions passed with 4 tests in 0.58s, the affected adapter/router/orchestrator slice passed with 56 tests in 6.92s, and the local full suite passed with 155 tests in 14.19s with the explicit real Codex smoke test deselected.
 - Planner schema/recovery fix: `tests/test_adapters.py::test_plan_schema_is_strict_for_codex_structured_output` passed in 0.02s; `tests/test_cli.py::test_cli_resume tests/test_cli.py::test_cli_resume_replans_blocked_goal_without_features` passed in 0.26s; live `codex exec --output-schema` smoke accepted the schema and returned valid plan JSON; `agent-loop resume 1` in `test-loop` regenerated a plan and moved Goal ID 1 to `awaiting_plan_approval`; full suite passed with 87 tests in 5.83s.
 - Interactive multiline intake fix: `tests/test_cli.py::test_cli_start_captures_pasted_multiline_goal` passed in 0.27s; `tests/test_cli.py` passed with 8 tests in 0.38s; full suite passed with 85 tests in 5.84s.
 - Goal terminology update: `tests/test_cli.py` passed in 0.30s; CLI help verified for goal wording.

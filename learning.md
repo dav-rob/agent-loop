@@ -44,6 +44,11 @@ Use this file to record learnings, so that agents do not have to repeat work alr
 - Executor escalation is threshold-based, not only max-attempt based. With the default retry policy, two failed/abandoned executions or two rejected task reviews cause the next implementation attempt to use `executor_escalated`; the default max attempt limit is five so escalated attempts get room to repair before final escalation/blocking.
 - Task scheduling conflicts should be based on write scope, not read scope. New planner scopes include `writes` and `reads`; legacy `files` remains a fallback write scope for older plans. Shared helper files should be `reads` unless a task is expected to edit them.
 - Planner role classification controls model routing. Tasks that create/edit files, scaffold apps, implement boundaries, or have executable verification commands must be `implementation` tasks so they use the Gemini-first executor route; `planning` tasks are reserved for genuine architecture/risk decomposition with no implementation file work.
+- Generated progress views should reassure the user as soon as execution starts. If a task is `running` before an attempt row exists, show it as starting; after attempt worktree/log paths are recorded, re-render so active work has useful route/log information even before provider/model metadata is known.
+- Model-route fallback is for provider availability problems, not ordinary task execution failure. If Codex or another executor times out while working, do not immediately fall through to the next configured model in the same attempt; return the timeout as an execution failure so retry/escalation policy handles it.
+- Provider CLI wrappers can leave child processes behind if only the wrapper process is killed on timeout. Run provider commands in their own process group/session and terminate the process group on timeout.
+- Every provider adapter should leave provider-specific diagnostics alongside generic `stdout.log` and `stderr.log`; Codex writes `codex.log` plus `codex_events.jsonl`/`last_message.txt`, while agy writes `agy.log`.
+- Reviewer output is expected to be strict JSON, but a clearly labelled non-JSON decision such as `Decision: Approved` should be parsed as that decision rather than stored as a rejected review and injected into the next executor prompt as a bogus failure.
 
 ## Useful commands
 

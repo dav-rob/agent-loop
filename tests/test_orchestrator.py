@@ -274,6 +274,32 @@ def test_review_uses_router_reviewer_profile(db_conn, tmp_path):
     assert reviews[0]["reviewer_route"] == "codex:gpt-5.5"
 
 
+def test_review_accepts_clear_labelled_approved_output(db_conn, tmp_path):
+    run_repo = RunRepository(db_conn)
+    run_id = run_repo.create("Implement login page", "none")
+    config = Config({"db_path": ":memory:", "logs_dir": str(tmp_path / "logs")})
+    routed = MagicMock()
+    routed.success = True
+    routed.output = "Done.\\n\\n**Decision: Approved**\\n\\nNo blocking issues."
+    routed.error = ""
+    routed.provider = "agy"
+    routed.model = "Claude Opus 4.6 (Thinking)"
+
+    orch = Orchestrator(db_conn, config, plan_path=tmp_path / "plan.md", progress_path=tmp_path / "progress.md")
+
+    with patch("agent_loop.orchestrator.ModelRouter") as mock_router_cls:
+        mock_router = MagicMock()
+        mock_router.run.return_value = routed
+        mock_router_cls.return_value = mock_router
+
+        decision = orch.run_agent_review(run_id, "task", 1, "Review it")
+
+    assert decision == "approved"
+    reviews = orch.review_repo.get_by_run(run_id)
+    assert reviews[0]["decision"] == "approved"
+    assert "labelled non-JSON" in reviews[0]["findings"]
+
+
 def test_execution_profile_stays_executor_before_threshold(db_conn, tmp_path):
     config = Config({
         "db_path": ":memory:",

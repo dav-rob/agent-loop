@@ -102,6 +102,9 @@ class ModelRouter:
             if result.success:
                 return routed
 
+            if not self._should_try_next_route(result):
+                return routed
+
             self._record_failure_state(route, result)
 
         if last_result:
@@ -115,6 +118,16 @@ class ModelRouter:
                 error=f"No available routes for profile '{profile}'.",
             ),
             profile=profile,
+        )
+
+    def _should_try_next_route(self, result: AttemptResult) -> bool:
+        if getattr(result, "timed_out", False):
+            return False
+        return bool(
+            result.quota_exhausted
+            or result.auth_required
+            or result.transient_failure
+            or result.unavailable
         )
 
     def _record_failure_state(self, route: Dict[str, Any], result: AttemptResult) -> None:

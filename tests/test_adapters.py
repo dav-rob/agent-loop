@@ -97,7 +97,7 @@ def test_codex_run_attempt_success(tmp_path):
         )
         return mock_proc
 
-    with patch("subprocess.run", side_effect=run_side_effect) as mock_subprocess:
+    with patch("agent_loop.adapters._run_provider_process", side_effect=run_side_effect) as mock_subprocess:
         res = adapter.run_attempt(
             model="gpt-5.4-mini",
             prompt="Say hello",
@@ -137,7 +137,7 @@ def test_codex_run_attempt_reads_agent_message_item_completed(tmp_path):
         )
         return mock_proc
 
-    with patch("subprocess.run", side_effect=run_side_effect):
+    with patch("agent_loop.adapters._run_provider_process", side_effect=run_side_effect):
         res = adapter.run_attempt(
             model="gpt-5.5",
             prompt="Say hello",
@@ -148,6 +148,36 @@ def test_codex_run_attempt_reads_agent_message_item_completed(tmp_path):
 
     assert res.success is True
     assert res.output == "Current event output"
+
+
+def test_codex_run_attempt_writes_provider_log(tmp_path):
+    adapter = CodexAdapter()
+    logs_dir = tmp_path / "logs"
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    mock_proc = MagicMock()
+    mock_proc.returncode = 0
+
+    def run_side_effect(cmd, stdin, stdout, stderr, timeout, **kwargs):
+        stdout.write('{"event": "message", "role": "assistant", "content": "ok"}\n')
+        return mock_proc
+
+    with patch("agent_loop.adapters._run_provider_process", side_effect=run_side_effect):
+        adapter.run_attempt(
+            model="gpt-5.5",
+            prompt="Say hello",
+            workspace_path=workspace,
+            attempt_logs_dir=logs_dir,
+            timeout_seconds=30,
+        )
+
+    codex_log = logs_dir / "codex.log"
+    assert codex_log.exists()
+    content = codex_log.read_text()
+    assert "provider=codex" in content
+    assert "model=gpt-5.5" in content
+    assert "prompt_omitted=true" in content
 
 
 def test_codex_successful_output_may_discuss_timeouts(tmp_path):
@@ -166,7 +196,7 @@ def test_codex_successful_output_may_discuss_timeouts(tmp_path):
         )
         return mock_proc
 
-    with patch("subprocess.run", side_effect=run_side_effect):
+    with patch("agent_loop.adapters._run_provider_process", side_effect=run_side_effect):
         res = adapter.run_attempt(
             model="gpt-5.5",
             prompt="You are the Agent Loop Planner. Return JSON matching the schema.",
@@ -177,6 +207,27 @@ def test_codex_successful_output_may_discuss_timeouts(tmp_path):
     assert res.success is True
     assert res.transient_failure is False
     assert "failures/timeouts" in res.output
+
+
+def test_codex_timeout_is_execution_failure_not_route_failure(tmp_path):
+    adapter = CodexAdapter()
+    logs_dir = tmp_path / "logs"
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    with patch("agent_loop.adapters._run_provider_process", side_effect=subprocess.TimeoutExpired(["codex"], 600)):
+        res = adapter.run_attempt(
+            model="gpt-5.5",
+            prompt="Do work",
+            workspace_path=workspace,
+            attempt_logs_dir=logs_dir,
+            timeout_seconds=600,
+        )
+
+    assert res.success is False
+    assert res.timed_out is True
+    assert res.transient_failure is False
+    assert res.quota_exhausted is False
 
 def test_codex_run_attempt_quota_exhausted(tmp_path):
     adapter = CodexAdapter()
@@ -193,7 +244,7 @@ def test_codex_run_attempt_quota_exhausted(tmp_path):
         )
         return mock_proc
 
-    with patch("subprocess.run", side_effect=run_side_effect):
+    with patch("agent_loop.adapters._run_provider_process", side_effect=run_side_effect):
         res = adapter.run_attempt(
             model="gpt-5.4-mini",
             prompt="Say hello",
@@ -217,7 +268,7 @@ def test_agy_run_attempt_success(tmp_path):
         stdout.write("Hello from agy\n")
         return mock_proc
 
-    with patch("subprocess.run", side_effect=run_side_effect) as mock_subprocess:
+    with patch("agent_loop.adapters._run_provider_process", side_effect=run_side_effect) as mock_subprocess:
         res = adapter.run_attempt(
             model="Gemini 3.5 Flash (High)",
             prompt="Say hello",
@@ -251,7 +302,7 @@ def test_agy_successful_output_may_discuss_print_timeout(tmp_path):
         stdout.write("Use --print-timeout 30m for long-running tasks.\n")
         return mock_proc
 
-    with patch("subprocess.run", side_effect=run_side_effect) as mock_subprocess:
+    with patch("agent_loop.adapters._run_provider_process", side_effect=run_side_effect) as mock_subprocess:
         res = adapter.run_attempt(
             model="Gemini 3.1 Pro (High)",
             prompt="Say hello",
@@ -279,7 +330,7 @@ def test_agy_print_timeout_uses_go_duration(tmp_path):
         stdout.write("ok\n")
         return mock_proc
 
-    with patch("subprocess.run", side_effect=run_side_effect) as mock_subprocess:
+    with patch("agent_loop.adapters._run_provider_process", side_effect=run_side_effect) as mock_subprocess:
         adapter.run_attempt("my-model", "hello", workspace, logs_dir, timeout_seconds=123.0)
 
     cmd_args = mock_subprocess.call_args[0][0]
@@ -299,7 +350,7 @@ def test_agy_run_attempt_quota_exhausted(tmp_path):
         stdout.write("Error: Rate limit exceeded. Please try again. Reset at 2026-06-15T16:00:00Z\n")
         return mock_proc
 
-    with patch("subprocess.run", side_effect=run_side_effect):
+    with patch("agent_loop.adapters._run_provider_process", side_effect=run_side_effect):
         res = adapter.run_attempt(
             model="Gemini 3.5 Flash (High)",
             prompt="Say hello",
@@ -324,7 +375,7 @@ def test_codex_run_attempt_reasoning(tmp_path):
         stdout.write('{"event": "message", "role": "assistant", "content": "Succeeded"}\n')
         return mock_proc
 
-    with patch("subprocess.run", side_effect=run_side_effect) as mock_subprocess:
+    with patch("agent_loop.adapters._run_provider_process", side_effect=run_side_effect) as mock_subprocess:
         res = adapter.run_attempt(
             model="gpt-5.4-mini",
             prompt="Test reasoning",

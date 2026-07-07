@@ -527,6 +527,93 @@ class ReviewRepository:
         return row[0] if row else None
 
 
+class HandoverRepository:
+    def __init__(self, conn: sqlite3.Connection):
+        self.conn = conn
+
+    def create(
+        self,
+        run_id: int,
+        task_id: int,
+        attempt_id: Optional[int],
+        phase: str,
+        actor_route: Optional[str] = None,
+        decision: Optional[str] = None,
+        severity: Optional[str] = None,
+        summary: Optional[str] = None,
+        blocking_findings: Optional[str] = None,
+        followups: Optional[str] = None,
+        commit_sha: Optional[str] = None,
+        verification_status: Optional[str] = None,
+        evidence_paths: Optional[List[str]] = None,
+    ) -> int:
+        if phase not in {"executor", "reviewer"}:
+            raise ValueError(f"Invalid handover phase: {phase}")
+        ev_str = json.dumps(evidence_paths) if evidence_paths else None
+        cursor = self.conn.cursor()
+        cursor.execute(
+            """
+            INSERT INTO task_handover_entries (
+                run_id, task_id, attempt_id, phase, actor_route, decision, severity,
+                summary, blocking_findings, followups, commit_sha, verification_status,
+                evidence_paths
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+            """,
+            (
+                run_id,
+                task_id,
+                attempt_id,
+                phase,
+                actor_route,
+                decision,
+                severity,
+                summary,
+                blocking_findings,
+                followups,
+                commit_sha,
+                verification_status,
+                ev_str,
+            ),
+        )
+        self.conn.commit()
+        return cursor.lastrowid
+
+    def get_by_task(self, run_id: int, task_id: int) -> List[Dict[str, Any]]:
+        cursor = self.conn.cursor()
+        cursor.execute(
+            """
+            SELECT id, run_id, task_id, attempt_id, phase, actor_route, decision,
+                   severity, summary, blocking_findings, followups, commit_sha,
+                   verification_status, evidence_paths, created_at
+            FROM task_handover_entries
+            WHERE run_id = ? AND task_id = ?
+            ORDER BY COALESCE(attempt_id, 0), id;
+            """,
+            (run_id, task_id),
+        )
+        return [
+            {
+                "id": row[0],
+                "run_id": row[1],
+                "task_id": row[2],
+                "attempt_id": row[3],
+                "phase": row[4],
+                "actor_route": row[5],
+                "decision": row[6],
+                "severity": row[7],
+                "summary": row[8],
+                "blocking_findings": row[9],
+                "followups": row[10],
+                "commit_sha": row[11],
+                "verification_status": row[12],
+                "evidence_paths": json.loads(row[13]) if row[13] else [],
+                "created_at": row[14],
+            }
+            for row in cursor.fetchall()
+        ]
+
+
 class ProviderStateRepository:
     def __init__(self, conn: sqlite3.Connection):
         self.conn = conn

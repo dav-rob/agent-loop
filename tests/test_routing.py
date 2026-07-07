@@ -116,3 +116,46 @@ def test_router_escalated_executor_uses_strong_profile_first(tmp_path):
     assert result.success is True
     assert result.provider == "codex"
     assert result.model == "gpt-5.5"
+
+
+def test_router_does_not_fail_over_after_execution_timeout(tmp_path):
+    conn = get_connection(Path(":memory:"))
+    migrate(conn)
+    provider_repo = ProviderStateRepository(conn)
+    config = Config({
+        "db_path": ":memory:",
+        "logs_dir": str(tmp_path / "logs"),
+        "routes": {
+            "executor_escalated": [
+                {"provider": "codex", "model": "gpt-5.5", "reasoning_level": "high"},
+                {"provider": "agy", "model": "Claude Opus 4.6 (Thinking)", "reasoning_level": "high"},
+            ],
+        },
+    })
+
+    timeout = AttemptResult(
+        success=False,
+        exit_code=-1,
+        output="",
+        error="Timeout expired after 600 seconds.",
+        timed_out=True,
+    )
+    codex_adapter = MagicMock()
+    codex_adapter.run_attempt.return_value = timeout
+    agy_adapter = MagicMock()
+
+    with patch("agent_loop.routing.get_adapter", side_effect=[codex_adapter, agy_adapter]):
+        router = ModelRouter(config=config, provider_repo=provider_repo)
+        result = router.run(
+            profile="executor_escalated",
+            prompt="Do hard work",
+            workspace_path=tmp_path,
+            logs_root=tmp_path / "logs" / "attempt",
+        )
+
+    assert result.success is False
+    assert result.provider == "codex"
+    assert result.model == "gpt-5.5"
+    assert codex_adapter.run_attempt.call_count == 1
+    assert agy_adapter.run_attempt.call_count == 0
+    assert provider_repo.get("codex", "gpt-5.5") is None

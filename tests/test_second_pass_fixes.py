@@ -328,7 +328,11 @@ def test_portable_binaries(tmp_path):
 def test_agy_print_timeout_construction(tmp_path):
     # Verify that agy adapter passes --print-timeout
     adapter = AgyAdapter(binary_path="/custom/agy")
-    with patch("subprocess.run", return_value=MagicMock(returncode=0)) as mock_run:
+    def run_side_effect(cmd, stdin, stdout, stderr, timeout, **kwargs):
+        stdout.write("ok\n")
+        return MagicMock(returncode=0)
+
+    with patch("agent_loop.adapters._run_provider_process", side_effect=run_side_effect) as mock_run:
         with patch("pathlib.Path.exists", return_value=True):
             with patch("pathlib.Path.read_text", return_value="{}"):
                 adapter.run_attempt("my-model", "hello", tmp_path, tmp_path, timeout_seconds=123.0)
@@ -1671,4 +1675,3 @@ def test_genuine_lifecycle_via_run_loop(db_conn, tmp_path, monkeypatch):
     test_runs = orch.test_run_repo.get_by_run(run_id)
     assert any(tr["exit_status"] == 0 for tr in test_runs), \
         "Regression test must have passed (exit_status=0)"
-

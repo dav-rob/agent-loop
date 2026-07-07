@@ -41,6 +41,7 @@ DEFAULT_CONFIG = {
     "state_dir": ".agent-loop",
     "db_path": None,
     "logs_dir": None,
+    "handoffs_dir": None,
     "worktrees_dir": "worktrees",
     "plan_path": None,
     "progress_path": None,
@@ -127,6 +128,11 @@ class Config:
     def logs_dir(self) -> Path:
         val = self.data.get("logs_dir")
         return Path(val).resolve() if val else (self.state_dir / "logs").resolve()
+
+    @property
+    def handoffs_dir(self) -> Path:
+        val = self.data.get("handoffs_dir")
+        return Path(val).resolve() if val else (self.state_dir / "handoffs").resolve()
 
     @property
     def worktrees_dir(self) -> Path:
@@ -234,6 +240,7 @@ class Config:
             f"state_dir = {_toml_value(DEFAULT_CONFIG['state_dir'])}",
             "db_path = \".agent-loop/agent-loop.db\"",
             "logs_dir = \".agent-loop/logs\"",
+            "handoffs_dir = \".agent-loop/handoffs\"",
             "worktrees_dir = \"worktrees\"",
             "plan_path = \".agent-loop/plan.md\"",
             "progress_path = \".agent-loop/progress.md\"",
