@@ -10,7 +10,8 @@ from agent_loop.repositories import (
     TestRunRepository,
     ProviderStateRepository,
     TestMigrationRepository,
-    HandoverRepository
+    HandoverRepository,
+    LifecycleEventRepository
 )
 
 
@@ -22,6 +23,13 @@ def _slugify(value: str, max_chars: int = 20) -> str:
 def _append_field(lines: list[str], label: str, value: Optional[str]) -> None:
     if value:
         lines.append(f"- **{label}:** {value}")
+
+
+def _compact_text(value: Optional[str], max_chars: int = 180) -> str:
+    text = " ".join((value or "").split())
+    if len(text) <= max_chars:
+        return text
+    return text[: max_chars - 3].rstrip() + "..."
 
 
 def render_task_handover_md(conn: sqlite3.Connection, run_id: int, task_id: int, dest_dir: Path) -> Path:
@@ -177,6 +185,7 @@ def render_progress_md(conn: sqlite3.Connection, run_id: int, dest_path: Path) -
     tasks = TaskRepository(conn).get_by_run(run_id)
     attempts = AttemptRepository(conn).get_by_run(run_id)
     test_runs = TestRunRepository(conn).get_by_run(run_id)
+    lifecycle_events = LifecycleEventRepository(conn).get_by_run(run_id)
 
     # Provider states
     cursor = conn.cursor()
@@ -234,6 +243,27 @@ def render_progress_md(conn: sqlite3.Connection, run_id: int, dest_path: Path) -
             model = attempt["model"] or "pending"
             logs_path = attempt["logs_path"] or "pending"
             lines.append(f"- Task: **{task_name}** (Route: {route}, Provider: {provider}, Model: {model}, Logs: `{logs_path}`)")
+    lines.append("")
+
+    lines.append("### Recent Lifecycle Events")
+    if not lifecycle_events:
+        lines.append("No lifecycle events recorded yet.")
+    else:
+        task_names = {task["id"]: task["name"] for task in tasks}
+        attempt_order = {attempt["id"]: idx + 1 for idx, attempt in enumerate(attempts)}
+        for event in lifecycle_events[-8:]:
+            parts = [f"- `{event['event_type']}`"]
+            if event.get("task_id"):
+                task_label = task_names.get(event["task_id"], f"Task {event['task_id']}")
+                parts.append(f"Task: **{task_label}**")
+            if event.get("attempt_id"):
+                parts.append(f"Attempt {attempt_order.get(event['attempt_id'], event['attempt_id'])}")
+            if event.get("actor"):
+                parts.append(f"Actor: {event['actor']}")
+            summary = _compact_text(event.get("summary"))
+            if summary:
+                parts.append(summary)
+            lines.append(" - ".join(parts))
     lines.append("")
 
     # Completed outcomes

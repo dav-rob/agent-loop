@@ -199,6 +199,24 @@ MIGRATIONS: List[str] = [
         FOREIGN KEY(task_id) REFERENCES tasks(id) ON DELETE CASCADE,
         FOREIGN KEY(attempt_id) REFERENCES attempts(id) ON DELETE SET NULL
     );
+    """,
+    # Version 6 migration: central lifecycle events rendered into progress views
+    """
+    CREATE TABLE lifecycle_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        run_id INTEGER NOT NULL,
+        task_id INTEGER,
+        attempt_id INTEGER,
+        event_type TEXT NOT NULL,
+        actor TEXT,
+        summary TEXT,
+        metadata TEXT,
+        evidence_paths TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY(run_id) REFERENCES runs(id) ON DELETE CASCADE,
+        FOREIGN KEY(task_id) REFERENCES tasks(id) ON DELETE SET NULL,
+        FOREIGN KEY(attempt_id) REFERENCES attempts(id) ON DELETE SET NULL
+    );
     """
 ]
 

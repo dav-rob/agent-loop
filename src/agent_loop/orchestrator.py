@@ -20,6 +20,7 @@ from agent_loop.git_utils import (
     commit_changes,
     merge_branch
 )
+from agent_loop.lifecycle import TaskLifecycleRecorder
 from agent_loop.repositories import (
     RunRepository,
     FeatureRepository,
@@ -184,12 +185,13 @@ class Orchestrator:
         self.test_migration_repo = TestMigrationRepository(conn)
         self.test_run_repo = TestRunRepository(conn)
         self.handover_repo = HandoverRepository(conn)
+        self.lifecycle = TaskLifecycleRecorder(conn, self.progress_path)
 
     def _model_router(self) -> ModelRouter:
         return ModelRouter(config=self.config, provider_repo=self.provider_repo)
 
     def _render_progress(self, run_id: int) -> None:
-        render_progress_md(self.conn, run_id, self.progress_path)
+        self.lifecycle.render_progress(run_id)
 
     def _render_task_handover(self, run_id: int, task_id: int) -> None:
         render_task_handover_md(self.conn, run_id, task_id, self.config.handoffs_dir)
@@ -437,6 +439,34 @@ class Orchestrator:
             evidence_paths=evidence_paths,
         )
         self._render_task_handover(run_id, task_id)
+
+    def _record_executor_failure_lifecycle(
+        self,
+        run_id: int,
+        task_id: int,
+        attempt_id: int,
+        profile: str,
+        provider: Optional[str],
+        model: Optional[str],
+        result: AttemptResult,
+        reason: str,
+        logs_dir: Path,
+        summary_override: Optional[str] = None,
+    ) -> None:
+        summary = self._compact_handover_text(
+            summary_override or result.output or result.error,
+            f"Executor failed with reason {reason}.",
+            max_chars=1000,
+        )
+        self.lifecycle.executor_failed(
+            run_id=run_id,
+            task_id=task_id,
+            attempt_id=attempt_id,
+            actor=f"{profile}:{provider or 'unknown'}:{model or 'unknown'}",
+            summary=summary,
+            reason=reason,
+            evidence_paths=[str(logs_dir / "stdout.log"), str(logs_dir / "stderr.log")],
+        )
 
     def _review_severity(self, decision: str, findings: str) -> str:
         if decision == "approved":
@@ -1247,7 +1277,7 @@ Rules:
             if not is_in_memory:
                 conn.close()
 
-    def _reset_task_for_retry(self, task_id: int) -> None:
+    def _reset_task_for_retry(self, task_id: int, run_id: Optional[int] = None, summary: Optional[str] = None) -> None:
         task = self.task_repo.get(task_id)
         if not task:
             return
@@ -1257,10 +1287,14 @@ Rules:
             return
         if status == "failed":
             self.task_repo.update_status(task_id, "ready")
+            if run_id:
+                self.lifecycle.task_retrying(run_id, task_id, summary or f"Task {task['name']} is ready for another attempt.")
             return
         if status in {"running", "reviewing"}:
             self.task_repo.update_status(task_id, "failed")
             self.task_repo.update_status(task_id, "ready")
+            if run_id:
+                self.lifecycle.task_retrying(run_id, task_id, summary or f"Task {task['name']} is ready for another attempt.")
             return
         if status == "blocked":
             return
@@ -1270,7 +1304,7 @@ Rules:
         task_id = task["id"]
         with self.db_lock:
             self.task_repo.update_status(task_id, "running")
-            render_progress_md(self.conn, run_id, self.progress_path)
+            self.lifecycle.task_started(run_id, task)
 
             attempts = [a for a in self.attempt_repo.get_by_run(run_id) if a["task_id"] == task_id]
             rejected_review_count = self._task_rejected_review_count(run_id, task_id)
@@ -1299,7 +1333,14 @@ Rules:
                 (str(worktree_dir), str(logs_dir), attempt_id)
             )
             self.conn.commit()
-            render_progress_md(self.conn, run_id, self.progress_path)
+            self.lifecycle.attempt_started(
+                run_id=run_id,
+                task_id=task_id,
+                attempt_id=attempt_id,
+                route=profile,
+                worktree_path=str(worktree_dir),
+                logs_path=str(logs_dir),
+            )
 
         branch_name = f"agent-loop-run-{run_id}-task-{task_id}-att-{attempt_id}"
         try:
@@ -1312,8 +1353,9 @@ Rules:
                 attempt_count = len(failed_attempts) + 1
                 if attempt_count >= self.config.retry_policy["max_attempts"]:
                     self.task_repo.update_status(task_id, "blocked")
+                    self.lifecycle.task_blocked(run_id, task_id, f"Task '{task['name']}' failed during worktree setup: {exc}")
                 else:
-                    self._reset_task_for_retry(task_id)
+                    self._reset_task_for_retry(task_id, run_id=run_id)
             if len(failed_attempts) + 1 >= self.config.retry_policy["max_attempts"]:
                 self.notify(run_id, "blocked", f"Task '{task['name']}' failed during worktree setup: {exc}")
             return False
@@ -1397,6 +1439,8 @@ Scope: {json.dumps(task['scope'])}
             )
 
         try:
+            with self.db_lock:
+                self.lifecycle.executor_started(run_id, task_id, attempt_id, profile)
             routed_result = self._model_router().run(
                 profile=profile,
                 prompt=prompt,
@@ -1456,6 +1500,16 @@ Scope: {json.dumps(task['scope'])}
                         logs_dir=logs_dir,
                         commit_sha=end_sha,
                     )
+                    self.lifecycle.executor_completed(
+                        run_id=run_id,
+                        task_id=task_id,
+                        attempt_id=attempt_id,
+                        actor=f"{profile}:{provider or 'unknown'}:{model or 'unknown'}",
+                        summary=self._compact_handover_text(result.output, "Executor completed without a detailed summary."),
+                        commit_sha=end_sha,
+                        verification_status="passed",
+                        evidence_paths=[str(logs_dir / "stdout.log"), str(logs_dir / "stderr.log")],
+                    )
                     self._render_progress(run_id)
                 
                 if end_sha and start_sha != end_sha:
@@ -1472,6 +1526,7 @@ Scope: {json.dumps(task['scope'])}
                     if merged:
                         with self.db_lock:
                             self.task_repo.update_status(task_id, "complete")
+                            self.lifecycle.task_completed(run_id, task_id, f"Task '{task['name']}' completed and merged.")
                             if is_integration and "original_task_id" in scope_data:
                                 self.task_repo.update_status(scope_data["original_task_id"], "complete", force=True)
                             
@@ -1502,6 +1557,7 @@ Scope: {json.dumps(task['scope'])}
                                 conflicting_files=conflicting_files
                             )
                             self.task_repo.update_status(task_id, "blocked")
+                            self.lifecycle.task_blocked(run_id, task_id, f"Task '{task['name']}' blocked by merge conflicts.")
                 else:
                     with self.db_lock:
                         task_attempts = [a for a in self.attempt_repo.get_by_run(run_id) if a["task_id"] == task_id]
@@ -1518,6 +1574,7 @@ Scope: {json.dumps(task['scope'])}
                     if decision == "block":
                         with self.db_lock:
                             self.task_repo.update_status(task_id, "blocked")
+                            self.lifecycle.task_blocked(run_id, task_id, f"Task '{task['name']}' blocked by reviewer decision.")
                             self.decision_repo.create(
                                 run_id=run_id,
                                 decision_type="stop_condition",
@@ -1538,6 +1595,7 @@ Scope: {json.dumps(task['scope'])}
                         }
                         with self.db_lock:
                             self.task_repo.update_status(task_id, "blocked")
+                            self.lifecycle.task_blocked(run_id, task_id, f"Task '{task['name']}' requires architectural assessment.")
                             self.task_repo.create(
                                 run_id=run_id,
                                 feature_id=task["feature_id"],
@@ -1563,6 +1621,7 @@ Scope: {json.dumps(task['scope'])}
                         if merged:
                             with self.db_lock:
                                 self.task_repo.update_status(task_id, "complete")
+                                self.lifecycle.task_completed(run_id, task_id, f"Task '{task['name']}' completed with follow-up work.")
                                 self.task_repo.create(
                                     run_id=run_id,
                                     feature_id=task["feature_id"],
@@ -1598,6 +1657,7 @@ Scope: {json.dumps(task['scope'])}
                                     conflicting_files=conflicting_files
                                 )
                                 self.task_repo.update_status(task_id, "blocked")
+                                self.lifecycle.task_blocked(run_id, task_id, f"Task '{task['name']}' blocked by merge conflicts with follow-up work recorded.")
                                 self.task_repo.create(
                                     run_id=run_id,
                                     feature_id=task["feature_id"],
@@ -1630,6 +1690,7 @@ Scope: {json.dumps(task['scope'])}
                                         "source_commit": end_sha
                                     }
                                     self.task_repo.update_status(task_id, "complete")
+                                    self.lifecycle.task_completed(run_id, task_id, f"Task '{task['name']}' completed after escalation follow-up review.")
                                     self.task_repo.create(
                                         run_id=run_id,
                                         feature_id=task["feature_id"],
@@ -1644,13 +1705,15 @@ Scope: {json.dumps(task['scope'])}
                             else:
                                 with self.db_lock:
                                     self.task_repo.update_status(task_id, "blocked")
+                                    self.lifecycle.task_blocked(run_id, task_id, f"Task '{task['name']}' reached the attempt limit after reviewer rejection.")
                                 self.notify(run_id, "blocked", f"Task '{task['name']}' reached attempt limit on {decision}.")
                         else:
                             with self.db_lock:
-                                self._reset_task_for_retry(task_id)
+                                self._reset_task_for_retry(task_id, run_id=run_id)
                     else:
                         with self.db_lock:
                             self.task_repo.update_status(task_id, "blocked")
+                            self.lifecycle.task_blocked(run_id, task_id, f"Task '{task['name']}' had unknown review decision '{decision}'.")
                         self.notify(run_id, "blocked", f"Task '{task['name']}' had unknown review decision '{decision}'.")
 
                 with self.git_lock:
@@ -1686,7 +1749,18 @@ Scope: {json.dumps(task['scope'])}
                             logs_dir=logs_dir,
                             patch_path=patch_path,
                         )
-                        self._reset_task_for_retry(task_id)
+                        self._record_executor_failure_lifecycle(
+                            run_id,
+                            task_id,
+                            attempt_id,
+                            profile,
+                            provider,
+                            model,
+                            result,
+                            "quota_exhausted",
+                            logs_dir,
+                        )
+                        self._reset_task_for_retry(task_id, run_id=run_id)
                         self._render_progress(run_id)
                     
                     fallback = "Entering wait/sleep state"
@@ -1726,7 +1800,18 @@ Scope: {json.dumps(task['scope'])}
                             logs_dir=logs_dir,
                             patch_path=patch_path,
                         )
-                        self._reset_task_for_retry(task_id)
+                        self._record_executor_failure_lifecycle(
+                            run_id,
+                            task_id,
+                            attempt_id,
+                            profile,
+                            provider,
+                            model,
+                            result,
+                            "auth_required",
+                            logs_dir,
+                        )
+                        self._reset_task_for_retry(task_id, run_id=run_id)
                         self._render_progress(run_id)
 
                     alert_msg = (
@@ -1764,7 +1849,18 @@ Scope: {json.dumps(task['scope'])}
                             logs_dir=logs_dir,
                             patch_path=patch_path,
                         )
-                        self._reset_task_for_retry(task_id)
+                        self._record_executor_failure_lifecycle(
+                            run_id,
+                            task_id,
+                            attempt_id,
+                            profile,
+                            provider,
+                            model,
+                            result,
+                            "transient_failure",
+                            logs_dir,
+                        )
+                        self._reset_task_for_retry(task_id, run_id=run_id)
                         self._render_progress(run_id)
                     
                     alert_msg = (
@@ -1802,7 +1898,18 @@ Scope: {json.dumps(task['scope'])}
                             logs_dir=logs_dir,
                             patch_path=patch_path,
                         )
-                        self._reset_task_for_retry(task_id)
+                        self._record_executor_failure_lifecycle(
+                            run_id,
+                            task_id,
+                            attempt_id,
+                            profile,
+                            provider,
+                            model,
+                            result,
+                            "unavailable",
+                            logs_dir,
+                        )
+                        self._reset_task_for_retry(task_id, run_id=run_id)
                         self._render_progress(run_id)
                     
                     alert_msg = (
@@ -1853,6 +1960,18 @@ Scope: {json.dumps(task['scope'])}
                             logs_dir=logs_dir,
                             patch_path=patch_path,
                         )
+                        self._record_executor_failure_lifecycle(
+                            run_id,
+                            task_id,
+                            attempt_id,
+                            profile,
+                            provider,
+                            model,
+                            record_result,
+                            "timeout" if result.timed_out else "execution_failed",
+                            logs_dir,
+                            summary_override=timeout_handover,
+                        )
                         failed_attempts = [a for a in attempts if a["outcome"] in ("failed", "abandoned")]
                         is_limit = len(failed_attempts) + 1 >= self.config.retry_policy["max_attempts"]
                         self._render_progress(run_id)
@@ -1864,6 +1983,7 @@ Scope: {json.dumps(task['scope'])}
                     if timeout_review_decision == "block":
                         with self.db_lock:
                             self.task_repo.update_status(task_id, "blocked")
+                            self.lifecycle.task_blocked(run_id, task_id, f"Task '{task['name']}' was blocked after timeout review.")
                         self.notify(run_id, "blocked", f"Task '{task['name']}' was blocked after timeout review.")
                         with self.git_lock:
                             remove_worktree(Path.cwd(), worktree_dir)
@@ -1883,16 +2003,17 @@ Scope: {json.dumps(task['scope'])}
                                 self.task_repo.update_scope(task_id, task_scope)
                                 
                                 self.attempt_repo.escalate_failed_attempts(task_id)
-                                self._reset_task_for_retry(task_id)
+                                self._reset_task_for_retry(task_id, run_id=run_id)
                                     
                             self.notify(run_id, "task_follow_up", f"Task '{task['name']}' reached attempt limit but escalation review granted extension.")
                         else:
                             with self.db_lock:
                                 self.task_repo.update_status(task_id, "blocked")
+                                self.lifecycle.task_blocked(run_id, task_id, f"Task '{task['name']}' failed {self.config.retry_policy['max_attempts']} times.")
                             self.notify(run_id, "blocked", f"Task '{task['name']}' failed {self.config.retry_policy['max_attempts']} times.")
                     else:
                         with self.db_lock:
-                            self._reset_task_for_retry(task_id)
+                            self._reset_task_for_retry(task_id, run_id=run_id)
 
                 with self.git_lock:
                     remove_worktree(Path.cwd(), worktree_dir)
@@ -1923,6 +2044,17 @@ Scope: {json.dumps(task['scope'])}
                     logs_dir=logs_dir,
                     patch_path=patch_path,
                 )
+                self._record_executor_failure_lifecycle(
+                    run_id,
+                    task_id,
+                    attempt_id,
+                    profile,
+                    None,
+                    None,
+                    exception_result,
+                    "exception",
+                    logs_dir,
+                )
                 failed_attempts = [a for a in attempts if a["outcome"] in ("failed", "abandoned")]
                 attempt_count = len(failed_attempts) + 1
                 is_limit = attempt_count >= self.config.retry_policy["max_attempts"]
@@ -1940,16 +2072,17 @@ Scope: {json.dumps(task['scope'])}
                         self.task_repo.update_scope(task_id, task_scope)
                         
                         self.attempt_repo.escalate_failed_attempts(task_id)
-                        self._reset_task_for_retry(task_id)
+                        self._reset_task_for_retry(task_id, run_id=run_id)
                             
                     self.notify(run_id, "task_follow_up", f"Task '{task['name']}' reached attempt limit but escalation review granted extension.")
                 else:
                     with self.db_lock:
                         self.task_repo.update_status(task_id, "blocked")
+                        self.lifecycle.task_blocked(run_id, task_id, f"Task '{task['name']}' failed {self.config.retry_policy['max_attempts']} times after exception.")
                     self.notify(run_id, "blocked", f"Task '{task['name']}' failed {self.config.retry_policy['max_attempts']} times.")
             else:
                 with self.db_lock:
-                    self._reset_task_for_retry(task_id)
+                    self._reset_task_for_retry(task_id, run_id=run_id)
             with self.git_lock:
                 remove_worktree(Path.cwd(), worktree_dir)
             with self.db_lock:
@@ -1982,6 +2115,12 @@ If the executor just needs another try or a specific hint to fix its mistake, re
         model = None
         decision = "retry_with_handoff"
         findings = "Executor timed out. Retry with the synthesized handover context."
+        self.lifecycle.review_started(
+            run_id=run_id,
+            task_id=task_id,
+            attempt_id=attempt_id,
+            review_type="timeout",
+        )
         try:
             task = self.task_repo.get(task_id)
             task_name = task["name"] if task else f"task {task_id}"
@@ -2044,6 +2183,16 @@ Only return the raw JSON object. Do not include markdown wrappers.
             findings=findings,
             evidence_paths=evidence_paths,
         )
+        self.lifecycle.review_completed(
+            run_id=run_id,
+            task_id=task_id,
+            attempt_id=attempt_id,
+            actor=reviewer_route,
+            decision=decision,
+            findings=findings,
+            review_type="timeout",
+            evidence_paths=evidence_paths,
+        )
         self._record_reviewer_handover(
             run_id=run_id,
             task_id=task_id,
@@ -2067,6 +2216,13 @@ Only return the raw JSON object. Do not include markdown wrappers.
         
         provider = None
         model = None
+        review_task_id = subject_id if subject_type in {"task", "task_escalation"} and self.task_repo.get(subject_id) else None
+        self.lifecycle.review_started(
+            run_id=run_id,
+            task_id=review_task_id,
+            attempt_id=attempt_id,
+            review_type=subject_type,
+        )
         try:
             prompt = f"""
 You are the Agent Loop Reviewer.
@@ -2119,6 +2275,16 @@ Only return the raw JSON object. Do not include markdown wrappers.
                 findings=findings,
                 evidence_paths=evidence_paths
             )
+            self.lifecycle.review_completed(
+                run_id=run_id,
+                task_id=review_task_id,
+                attempt_id=attempt_id,
+                actor=reviewer_route,
+                decision=decision,
+                findings=findings,
+                review_type=subject_type,
+                evidence_paths=evidence_paths,
+            )
             if subject_type == "task" and self.task_repo.get(subject_id):
                 self._record_reviewer_handover(
                     run_id=run_id,
@@ -2141,6 +2307,16 @@ Only return the raw JSON object. Do not include markdown wrappers.
                 reviewer_route=reviewer_route,
                 findings=f"Review crashed with exception: {e}",
                 evidence_paths=evidence_paths
+            )
+            self.lifecycle.review_completed(
+                run_id=run_id,
+                task_id=review_task_id,
+                attempt_id=attempt_id,
+                actor=reviewer_route,
+                decision="rejected",
+                findings=f"Review crashed with exception: {e}",
+                review_type=subject_type,
+                evidence_paths=evidence_paths,
             )
             if subject_type == "task" and self.task_repo.get(subject_id):
                 self._record_reviewer_handover(

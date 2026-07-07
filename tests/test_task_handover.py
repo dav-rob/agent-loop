@@ -167,6 +167,11 @@ def test_task_execution_writes_handover_and_refreshes_progress_after_verificatio
 
     progress = progress_path.read_text()
     assert "`pytest -q` -> PASSED" in progress
+    assert "### Recent Lifecycle Events" in progress
+    assert "`task_started`" in progress
+    assert "`attempt_started`" in progress
+    assert "`executor_completed`" in progress
+    assert "`review_completed`" in progress
 
     handover_files = list((tmp_path / ".agent-loop" / "handoffs").glob("goal-1-task-1-*.md"))
     assert len(handover_files) == 1

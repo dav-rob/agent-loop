@@ -614,6 +614,77 @@ class HandoverRepository:
         ]
 
 
+class LifecycleEventRepository:
+    def __init__(self, conn: sqlite3.Connection):
+        self.conn = conn
+
+    def create(
+        self,
+        run_id: int,
+        event_type: str,
+        task_id: Optional[int] = None,
+        attempt_id: Optional[int] = None,
+        actor: Optional[str] = None,
+        summary: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        evidence_paths: Optional[List[str]] = None,
+    ) -> int:
+        metadata_str = json.dumps(metadata) if metadata else None
+        evidence_str = json.dumps(evidence_paths) if evidence_paths else None
+        cursor = self.conn.cursor()
+        cursor.execute(
+            """
+            INSERT INTO lifecycle_events (
+                run_id, task_id, attempt_id, event_type, actor, summary,
+                metadata, evidence_paths
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?);
+            """,
+            (
+                run_id,
+                task_id,
+                attempt_id,
+                event_type,
+                actor,
+                summary,
+                metadata_str,
+                evidence_str,
+            ),
+        )
+        self.conn.commit()
+        return cursor.lastrowid
+
+    def get_by_run(self, run_id: int, limit: Optional[int] = None) -> List[Dict[str, Any]]:
+        cursor = self.conn.cursor()
+        query = """
+            SELECT id, run_id, task_id, attempt_id, event_type, actor, summary,
+                   metadata, evidence_paths, created_at
+            FROM lifecycle_events
+            WHERE run_id = ?
+            ORDER BY id ASC
+        """
+        params: List[Any] = [run_id]
+        if limit is not None:
+            query += " LIMIT ?"
+            params.append(limit)
+        cursor.execute(query, params)
+        return [
+            {
+                "id": row[0],
+                "run_id": row[1],
+                "task_id": row[2],
+                "attempt_id": row[3],
+                "event_type": row[4],
+                "actor": row[5],
+                "summary": row[6],
+                "metadata": json.loads(row[7]) if row[7] else {},
+                "evidence_paths": json.loads(row[8]) if row[8] else [],
+                "created_at": row[9],
+            }
+            for row in cursor.fetchall()
+        ]
+
+
 class ProviderStateRepository:
     def __init__(self, conn: sqlite3.Connection):
         self.conn = conn

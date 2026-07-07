@@ -50,6 +50,7 @@ Use this file to record learnings, so that agents do not have to repeat work alr
 - Every provider adapter should leave provider-specific diagnostics alongside generic `stdout.log` and `stderr.log`; Codex writes `codex.log` plus `codex_events.jsonl`/`last_message.txt`, while agy writes `agy.log`.
 - Reviewer output is expected to be strict JSON, but a clearly labelled non-JSON decision such as `Decision: Approved` should be parsed as that decision rather than stored as a rejected review and injected into the next executor prompt as a bogus failure.
 - A timed-out executor may have made useful commits, edits, or diagnostic progress without returning a final structured handover. The orchestrator should synthesize a timeout handover from provider logs, command/file-change events, verification output, commits, and preserved patches, record a timeout review, and inject that context into the next retry prompt.
+- Runtime lifecycle events are DB-backed in `lifecycle_events` and recorded through `TaskLifecycleRecorder`; generated `progress.md` should render a recent event timeline from that table instead of relying only on derived task/attempt state.
 
 ## Useful commands
 
