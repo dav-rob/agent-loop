@@ -52,7 +52,7 @@ max_workers = 4
 state_dir = ".agent-loop"
 db_path = ".agent-loop/agent-loop.db"
 logs_dir = ".agent-loop/logs"
-worktrees_dir = ".agent-loop/worktrees"
+worktrees_dir = "worktrees"
 webhook_env_var = "AGENT_LOOP_WEBHOOK_URL"
 
 # Optional binary overrides.
@@ -61,26 +61,60 @@ agy_path = "/opt/homebrew/bin/agy"
 antigravity_usage_path = "/opt/homebrew/bin/antigravity-usage"
 
 [routes]
-planning = [
-  { provider = "codex", model = "gpt-5.5", reasoning_level = "high" },
-  { provider = "agy", model = "Claude Opus 4.6 (Thinking)", reasoning_level = "high" },
-  { provider = "agy", model = "Gemini 3.1 Pro (High)", reasoning_level = "high" }
-]
-
-implementation = [
+intake = [
   { provider = "agy", model = "Gemini 3.1 Pro (High)", reasoning_level = "high" },
   { provider = "agy", model = "Claude Sonnet 4.6 (Thinking)", reasoning_level = "high" },
   { provider = "codex", model = "gpt-5.4-mini", reasoning_level = "high" }
 ]
 
+planner = [
+  { provider = "codex", model = "gpt-5.5", reasoning_level = "high" },
+  { provider = "agy", model = "Claude Opus 4.6 (Thinking)", reasoning_level = "high" },
+  { provider = "agy", model = "Gemini 3.1 Pro (High)", reasoning_level = "high" }
+]
+
+executor = [
+  { provider = "agy", model = "Gemini 3.1 Pro (High)", reasoning_level = "high" },
+  { provider = "agy", model = "Claude Sonnet 4.6 (Thinking)", reasoning_level = "high" },
+  { provider = "codex", model = "gpt-5.4-mini", reasoning_level = "high" }
+]
+
+executor_escalated = [
+  { provider = "codex", model = "gpt-5.5", reasoning_level = "high" },
+  { provider = "agy", model = "Claude Opus 4.6 (Thinking)", reasoning_level = "high" },
+  { provider = "agy", model = "Gemini 3.1 Pro (High)", reasoning_level = "high" }
+]
+
+reviewer = [
+  { provider = "codex", model = "gpt-5.5", reasoning_level = "high" },
+  { provider = "agy", model = "Claude Opus 4.6 (Thinking)", reasoning_level = "high" },
+  { provider = "agy", model = "Gemini 3.1 Pro (High)", reasoning_level = "high" }
+]
+
+spec_reviewer = [
+  { provider = "codex", model = "gpt-5.5", reasoning_level = "high" },
+  { provider = "agy", model = "Claude Opus 4.6 (Thinking)", reasoning_level = "high" },
+  { provider = "agy", model = "Gemini 3.1 Pro (High)", reasoning_level = "high" }
+]
+
+escalation_reviewer = [
+  { provider = "codex", model = "gpt-5.5", reasoning_level = "high" },
+  { provider = "agy", model = "Claude Opus 4.6 (Thinking)", reasoning_level = "high" },
+  { provider = "agy", model = "Gemini 3.1 Pro (High)", reasoning_level = "high" }
+]
+
 [retry_policy]
-max_attempts = 3
+max_attempts = 5
 escalation_threshold = 2
 
 [commands]
 narrow_test = "pytest {test_path}"
 regression_test = "pytest tests"
 ```
+
+`agent-loop start` writes a complete default `agent-loop.toml` when one does not
+exist. Legacy `planning` and `implementation` route buckets are still accepted,
+but new configuration should use the named route profiles above.
 
 Runtime files are written under the current repository:
 
@@ -89,7 +123,7 @@ Runtime files are written under the current repository:
 - `.agent-loop/progress.md`: current goal state, blockers, tests, and next action
 - `.agent-loop/learning.md`: durable notes for this repository's goals
 - `.agent-loop/logs/`: provider prompts, stdout/stderr, patches, reviews, and test output
-- `.agent-loop/worktrees/`: isolated task worktrees used during execution
+- `worktrees/`: isolated task worktrees used during execution; kept visible so CLI agents can open them as workspaces
 - `.agent-loop/goals/`, `.agent-loop/plans/`, `.agent-loop/specs/`: structured workspace folders for future goal-specific artifacts
 
 ## Basic Workflow
@@ -111,13 +145,13 @@ agent-loop start \
 Use an explicit intake mode when you know how much discovery you want:
 
 ```bash
-agent-loop start --goal "Improve the settings page layout" --intake ui_lab
-agent-loop start --goal "Add CSV export for reports" --intake brainstorm
-agent-loop start --goal "Fix flaky retry tests" --intake autonomous
+agent-loop start --goal "Improve the settings page layout" --intake spec
+agent-loop start --goal "Add CSV export for reports" --intake spec
+agent-loop start --goal "Fix flaky retry tests" --intake none
 ```
 
-`ui_lab` is only accepted for UI-related goals. `autonomous` is best for narrow,
-well-understood implementation tasks.
+`spec` engages in an adaptive conversation to draft a compact specification before planning.
+`none` is best for narrow, well-understood implementation tasks and skips right to planning.
 
 In non-interactive mode, plan approval is automatic by default:
 
@@ -237,7 +271,7 @@ PY
 python -m pytest -q
 agent-loop start \
   --non-interactive \
-  --intake autonomous \
+  --intake none \
   --goal "Add subtract(a, b) to calculator.py with tests. Keep add(a, b) unchanged."
 ```
 
@@ -256,7 +290,7 @@ Run this from a real project that already has a README:
 ```bash
 agent-loop start \
   --non-interactive \
-  --intake autonomous \
+  --intake none \
   --goal "Create docs/quickstart.md from the README. Include install, test, and run commands. Do not change source code."
 ```
 
@@ -273,14 +307,11 @@ Use this when the goal is broad enough that you want to inspect the plan first:
 
 ```bash
 agent-loop start \
-  --non-interactive \
   --goal "Add structured logging to the CLI commands" \
-  --intake brainstorm \
-  --unattended-policy reject
-
-agent-loop plan --details
-agent-loop approve
+  --intake spec
 ```
+
+With `spec`, the loop will help you draft a clean requirement document, review it, and ask you for approval. Once approved, the plan is generated. You do not need to use an unattended policy for this since spec mode inherently requires interactive approval.
 
 ### Example 4: Resume After Stopping the Process
 
@@ -295,18 +326,20 @@ agent-loop plan --details
 Resume reconciles interrupted attempts, regenerates `.agent-loop/plan.md` and
 `.agent-loop/progress.md`, and continues execution when the goal is runnable.
 
-### Example 5: Use UI Lab Intake for UI Work
+### Example 5: Define UI Work With Spec Intake
 
-Run this only for an actual UI goal:
+Run this when defining a UI goal. The current intake will discuss the product,
+states, and visual direction in text before planning. The browser/HTML visual
+companion is deferred for a later release.
 
 ```bash
 agent-loop start \
   --goal "Improve the empty state for the dashboard page" \
-  --intake ui_lab
+  --intake spec
 ```
 
-The UI Lab path gathers additional UI context before planning. For non-UI goals,
-the CLI rejects `--intake ui_lab`.
+The `--ui` flag is still accepted for compatibility but does not currently open
+a separate UI brainstorming phase.
 
 ## Troubleshooting
 

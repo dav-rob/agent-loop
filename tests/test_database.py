@@ -12,6 +12,7 @@ from agent_loop.repositories import (
     NotificationRepository,
     DecisionRepository,
     TestMigrationRepository,
+    LifecycleEventRepository,
 )
 
 @pytest.fixture
@@ -39,9 +40,44 @@ def test_migration_tables(db_conn):
         "provider_state",
         "notifications",
         "decisions",
-        "test_migrations"
+        "test_migrations",
+        "task_handover_entries",
+        "lifecycle_events",
     }
     assert expected_tables.issubset(tables)
+
+
+def test_lifecycle_event_repository_records_structured_events(db_conn):
+    run_repo = RunRepository(db_conn)
+    feat_repo = FeatureRepository(db_conn)
+    task_repo = TaskRepository(db_conn)
+    attempt_repo = AttemptRepository(db_conn)
+    lifecycle_repo = LifecycleEventRepository(db_conn)
+
+    run_id = run_repo.create("Build dashboard", "none")
+    feat_id = feat_repo.create(run_id, "Foundation", "medium")
+    task_id = task_repo.create(run_id, feat_id, "Scaffold dashboard", "implementation", "medium")
+    attempt_id = attempt_repo.create(run_id, task_id, route="executor")
+
+    event_id = lifecycle_repo.create(
+        run_id=run_id,
+        event_type="executor_failed",
+        task_id=task_id,
+        attempt_id=attempt_id,
+        actor="executor:codex:gpt-5.5",
+        summary="Timed out before returning final handover.",
+        metadata={"reason": "timeout", "route": "executor_escalated"},
+        evidence_paths=["/tmp/logs/stdout.log"],
+    )
+
+    events = lifecycle_repo.get_by_run(run_id)
+    assert events[0]["id"] == event_id
+    assert events[0]["event_type"] == "executor_failed"
+    assert events[0]["task_id"] == task_id
+    assert events[0]["attempt_id"] == attempt_id
+    assert events[0]["actor"] == "executor:codex:gpt-5.5"
+    assert events[0]["metadata"] == {"reason": "timeout", "route": "executor_escalated"}
+    assert events[0]["evidence_paths"] == ["/tmp/logs/stdout.log"]
 
 def test_run_repository(db_conn):
     repo = RunRepository(db_conn)
@@ -243,4 +279,3 @@ def test_failed_migration_rollback(monkeypatch):
     cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='table_three';")
     assert cursor.fetchone() is None
     conn.close()
-

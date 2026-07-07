@@ -375,6 +375,25 @@ class AttemptRepository:
             )
         self.conn.commit()
 
+    def update_route_metadata(
+        self,
+        attempt_id: int,
+        route: Optional[str],
+        provider: Optional[str],
+        model: Optional[str],
+        reasoning_level: Optional[str],
+    ) -> None:
+        cursor = self.conn.cursor()
+        cursor.execute(
+            """
+            UPDATE attempts
+            SET route = ?, provider = ?, model = ?, reasoning_level = ?, updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?;
+            """,
+            (route, provider, model, reasoning_level, attempt_id),
+        )
+        self.conn.commit()
+
     def escalate_failed_attempts(self, task_id: int) -> None:
         """Mark all previous failed or abandoned attempts for a task as 'escalated' so they don't count against retry limits."""
         cursor = self.conn.cursor()
@@ -435,7 +454,7 @@ class ReviewRepository:
         self.conn = conn
 
     def create(self, run_id: int, subject_type: str, subject_id: int, decision: str, reviewer_route: Optional[str] = None, findings: Optional[str] = None, evidence_paths: Optional[List[str]] = None) -> int:
-        if decision not in {"approved", "rejected", "follow_up", "assessment", "block"}:
+        if decision not in {"approved", "rejected", "follow_up", "assessment", "block", "resume", "retry_with_handoff", "abandon"}:
             raise ValueError(f"Invalid review decision: {decision}")
         ev_str = json.dumps(evidence_paths) if evidence_paths else None
         cursor = self.conn.cursor()
@@ -506,6 +525,164 @@ class ReviewRepository:
         )
         row = cursor.fetchone()
         return row[0] if row else None
+
+
+class HandoverRepository:
+    def __init__(self, conn: sqlite3.Connection):
+        self.conn = conn
+
+    def create(
+        self,
+        run_id: int,
+        task_id: int,
+        attempt_id: Optional[int],
+        phase: str,
+        actor_route: Optional[str] = None,
+        decision: Optional[str] = None,
+        severity: Optional[str] = None,
+        summary: Optional[str] = None,
+        blocking_findings: Optional[str] = None,
+        followups: Optional[str] = None,
+        commit_sha: Optional[str] = None,
+        verification_status: Optional[str] = None,
+        evidence_paths: Optional[List[str]] = None,
+    ) -> int:
+        if phase not in {"executor", "reviewer"}:
+            raise ValueError(f"Invalid handover phase: {phase}")
+        ev_str = json.dumps(evidence_paths) if evidence_paths else None
+        cursor = self.conn.cursor()
+        cursor.execute(
+            """
+            INSERT INTO task_handover_entries (
+                run_id, task_id, attempt_id, phase, actor_route, decision, severity,
+                summary, blocking_findings, followups, commit_sha, verification_status,
+                evidence_paths
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+            """,
+            (
+                run_id,
+                task_id,
+                attempt_id,
+                phase,
+                actor_route,
+                decision,
+                severity,
+                summary,
+                blocking_findings,
+                followups,
+                commit_sha,
+                verification_status,
+                ev_str,
+            ),
+        )
+        self.conn.commit()
+        return cursor.lastrowid
+
+    def get_by_task(self, run_id: int, task_id: int) -> List[Dict[str, Any]]:
+        cursor = self.conn.cursor()
+        cursor.execute(
+            """
+            SELECT id, run_id, task_id, attempt_id, phase, actor_route, decision,
+                   severity, summary, blocking_findings, followups, commit_sha,
+                   verification_status, evidence_paths, created_at
+            FROM task_handover_entries
+            WHERE run_id = ? AND task_id = ?
+            ORDER BY COALESCE(attempt_id, 0), id;
+            """,
+            (run_id, task_id),
+        )
+        return [
+            {
+                "id": row[0],
+                "run_id": row[1],
+                "task_id": row[2],
+                "attempt_id": row[3],
+                "phase": row[4],
+                "actor_route": row[5],
+                "decision": row[6],
+                "severity": row[7],
+                "summary": row[8],
+                "blocking_findings": row[9],
+                "followups": row[10],
+                "commit_sha": row[11],
+                "verification_status": row[12],
+                "evidence_paths": json.loads(row[13]) if row[13] else [],
+                "created_at": row[14],
+            }
+            for row in cursor.fetchall()
+        ]
+
+
+class LifecycleEventRepository:
+    def __init__(self, conn: sqlite3.Connection):
+        self.conn = conn
+
+    def create(
+        self,
+        run_id: int,
+        event_type: str,
+        task_id: Optional[int] = None,
+        attempt_id: Optional[int] = None,
+        actor: Optional[str] = None,
+        summary: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        evidence_paths: Optional[List[str]] = None,
+    ) -> int:
+        metadata_str = json.dumps(metadata) if metadata else None
+        evidence_str = json.dumps(evidence_paths) if evidence_paths else None
+        cursor = self.conn.cursor()
+        cursor.execute(
+            """
+            INSERT INTO lifecycle_events (
+                run_id, task_id, attempt_id, event_type, actor, summary,
+                metadata, evidence_paths
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?);
+            """,
+            (
+                run_id,
+                task_id,
+                attempt_id,
+                event_type,
+                actor,
+                summary,
+                metadata_str,
+                evidence_str,
+            ),
+        )
+        self.conn.commit()
+        return cursor.lastrowid
+
+    def get_by_run(self, run_id: int, limit: Optional[int] = None) -> List[Dict[str, Any]]:
+        cursor = self.conn.cursor()
+        query = """
+            SELECT id, run_id, task_id, attempt_id, event_type, actor, summary,
+                   metadata, evidence_paths, created_at
+            FROM lifecycle_events
+            WHERE run_id = ?
+            ORDER BY id ASC
+        """
+        params: List[Any] = [run_id]
+        if limit is not None:
+            query += " LIMIT ?"
+            params.append(limit)
+        cursor.execute(query, params)
+        return [
+            {
+                "id": row[0],
+                "run_id": row[1],
+                "task_id": row[2],
+                "attempt_id": row[3],
+                "event_type": row[4],
+                "actor": row[5],
+                "summary": row[6],
+                "metadata": json.loads(row[7]) if row[7] else {},
+                "evidence_paths": json.loads(row[8]) if row[8] else [],
+                "created_at": row[9],
+            }
+            for row in cursor.fetchall()
+        ]
 
 
 class ProviderStateRepository:

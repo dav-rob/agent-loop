@@ -1,4 +1,5 @@
 from pathlib import Path
+import re
 import sqlite3
 from typing import Optional
 from agent_loop.repositories import (
@@ -8,8 +9,109 @@ from agent_loop.repositories import (
     AttemptRepository,
     TestRunRepository,
     ProviderStateRepository,
-    TestMigrationRepository
+    TestMigrationRepository,
+    HandoverRepository,
+    LifecycleEventRepository
 )
+
+
+def _slugify(value: str, max_chars: int = 20) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-")
+    return slug[:max_chars].strip("-") or "task"
+
+
+def _append_field(lines: list[str], label: str, value: Optional[str]) -> None:
+    if value:
+        lines.append(f"- **{label}:** {value}")
+
+
+def _compact_text(value: Optional[str], max_chars: int = 180) -> str:
+    text = " ".join((value or "").split())
+    if len(text) <= max_chars:
+        return text
+    return text[: max_chars - 3].rstrip() + "..."
+
+
+def render_task_handover_md(conn: sqlite3.Connection, run_id: int, task_id: int, dest_dir: Path) -> Path:
+    run = RunRepository(conn).get(run_id)
+    task = TaskRepository(conn).get(task_id)
+    if not run or not task:
+        raise ValueError(f"Cannot render handover for run {run_id}, task {task_id}.")
+
+    attempts = [a for a in AttemptRepository(conn).get_by_run(run_id) if a["task_id"] == task_id]
+    entries = HandoverRepository(conn).get_by_task(run_id, task_id)
+    attempt_order = {attempt["id"]: idx + 1 for idx, attempt in enumerate(attempts)}
+    entries_by_attempt = {}
+    for entry in entries:
+        entries_by_attempt.setdefault(entry["attempt_id"], []).append(entry)
+
+    lines = [
+        f"# Goal {run_id} / Task {task_id}: {task['name']}",
+        "",
+        "## Task Contract",
+        "",
+        f"- **Goal:** {run['goal']}",
+        f"- **Role:** {task['role']}",
+        f"- **Risk:** {task['risk']}",
+    ]
+    if task.get("scope"):
+        lines.append(f"- **Scope:** `{task['scope']}`")
+    if task.get("required_verification"):
+        lines.append(f"- **Required verification:** `{task['required_verification']}`")
+    lines.extend(
+        [
+            "",
+            "## Enough To Proceed",
+            "",
+            "- Required verification has passed or a concrete reason is recorded.",
+            "- Blocking correctness, security, data-loss, or regression issues in this task scope are addressed.",
+            "- Non-blocking polish and future improvements are captured as follow-ups instead of retrying the same task.",
+            "- Generated, dependency, runtime, and local state files have been reviewed for `.gitignore` coverage.",
+            "- Reviewer should reject only issues that block this task now; otherwise use follow-up.",
+            "",
+        ]
+    )
+
+    if not entries:
+        lines.append("No handover entries recorded yet.")
+    else:
+        ordered_attempt_ids = sorted(
+            entries_by_attempt.keys(),
+            key=lambda val: attempt_order.get(val, 10**9 if val is None else val),
+        )
+        for attempt_id in ordered_attempt_ids:
+            attempt_number = attempt_order.get(attempt_id, attempt_id or "unknown")
+            lines.append(f"## Attempt {attempt_number}")
+            lines.append("")
+            for phase in ("executor", "reviewer"):
+                phase_entries = [entry for entry in entries_by_attempt[attempt_id] if entry["phase"] == phase]
+                if not phase_entries:
+                    continue
+                lines.append(f"### {phase.title()}")
+                lines.append("")
+                for entry in phase_entries:
+                    _append_field(lines, "Route", entry.get("actor_route"))
+                    _append_field(lines, "Decision", entry.get("decision"))
+                    _append_field(lines, "Severity", entry.get("severity"))
+                    _append_field(lines, "Commit", entry.get("commit_sha"))
+                    _append_field(lines, "Verification", entry.get("verification_status"))
+                    _append_field(lines, "Summary", entry.get("summary"))
+                    _append_field(lines, "Blocking findings", entry.get("blocking_findings"))
+                    _append_field(lines, "Follow-ups", entry.get("followups"))
+                    if entry.get("evidence_paths"):
+                        lines.append("- **Evidence:**")
+                        for evidence_path in entry["evidence_paths"]:
+                            lines.append(f"  - `{evidence_path}`")
+                    if phase == "executor":
+                        lines.append("- **Handover checklist:** `.gitignore`, generated files, runtime files, verification, and known risks reviewed.")
+                    else:
+                        lines.append("- **Scope threshold:** Reviewer should reject only issues that block this task now; otherwise use follow-up.")
+                    lines.append("")
+
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest_path = dest_dir / f"goal-{run_id}-task-{task_id}-{_slugify(task['name'])}.md"
+    dest_path.write_text("\n".join(lines).rstrip() + "\n")
+    return dest_path
 
 def render_plan_md(conn: sqlite3.Connection, run_id: int, dest_path: Path) -> None:
     run = RunRepository(conn).get(run_id)
@@ -83,6 +185,7 @@ def render_progress_md(conn: sqlite3.Connection, run_id: int, dest_path: Path) -
     tasks = TaskRepository(conn).get_by_run(run_id)
     attempts = AttemptRepository(conn).get_by_run(run_id)
     test_runs = TestRunRepository(conn).get_by_run(run_id)
+    lifecycle_events = LifecycleEventRepository(conn).get_by_run(run_id)
 
     # Provider states
     cursor = conn.cursor()
@@ -121,7 +224,12 @@ def render_progress_md(conn: sqlite3.Connection, run_id: int, dest_path: Path) -
     active_attempts = [a for a in attempts if a["outcome"] == "running"]
     lines.append("### Active Work")
     if not active_attempts:
-        lines.append("No active task attempts.")
+        running_tasks = [t for t in tasks if t["status"] == "running"]
+        if not running_tasks:
+            lines.append("No active task attempts.")
+        else:
+            for task in running_tasks:
+                lines.append(f"- Starting task: **{task['name']}** ({task['role']})")
     else:
         for attempt in active_attempts:
             # find task name
@@ -130,7 +238,32 @@ def render_progress_md(conn: sqlite3.Connection, run_id: int, dest_path: Path) -
                 if t["id"] == attempt["task_id"]:
                     task_name = t["name"]
                     break
-            lines.append(f"- Task: **{task_name}** (Route: {attempt['route']}, Model: {attempt['model']}, Logs: `{attempt['logs_path']}`)")
+            route = attempt["route"] or "pending"
+            provider = attempt["provider"] or "pending"
+            model = attempt["model"] or "pending"
+            logs_path = attempt["logs_path"] or "pending"
+            lines.append(f"- Task: **{task_name}** (Route: {route}, Provider: {provider}, Model: {model}, Logs: `{logs_path}`)")
+    lines.append("")
+
+    lines.append("### Recent Lifecycle Events")
+    if not lifecycle_events:
+        lines.append("No lifecycle events recorded yet.")
+    else:
+        task_names = {task["id"]: task["name"] for task in tasks}
+        attempt_order = {attempt["id"]: idx + 1 for idx, attempt in enumerate(attempts)}
+        for event in lifecycle_events[-8:]:
+            parts = [f"- `{event['event_type']}`"]
+            if event.get("task_id"):
+                task_label = task_names.get(event["task_id"], f"Task {event['task_id']}")
+                parts.append(f"Task: **{task_label}**")
+            if event.get("attempt_id"):
+                parts.append(f"Attempt {attempt_order.get(event['attempt_id'], event['attempt_id'])}")
+            if event.get("actor"):
+                parts.append(f"Actor: {event['actor']}")
+            summary = _compact_text(event.get("summary"))
+            if summary:
+                parts.append(summary)
+            lines.append(" - ".join(parts))
     lines.append("")
 
     # Completed outcomes

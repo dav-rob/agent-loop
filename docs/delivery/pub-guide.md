@@ -51,18 +51,18 @@ agent-loop start --non-interactive --goal "Add CSV export to reports and update 
 Use this when you want it to make reasonable decisions and keep moving:
 
 ```bash
-agent-loop start --non-interactive --intake autonomous --goal "Fix the flaky retry tests"
+agent-loop start --non-interactive --intake none --goal "Fix the flaky retry tests"
 ```
 
-Use this when you want it to plan, then stop for your approval:
+Use this when you want to define a clear spec together before anything is planned:
 
 ```bash
 agent-loop start \
-  --non-interactive \
-  --intake brainstorm \
-  --unattended-policy reject \
+  --intake spec \
   --goal "Refactor the notification code"
 ```
+
+The `spec` mode will chat with you adaptively to define a "compact spec", optionally start a UI brainstorm branch, and then wait for your approval before generating a task plan.
 
 Then inspect and approve:
 
@@ -297,7 +297,7 @@ and test migration records.
 For a small well-defined job:
 
 ```bash
-agent-loop start --non-interactive --intake autonomous --goal "Fix the retry test flake and keep behavior unchanged"
+agent-loop start --non-interactive --intake none --goal "Fix the retry test flake and keep behavior unchanged"
 ```
 
 Then later:
@@ -307,18 +307,18 @@ agent-loop status
 agent-loop plan --details
 ```
 
-For a job where I want to approve the plan:
+For a job where I want to discuss and approve the requirements first:
 
 ```bash
-agent-loop start --goal "Add webhook retry support"
+agent-loop start --goal "Add webhook retry support" --intake spec
 ```
 
-Choose brainstorm mode, read `.agent-loop/plan.md`, then approve if it looks sane.
+Answer the agent's questions, review the generated compact spec, and then approve it to start planning.
 
-For UI work:
+For UI work, use normal spec intake. The visual/browser companion is deferred:
 
 ```bash
-agent-loop start --goal "Improve the dashboard empty state" --intake ui_lab
+agent-loop start --goal "Improve the dashboard empty state" --intake spec
 ```
 
 For a stopped run:
@@ -341,11 +341,8 @@ I compared the original design in
 implementation. The broad shape is there, but these are the main gaps or rough
 edges to keep in mind:
 
-- The interactive brainstorm now asks goal-specific follow-up questions when
-  model intake is available and falls back to a short fixed questionnaire when
-  it is not. It is still intentionally brief rather than a full design workshop.
-- UI Lab currently runs the brief-style intake path. It does not yet walk
-  through the full set of UI Lab stages described in the spec.
+- The interactive `spec` intake now uses an adaptive multi-turn agent conversation to draft a "compact spec", followed by an internal review pass. Legacy aliases (`autonomous`, `brainstorm`, `ui_lab`) are deprecated but mapped to `none` and `spec`.
+- UI brainstorming is deferred. The `--ui` flag is still accepted for compatibility, but active intake is text-only until the visual/browser companion is implemented.
 - `resume` can restart a goal from `blocked`, but if the underlying blocked task
   is still blocked and no other task is runnable, the goal will just become
   blocked again. The app needs a clearer operator workflow for resolving

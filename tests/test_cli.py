@@ -1,10 +1,11 @@
 import json
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 import pytest
-from agent_loop.cli import main, describe_goal
+from agent_loop.cli import main, describe_goal, _normalize_intake_choice
 from agent_loop.config import Config
 from agent_loop.database import get_connection, migrate
 from agent_loop.repositories import RunRepository, FeatureRepository, TaskRepository, AttemptRepository
@@ -57,19 +58,24 @@ def test_cli_start_non_interactive(clean_workspace):
     assert state_dir.is_dir()
     assert db_path.exists()
     assert (state_dir / "logs").is_dir()
-    assert (state_dir / "worktrees").is_dir()
+    assert Path("worktrees").is_dir()
     assert (state_dir / "goals").is_dir()
     assert (state_dir / "plans").is_dir()
     assert (state_dir / "specs").is_dir()
     assert (state_dir / "skills" / "brainstorming" / "SKILL.md").exists()
     assert (state_dir / "learning.md").exists()
+    config_path = Path("agent-loop.toml")
+    assert config_path.exists()
+    config_data = tomllib.loads(config_path.read_text())
+    assert config_data["routes"]["executor"]
+    assert config_data["routes"]["executor_escalated"][0]["model"] == "gpt-5.5"
 
     conn = get_connection(db_path)
     run_repo = RunRepository(conn)
     runs = run_repo.list_all()
     assert len(runs) == 1
     assert runs[0]["goal"] == "Build a compiler"
-    assert runs[0]["intake_mode"] == "non_interactive"
+    assert runs[0]["intake_mode"] == "none"
     assert runs[0]["status"] == "running"
     conn.close()
 
@@ -104,7 +110,7 @@ def test_cli_start_bootstraps_empty_git_repo(clean_workspace):
 
     after = subprocess.run(["git", "rev-parse", "--verify", "HEAD"], cwd=clean_workspace, capture_output=True, text=True)
     assert after.returncode == 0
-    assert (clean_workspace / ".gitignore").read_text() == ".agent-loop/\n"
+    assert (clean_workspace / ".gitignore").read_text() == ".agent-loop/\nworktrees/\nnode_modules/\n"
     committed_files = subprocess.run(
         ["git", "ls-tree", "--name-only", "HEAD"],
         cwd=clean_workspace,
@@ -138,7 +144,7 @@ def test_cli_start_initializes_missing_git_repo(clean_workspace):
     assert inside.stdout.strip() == "true"
     head = subprocess.run(["git", "rev-parse", "--verify", "HEAD"], cwd=clean_workspace, capture_output=True, text=True)
     assert head.returncode == 0
-    assert (clean_workspace / ".gitignore").read_text() == ".agent-loop/\n"
+    assert (clean_workspace / ".gitignore").read_text() == ".agent-loop/\nworktrees/\nnode_modules/\n"
 
 def test_cli_plan_details(clean_workspace, capsys):
     # Setup test run in db
@@ -368,31 +374,13 @@ def test_cli_resume_explains_awaiting_plan_approval(clean_workspace, capsys):
     assert "agent-loop approve 1" in captured.out
 
 
-def test_cli_intake_and_approval(clean_workspace):
-    # Test interactive wizard with brainstorm_ui_lab intake and plan approval
+def test_cli_intake_and_approval(clean_workspace, capsys):
+    # Test interactive wizard with "none" intake and plan approval
     test_args = ["agent-loop", "start"]
 
-    # Simulating interactive inputs:
-    # 1. Broad goal: "Design a nice portal"
-    # 2. Choice of intake mode: "2" (Brainstorm with UI Lab)
-    # 3. Refinement: "Must look sleek"
-    # 4. UI styling: "Dark neon"
-    # 5. UI pages: "Dashboard, settings"
-    # 6. Plan approval: "y"
     user_inputs = [
         "Design a nice portal",
         "2",
-        "Operations team",
-        "Users can triage issues quickly",
-        "Must look sleek",
-        "Avoid dense charts",
-        "Manual smoke test",
-        "fast",
-        "tool",
-        "immediately",
-        "slow",
-        "Dark neon",
-        "disliked_app",
         "y"
     ]
     input_generator = (val for val in user_inputs)
@@ -411,33 +399,8 @@ def test_cli_intake_and_approval(clean_workspace):
             mock_orch.plan_run.side_effect = mock_plan_run
             mock_orch_cls.return_value = mock_orch
 
-            with patch("agent_loop.adapters.AgyAdapter") as mock_agy_adapter_cls:
-                mock_adapter_instance = MagicMock()
-                mock_agy_adapter_cls.return_value = mock_adapter_instance
-
-                from agent_loop.adapters import AttemptResult
-                mock_adapter_instance.run_attempt.return_value = AttemptResult(
-                    success=True,
-                    exit_code=0,
-                    output=(
-                        "UI Questions\n"
-                        "- Should this feel fast or thoughtful?\n"
-                        "- Should this feel like a tool or a guide?\n"
-                        "- Should people see everything immediately or should detail appear gradually?\n"
-                        "- What would make this feel wrong?\n"
-                        "- What apps do you like?\n"
-                        "- What apps do you dislike?\n"
-                    ),
-                    error=""
-                )
-
-                with patch.object(sys, "argv", test_args):
-                    main()
-
-                # Assert that AgyAdapter.run_attempt is called once and prompt starts with /brief
-                mock_adapter_instance.run_attempt.assert_called_once()
-                run_attempt_kwargs = mock_adapter_instance.run_attempt.call_args[1]
-                assert run_attempt_kwargs["prompt"].startswith("/brief")
+            with patch.object(sys, "argv", test_args):
+                main()
 
             mock_orch.plan_run.assert_called_once()
             mock_orch.run_loop.assert_called_once()
@@ -448,68 +411,28 @@ def test_cli_intake_and_approval(clean_workspace):
     run_repo = RunRepository(conn)
     runs = run_repo.list_all()
     assert len(runs) == 1
-    assert "User / audience: Operations team" in runs[0]["goal"]
-    assert "Success criteria: Users can triage issues quickly" in runs[0]["goal"]
-    assert "Constraints / preferences: Must look sleek" in runs[0]["goal"]
-    assert "Non-goals / risks: Avoid dense charts" in runs[0]["goal"]
-    assert "Verification: Manual smoke test" in runs[0]["goal"]
-    assert "Dark neon" in runs[0]["goal"]
-    assert runs[0]["intake_mode"] == "brainstorm_ui_lab"
+    assert runs[0]["goal"] == "Design a nice portal"
+    assert runs[0]["intake_mode"] == "none"
     assert runs[0]["status"] == "running" # Transitioned by 'y' approval
     conn.close()
 
+    captured = capsys.readouterr()
+    assert "Do you want to brainstorm the implementation:" in captured.out
+    assert "1) Yes (brainstorm implementation)" in captured.out
+    assert "2) No (create a plan immediately)" in captured.out
+    assert 'Started goal "Design a nice portal" in plan mode.' in captured.out
+    assert "Planning..." in captured.out
+    assert f'Plan generated for goal "Design a nice portal" (see {clean_workspace / default_state_dir() / "plan.md"}).' in captured.out
+    assert "Select Intake Mode:" not in captured.out
+    assert "Started goal 1 in none mode" not in captured.out
+    assert "Planning run..." not in captured.out
+    assert "Plan generated for goal 1" not in captured.out
 
-def test_cli_start_brainstorm_collects_multiturn_notes(clean_workspace):
+
+def test_cli_start_none_choice_with_label_does_not_run_spec_intake(clean_workspace):
+    test_args = ["agent-loop", "start", "--goal", "Build a dashboard"]
     user_inputs = [
-        "1",
-        "Compiler maintainers",
-        "Parses source files into an AST",
-        "Keep dependencies minimal",
-        "No optimizer yet",
-        "Unit tests for parser fixtures",
-    ]
-    input_generator = (val for val in user_inputs)
-
-    def mock_plan_run(run_id):
-        db_path = default_db_path()
-        conn = get_connection(db_path)
-        RunRepository(conn).update_status(run_id, "planning")
-        RunRepository(conn).update_status(run_id, "running")
-        conn.close()
-        return True
-
-    with patch("builtins.input", side_effect=lambda *args, **kwargs: next(input_generator)):
-        with patch("agent_loop.cli.Orchestrator") as mock_orch_cls:
-            mock_orch = MagicMock()
-            mock_orch.plan_run.side_effect = mock_plan_run
-            mock_orch_cls.return_value = mock_orch
-
-            with patch.object(sys, "argv", ["agent-loop", "start", "--goal", "Build a compiler"]):
-                main()
-
-            mock_orch.plan_run.assert_called_once()
-            mock_orch.run_loop.assert_called_once()
-
-    db_path = default_db_path()
-    conn = get_connection(db_path)
-    run_repo = RunRepository(conn)
-    runs = run_repo.list_all()
-    assert len(runs) == 1
-    assert runs[0]["intake_mode"] == "brainstorm"
-    assert "Brainstorming Notes:" in runs[0]["goal"]
-    assert "- User / audience: Compiler maintainers" in runs[0]["goal"]
-    assert "- Success criteria: Parses source files into an AST" in runs[0]["goal"]
-    assert "- Constraints / preferences: Keep dependencies minimal" in runs[0]["goal"]
-    assert "- Non-goals / risks: No optimizer yet" in runs[0]["goal"]
-    assert "- Verification: Unit tests for parser fixtures" in runs[0]["goal"]
-    conn.close()
-
-def test_cli_start_brainstorm_uses_tailored_questions(clean_workspace):
-    user_inputs = [
-        "1",
-        "A terminal dashboard I can leave open",
-        "Headlines and videos should refresh without manual work",
-        "Keep summaries cached",
+        "2) None (Start planning immediately)",
         "y",
     ]
     input_generator = (val for val in user_inputs)
@@ -522,36 +445,179 @@ def test_cli_start_brainstorm_uses_tailored_questions(clean_workspace):
         conn.close()
         return True
 
-    from agent_loop.adapters import AttemptResult
-    brainstorm_output = json.dumps({
-        "questions": [
-            {"label": "First usable outcome", "question": "What would make this useful on day one?"},
-            {"label": "Refresh behaviour", "question": "Which data should refresh automatically versus on demand?"},
-            {"label": "Summary cache", "question": "What should be cached so repeat visits feel instant?"},
-        ]
-    })
-
     with patch("builtins.input", side_effect=lambda *args, **kwargs: next(input_generator)), \
-         patch.object(sys.stdin, "isatty", return_value=True), \
          patch("agent_loop.cli.Orchestrator") as mock_orch_cls, \
-         patch("agent_loop.adapters.AgyAdapter") as mock_agy_adapter_cls:
+         patch("agent_loop.intake.run_spec_intake") as mock_spec:
         mock_orch = MagicMock()
         mock_orch.plan_run.side_effect = mock_plan_run
         mock_orch_cls.return_value = mock_orch
 
-        mock_adapter = MagicMock()
-        mock_adapter.run_attempt.return_value = AttemptResult(
-            success=True,
-            exit_code=0,
-            output=brainstorm_output,
-            error="",
-        )
-        mock_agy_adapter_cls.return_value = mock_adapter
-
-        with patch.object(sys, "argv", ["agent-loop", "start", "--goal", "Create my personal dashboard"]):
+        with patch.object(sys, "argv", test_args):
             main()
 
-        mock_adapter.run_attempt.assert_called_once()
+    mock_spec.assert_not_called()
+    conn = get_connection(default_db_path())
+    run = RunRepository(conn).list_all()[0]
+    conn.close()
+    assert run["intake_mode"] == "none"
+    assert run["goal"] == "Build a dashboard"
+
+
+def test_normalize_intake_choice_accepts_prompt_echo_and_terminal_sequences():
+    assert _normalize_intake_choice("Choice [1-2]: 2") == "none"
+    assert _normalize_intake_choice("\x1b[200~2\x1b[201~") == "none"
+    assert _normalize_intake_choice("Choice [1-2]: 1") == "spec"
+
+
+def test_cli_start_prompt_echo_choice_does_not_run_spec_intake(clean_workspace):
+    test_args = ["agent-loop", "start", "--goal", "Build a dashboard"]
+    user_inputs = [
+        "Choice [1-2]: 2",
+        "y",
+    ]
+    input_generator = (val for val in user_inputs)
+
+    def mock_plan_run(run_id):
+        db_path = default_db_path()
+        conn = get_connection(db_path)
+        RunRepository(conn).update_status(run_id, "planning")
+        RunRepository(conn).update_status(run_id, "awaiting_plan_approval")
+        conn.close()
+        return True
+
+    with patch("builtins.input", side_effect=lambda *args, **kwargs: next(input_generator)), \
+         patch("agent_loop.cli.Orchestrator") as mock_orch_cls, \
+         patch("agent_loop.intake.run_spec_intake") as mock_spec:
+        mock_orch = MagicMock()
+        mock_orch.plan_run.side_effect = mock_plan_run
+        mock_orch_cls.return_value = mock_orch
+
+        with patch.object(sys, "argv", test_args):
+            main()
+
+    mock_spec.assert_not_called()
+    conn = get_connection(default_db_path())
+    run = RunRepository(conn).list_all()[0]
+    conn.close()
+    assert run["intake_mode"] == "none"
+
+
+def test_cli_start_preserves_fast_none_choice_after_goal(clean_workspace):
+    class ScriptedTTY:
+        def __init__(self):
+            self.lines = ["Build a dashboard\n", "2\n", "y\n"]
+
+        def readline(self):
+            if self.lines:
+                return self.lines.pop(0)
+            return ""
+
+        def isatty(self):
+            return True
+
+        def fileno(self):
+            return 0
+
+    fake_stdin = ScriptedTTY()
+
+    def fake_select(readable, _writable, _exceptional, _timeout=0):
+        if fake_stdin.lines and fake_stdin.lines[0].strip() == "2":
+            return readable, [], []
+        return [], [], []
+
+    def mock_plan_run(run_id):
+        db_path = default_db_path()
+        conn = get_connection(db_path)
+        RunRepository(conn).update_status(run_id, "planning")
+        RunRepository(conn).update_status(run_id, "awaiting_plan_approval")
+        conn.close()
+        return True
+
+    with patch.object(sys, "stdin", fake_stdin), \
+         patch("select.select", side_effect=fake_select), \
+         patch("agent_loop.cli.Orchestrator") as mock_orch_cls, \
+         patch("agent_loop.intake.run_spec_intake") as mock_spec:
+        mock_orch = MagicMock()
+        mock_orch.plan_run.side_effect = mock_plan_run
+        mock_orch_cls.return_value = mock_orch
+
+        with patch.object(sys, "argv", ["agent-loop", "start"]):
+            main()
+
+    mock_spec.assert_not_called()
+    conn = get_connection(default_db_path())
+    run = RunRepository(conn).list_all()[0]
+    conn.close()
+    assert run["intake_mode"] == "none"
+    assert run["goal"] == "Build a dashboard"
+
+
+def test_cli_start_spec_collects_model_question_and_saves_spec(clean_workspace):
+    user_inputs = [
+        "1",
+        "Parse source files into an AST first.",
+        "Generate a CLI command that prints parse errors clearly.",
+        "Run parser fixtures and unit tests.",
+        "draft",
+        "y",
+    ]
+    input_generator = (val for val in user_inputs)
+
+    def mock_plan_run(run_id):
+        db_path = default_db_path()
+        conn = get_connection(db_path)
+        RunRepository(conn).update_status(run_id, "planning")
+        RunRepository(conn).update_status(run_id, "running")
+        conn.close()
+        return True
+
+    routed_question = MagicMock(success=True, output=json.dumps({
+        "status": "question",
+        "question": "What is the first compiler milestone?",
+        "reason": "Need scope",
+        "current_understanding": "The compiler needs a first milestone.",
+    }))
+    routed_question_2 = MagicMock(success=True, output=json.dumps({
+        "status": "question",
+        "question": "What user-facing behavior should the first cut expose?",
+        "reason": "Need operator workflow",
+        "current_understanding": "The first cut parses source files into an AST.",
+    }))
+    routed_question_3 = MagicMock(success=True, output=json.dumps({
+        "status": "question",
+        "question": "How should the parser be verified?",
+        "reason": "Need acceptance criteria",
+        "current_understanding": "The parser should expose clear CLI behavior and parse errors.",
+    }))
+    routed_draft = MagicMock(success=True, output=json.dumps({
+        "draft_spec": "# Compact Spec\n\n## Outcome\nBuild a compiler parser\n\n## Requirements\n- Parse source files into an AST first.",
+    }))
+    routed_review = MagicMock(
+        success=True,
+        output=(
+            "# Review Result\n"
+            "Status: approved\n\n"
+            "# Revised Compact Spec\n"
+            "# Compact Spec\n\n"
+            "## Outcome\nBuild a compiler parser\n\n"
+            "## Requirements\n- Parse source files into an AST first."
+        ),
+    )
+
+    with patch("builtins.input", side_effect=lambda *args, **kwargs: next(input_generator)), \
+         patch("agent_loop.cli.Orchestrator") as mock_orch_cls, \
+         patch("agent_loop.intake.ModelRouter") as mock_router_cls:
+        mock_orch = MagicMock()
+        mock_orch.plan_run.side_effect = mock_plan_run
+        mock_orch_cls.return_value = mock_orch
+        mock_router = MagicMock()
+        mock_router.run.side_effect = [routed_question, routed_question_2, routed_question_3, routed_draft, routed_review]
+        mock_router_cls.return_value = mock_router
+
+        with patch.object(sys, "argv", ["agent-loop", "start", "--goal", "Build a compiler"]):
+            main()
+
+        mock_orch.plan_run.assert_called_once()
         mock_orch.run_loop.assert_called_once()
 
     db_path = default_db_path()
@@ -559,9 +625,87 @@ def test_cli_start_brainstorm_uses_tailored_questions(clean_workspace):
     run_repo = RunRepository(conn)
     runs = run_repo.list_all()
     assert len(runs) == 1
-    assert "- First usable outcome: A terminal dashboard I can leave open" in runs[0]["goal"]
-    assert "- Refresh behaviour: Headlines and videos should refresh without manual work" in runs[0]["goal"]
-    assert "- Summary cache: Keep summaries cached" in runs[0]["goal"]
+    assert runs[0]["intake_mode"] == "spec"
+    assert "# Compact Spec" in runs[0]["goal"]
+    assert "- Parse source files into an AST first." in runs[0]["goal"]
+    conn.close()
+
+def test_cli_start_spec_uses_tailored_model_question(clean_workspace):
+    user_inputs = [
+        "1",
+        "A terminal dashboard I can leave open",
+        "It should refresh itself without manual commands",
+        "Show stale or failed updates clearly",
+        "draft",
+        "y",
+        "y",
+    ]
+    input_generator = (val for val in user_inputs)
+
+    def mock_plan_run(run_id):
+        db_path = default_db_path()
+        conn = get_connection(db_path)
+        RunRepository(conn).update_status(run_id, "planning")
+        RunRepository(conn).update_status(run_id, "awaiting_plan_approval")
+        conn.close()
+        return True
+
+    routed_question = MagicMock(success=True, output=json.dumps({
+        "status": "question",
+        "question": "What would make this useful on day one?",
+        "reason": "Need first outcome",
+        "current_understanding": "The dashboard needs a first useful outcome.",
+    }))
+    routed_question_2 = MagicMock(success=True, output=json.dumps({
+        "status": "question",
+        "question": "How should it behave while you leave it open?",
+        "reason": "Need runtime behavior",
+        "current_understanding": "The user wants a terminal dashboard they can leave open.",
+    }))
+    routed_question_3 = MagicMock(success=True, output=json.dumps({
+        "status": "question",
+        "question": "What should happen when data is stale or updates fail?",
+        "reason": "Need error states",
+        "current_understanding": "The dashboard should refresh without manual commands.",
+    }))
+    routed_draft = MagicMock(success=True, output=json.dumps({
+        "draft_spec": "# Compact Spec\n\n## Outcome\nA terminal dashboard I can leave open",
+    }))
+    routed_review = MagicMock(
+        success=True,
+        output=(
+            "# Review Result\n"
+            "Status: approved\n\n"
+            "# Revised Compact Spec\n"
+            "# Compact Spec\n\n"
+            "## Outcome\nA terminal dashboard I can leave open"
+        ),
+    )
+
+    with patch("builtins.input", side_effect=lambda *args, **kwargs: next(input_generator)), \
+         patch.object(sys.stdin, "isatty", return_value=True), \
+         patch("agent_loop.cli.Orchestrator") as mock_orch_cls, \
+         patch("agent_loop.intake.ModelRouter") as mock_router_cls:
+        mock_orch = MagicMock()
+        mock_orch.plan_run.side_effect = mock_plan_run
+        mock_orch_cls.return_value = mock_orch
+
+        mock_router = MagicMock()
+        mock_router.run.side_effect = [routed_question, routed_question_2, routed_question_3, routed_draft, routed_review]
+        mock_router_cls.return_value = mock_router
+
+        with patch.object(sys, "argv", ["agent-loop", "start", "--goal", "Create my personal dashboard"]):
+            main()
+
+        assert mock_router.run.call_count == 5
+        mock_orch.run_loop.assert_called_once()
+
+    db_path = default_db_path()
+    conn = get_connection(db_path)
+    run_repo = RunRepository(conn)
+    runs = run_repo.list_all()
+    assert len(runs) == 1
+    assert "A terminal dashboard I can leave open" in runs[0]["goal"]
     conn.close()
 
 
@@ -602,12 +746,7 @@ def test_cli_start_captures_pasted_multiline_goal(clean_workspace):
         "Create a website that runs in the background and checks hourly:\n",
         pasted_goal_lines,
         [
-            "1\n",
-            "\n",
-            "\n",
-            "\n",
-            "\n",
-            "\n",
+            "2\n",
         ],
     )
 
@@ -626,12 +765,10 @@ def test_cli_start_captures_pasted_multiline_goal(clean_workspace):
 
     with patch.object(sys, "stdin", fake_stdin), \
          patch("select.select", side_effect=fake_select), \
-         patch("agent_loop.cli.Orchestrator") as mock_orch_cls, \
-         patch("agent_loop.adapters.AgyAdapter") as mock_agy_adapter_cls:
+         patch("agent_loop.cli.Orchestrator") as mock_orch_cls:
         mock_orch = MagicMock()
         mock_orch.plan_run.side_effect = mock_plan_run
         mock_orch_cls.return_value = mock_orch
-        mock_agy_adapter_cls.side_effect = RuntimeError("no model intake in this test")
 
         with patch.object(sys, "argv", ["agent-loop", "start"]):
             main()
@@ -647,7 +784,7 @@ def test_cli_start_captures_pasted_multiline_goal(clean_workspace):
     assert "news+headlines+today" in runs[0]["goal"]
     assert "https://www.youtube.com/@TLDRnewsGLOBAL" in runs[0]["goal"]
     assert "summarize it with agy CLI" in runs[0]["goal"]
-    assert runs[0]["intake_mode"] == "brainstorm"
+    assert runs[0]["intake_mode"] == "none"
     conn.close()
 
 

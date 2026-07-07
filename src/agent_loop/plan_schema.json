@@ -54,9 +54,17 @@
               "files": {
                 "type": "array",
                 "items": { "type": "string" }
+              },
+              "writes": {
+                "type": "array",
+                "items": { "type": "string" }
+              },
+              "reads": {
+                "type": "array",
+                "items": { "type": "string" }
               }
             },
-            "required": ["files"]
+            "required": ["files", "writes", "reads"]
           },
           "dependencies": {
             "type": "array",

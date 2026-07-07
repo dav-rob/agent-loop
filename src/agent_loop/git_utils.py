@@ -2,7 +2,7 @@ import subprocess
 from pathlib import Path
 from typing import Optional
 
-DEFAULT_GITIGNORE_ENTRY = ".agent-loop/"
+DEFAULT_GITIGNORE_ENTRIES = (".agent-loop/", "worktrees/", "node_modules/")
 
 def run_git(args: list[str], cwd: Path) -> subprocess.CompletedProcess:
     return subprocess.run(
@@ -35,13 +35,15 @@ def ensure_default_gitignore(repo_path: Path) -> bool:
     gitignore_path = repo_path / ".gitignore"
     existing = gitignore_path.read_text() if gitignore_path.exists() else ""
     lines = existing.splitlines()
-    if DEFAULT_GITIGNORE_ENTRY in {line.strip() for line in lines}:
+    existing_entries = {line.strip() for line in lines}
+    missing_entries = [entry for entry in DEFAULT_GITIGNORE_ENTRIES if entry not in existing_entries]
+    if not missing_entries:
         return False
 
     prefix = existing
     if prefix and not prefix.endswith("\n"):
         prefix += "\n"
-    gitignore_path.write_text(prefix + DEFAULT_GITIGNORE_ENTRY + "\n")
+    gitignore_path.write_text(prefix + "\n".join(missing_entries) + "\n")
     return True
 
 def ensure_initial_commit(repo_path: Path) -> bool:

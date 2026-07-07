@@ -138,19 +138,21 @@ Planning detail should be sufficient for execution and verification without beco
 
 Risk is assigned to features and tasks, never to the entire plan. High-risk categories include architecture, security, authentication, payments, deployment, destructive operations, ambiguous product behavior, protected data, and unusually broad changes.
 
-Ordinary tasks begin on the normal implementation route. A task escalates when evidence shows it needs stronger reasoning.
+Ordinary tasks begin on the executor route profile. A task escalates to the
+executor-escalated route profile only after escalation review records an
+escalation hint.
 
 ## Role-Based Routing
 
 Routes are ordered configuration, not hard-coded provider preference.
 
-Default planning, assessment, review, integration-conflict, and high-risk route:
+Default planner, reviewer, spec-reviewer, escalation-reviewer, and escalated-executor route:
 
 1. Codex `gpt-5.5` with high reasoning.
 2. `agy` Claude Opus 4.6 Thinking.
 3. `agy` Gemini 3.1 Pro High.
 
-Default implementation route:
+Default executor and intake route:
 
 1. `agy` Gemini 3.1 Pro High.
 2. `agy` Claude Sonnet 4.6 Thinking.
@@ -282,7 +284,8 @@ The webhook URL is a secret and Slack may revoke URLs that are exposed publicly.
 
 Project configuration defines:
 
-- ordered routes by role
+- ordered routes by profile/personality (`intake`, `spec_reviewer`, `planner`,
+  `executor`, `executor_escalated`, `reviewer`, `escalation_reviewer`)
 - model and reasoning settings
 - maximum worker count, default `4`
 - workspace and network permissions

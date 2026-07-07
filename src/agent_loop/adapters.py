@@ -1,6 +1,7 @@
 import os
 import re
 import json
+import signal
 import subprocess
 import shutil
 from pathlib import Path
@@ -33,7 +34,8 @@ class AttemptResult:
         quota_exhausted: bool = False,
         auth_required: bool = False,
         transient_failure: bool = False,
-        unavailable: bool = False
+        unavailable: bool = False,
+        timed_out: bool = False,
     ):
         self.success = success
         self.exit_code = exit_code
@@ -45,6 +47,7 @@ class AttemptResult:
         self.auth_required = auth_required
         self.transient_failure = transient_failure
         self.unavailable = unavailable
+        self.timed_out = timed_out
 
 
 def redact_secrets(text: str) -> str:
@@ -63,6 +66,47 @@ def redact_secrets(text: str) -> str:
     for val in sorted(sensitive_values, key=len, reverse=True):
         redacted = redacted.replace(val, "[REDACTED]")
     return redacted
+
+
+def _run_provider_process(
+    cmd: List[str],
+    *,
+    stdin: Any,
+    stdout: Any,
+    stderr: Any,
+    timeout: float,
+    cwd: Path,
+    input: Optional[bytes] = None,
+) -> subprocess.CompletedProcess:
+    stdin_arg = subprocess.PIPE if input is not None else stdin
+    process = subprocess.Popen(
+        cmd,
+        stdin=stdin_arg,
+        stdout=stdout,
+        stderr=stderr,
+        cwd=cwd,
+        start_new_session=True,
+    )
+    try:
+        if input is not None:
+            process.communicate(input=input, timeout=timeout)
+        else:
+            process.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(process.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            process.wait()
+        raise
+    return subprocess.CompletedProcess(cmd, process.returncode)
 
 
 class BaseAdapter:
@@ -158,11 +202,26 @@ class CodexAdapter(BaseAdapter):
         stdout_file = attempt_logs_dir / "stdout.log"
         stderr_file = attempt_logs_dir / "stderr.log"
         events_file = attempt_logs_dir / "codex_events.jsonl"
+        codex_log_file = attempt_logs_dir / "codex.log"
+        logged_cmd = list(cmd)
+        if logged_cmd:
+            logged_cmd[-1] = "-" if use_stdin else "[prompt omitted]"
+        codex_log_file.write_text(
+            "\n".join([
+                "provider=codex",
+                f"model={model}",
+                f"cwd={workspace_path}",
+                f"timeout_seconds={timeout_seconds}",
+                "prompt_omitted=true",
+                "command=" + json.dumps(logged_cmd),
+                "",
+            ])
+        )
 
         try:
             # We redirect stdout/stderr to files to capture logs append-only
             with stdout_file.open("w") as out_f, stderr_file.open("w") as err_f:
-                process = subprocess.run(
+                process = _run_provider_process(
                     cmd,
                     input=prompt.encode("utf-8") if use_stdin else None,
                     stdin=subprocess.DEVNULL if not use_stdin else None,
@@ -251,6 +310,9 @@ class CodexAdapter(BaseAdapter):
                 unavailable = True
 
             success = (process.returncode == 0) and not quota_exhausted and not auth_required and not transient_failure and not unavailable
+            with codex_log_file.open("a") as log_f:
+                log_f.write(f"exit_code={process.returncode}\n")
+                log_f.write(f"success={str(success).lower()}\n")
 
             return AttemptResult(
                 success=success,
@@ -266,13 +328,17 @@ class CodexAdapter(BaseAdapter):
             )
 
         except subprocess.TimeoutExpired as te:
+            with codex_log_file.open("a") as log_f:
+                log_f.write(f"timed_out=true\n")
+                log_f.write(f"timeout_seconds={timeout_seconds}\n")
+                log_f.write("process_group_terminated=true\n")
             return AttemptResult(
                 success=False,
                 exit_code=-1,
                 output="",
                 error=f"Timeout expired after {timeout_seconds} seconds.",
                 quota_exhausted=False,
-                transient_failure=True
+                timed_out=True,
             )
         except Exception as ex:
             # Check if exception represents transient/network failure
@@ -367,7 +433,7 @@ class AgyAdapter(BaseAdapter):
         try:
             # Pass stdin=DEVNULL to ensure non-interactive execution avoids hangs!
             with stdout_file.open("w") as out_f, stderr_file.open("w") as err_f:
-                process = subprocess.run(
+                process = _run_provider_process(
                     cmd,
                     stdin=subprocess.DEVNULL,
                     stdout=out_f,
@@ -391,10 +457,12 @@ class AgyAdapter(BaseAdapter):
             # assistant output can discuss errors or timeouts without indicating
             # provider failure.
             combined_text = stderr_content
-            if agy_log_file.exists():
-                combined_text += "\n" + agy_log_file.read_text(errors="ignore")
-            if process.returncode != 0:
+            # If the process failed, OR it unexpectedly returned empty output, check the log file
+            # to figure out why. (agy sometimes exits 0 on silent failures).
+            if process.returncode != 0 or not stdout_content.strip():
                 combined_text += "\n" + stdout_content
+                if agy_log_file.exists():
+                    combined_text += "\n" + agy_log_file.read_text(errors="ignore")
 
             lowered_all = combined_text.lower()
             quota_exhausted = False
@@ -419,7 +487,7 @@ class AgyAdapter(BaseAdapter):
             if any(x in lowered_all for x in ["model not found", "model unavailable", "unsupported model", "invalid model", "does not exist", "404 not found", "model not supported"]):
                 unavailable = True
 
-            success = (process.returncode == 0) and not quota_exhausted and not auth_required and not transient_failure and not unavailable
+            success = (process.returncode == 0) and bool(stdout_content.strip()) and not quota_exhausted and not auth_required and not transient_failure and not unavailable
 
             return AttemptResult(
                 success=success,
@@ -441,7 +509,7 @@ class AgyAdapter(BaseAdapter):
                 output="",
                 error=f"Timeout expired after {timeout_seconds} seconds.",
                 quota_exhausted=False,
-                transient_failure=True
+                timed_out=True,
             )
         except Exception as ex:
             err_msg = str(ex).lower()

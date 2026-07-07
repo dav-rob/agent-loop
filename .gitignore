@@ -13,6 +13,8 @@ worktrees/
 __pycache__/
 *.pyc
 .pytest_cache/
+src/agent_loop.egg-info/
 .DS_Store
+tmp/
 
 uv.lock

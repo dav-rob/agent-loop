@@ -176,6 +176,47 @@ MIGRATIONS: List[str] = [
     ALTER TABLE test_migrations ADD COLUMN previous_behavior TEXT;
     ALTER TABLE test_migrations ADD COLUMN replacement_behavior TEXT;
     ALTER TABLE test_migrations ADD COLUMN commit_sha TEXT;
+    """,
+    # Version 5 migration: add structured task handover entries rendered to markdown
+    """
+    CREATE TABLE task_handover_entries (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        run_id INTEGER NOT NULL,
+        task_id INTEGER NOT NULL,
+        attempt_id INTEGER,
+        phase TEXT NOT NULL,
+        actor_route TEXT,
+        decision TEXT,
+        severity TEXT,
+        summary TEXT,
+        blocking_findings TEXT,
+        followups TEXT,
+        commit_sha TEXT,
+        verification_status TEXT,
+        evidence_paths TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY(run_id) REFERENCES runs(id) ON DELETE CASCADE,
+        FOREIGN KEY(task_id) REFERENCES tasks(id) ON DELETE CASCADE,
+        FOREIGN KEY(attempt_id) REFERENCES attempts(id) ON DELETE SET NULL
+    );
+    """,
+    # Version 6 migration: central lifecycle events rendered into progress views
+    """
+    CREATE TABLE lifecycle_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        run_id INTEGER NOT NULL,
+        task_id INTEGER,
+        attempt_id INTEGER,
+        event_type TEXT NOT NULL,
+        actor TEXT,
+        summary TEXT,
+        metadata TEXT,
+        evidence_paths TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY(run_id) REFERENCES runs(id) ON DELETE CASCADE,
+        FOREIGN KEY(task_id) REFERENCES tasks(id) ON DELETE SET NULL,
+        FOREIGN KEY(attempt_id) REFERENCES attempts(id) ON DELETE SET NULL
+    );
     """
 ]
 
@@ -224,4 +265,3 @@ def migrate(conn: sqlite3.Connection) -> None:
                     raise RuntimeError(f"Migration version {i} failed: {e}") from e
     finally:
         conn.isolation_level = old_isolation
-
