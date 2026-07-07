@@ -421,9 +421,11 @@ def test_cli_intake_and_approval(clean_workspace, capsys):
     assert "1) Yes (brainstorm implementation)" in captured.out
     assert "2) No (create a plan immediately)" in captured.out
     assert 'Started goal "Design a nice portal" in plan mode.' in captured.out
+    assert "Planning..." in captured.out
     assert f'Plan generated for goal "Design a nice portal" (see {clean_workspace / default_state_dir() / "plan.md"}).' in captured.out
     assert "Select Intake Mode:" not in captured.out
     assert "Started goal 1 in none mode" not in captured.out
+    assert "Planning run..." not in captured.out
     assert "Plan generated for goal 1" not in captured.out
 
 

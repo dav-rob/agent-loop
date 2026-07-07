@@ -374,7 +374,7 @@ def handle_start(args: argparse.Namespace, config: Config) -> None:
 
     # Instantiate Orchestrator and execute planning
     orch = Orchestrator(conn, config)
-    print("Planning run...")
+    print("Planning...")
     plan_success = orch.plan_run(run_id)
     if plan_success:
         run = run_repo.get(run_id)
