@@ -802,6 +802,134 @@ def test_parallel_workers_safe_concurrency(db_conn, tmp_path, monkeypatch):
     m2_start, m2_end = merge_times[1]
     assert max(m1_start, m2_start) >= min(m1_end, m2_end)
 
+
+def test_parallel_workers_do_not_serialize_shared_read_scope(db_conn, tmp_path, monkeypatch):
+    import time
+
+    monkeypatch.setattr("agent_loop.orchestrator.create_worktree", lambda repo, worktree, branch: Path(worktree).mkdir(parents=True, exist_ok=True))
+    monkeypatch.setattr("agent_loop.orchestrator.commit_changes", lambda worktree, message: "mock_sha_123")
+    monkeypatch.setattr("agent_loop.orchestrator.merge_branch", lambda repo, branch, target: (True, []))
+    monkeypatch.setattr("agent_loop.orchestrator.remove_worktree", lambda repo, worktree: None)
+
+    run_repo = RunRepository(db_conn)
+    feat_repo = FeatureRepository(db_conn)
+    task_repo = TaskRepository(db_conn)
+
+    run_id = run_repo.create("Parallel read-scope run", "autonomous")
+    run_repo.update_status(run_id, "planning")
+    run_repo.update_status(run_id, "running")
+    feat_id = feat_repo.create(run_id, "Feature 1", "low")
+
+    task_repo.create(
+        run_id,
+        feat_id,
+        "News refresh",
+        "implementation",
+        "medium",
+        scope={"writes": ["src/services/news.js"], "reads": ["src/db.js"]},
+    )
+    task_repo.create(
+        run_id,
+        feat_id,
+        "YouTube refresh",
+        "implementation",
+        "medium",
+        scope={"writes": ["src/services/youtube.js"], "reads": ["src/db.js"]},
+    )
+
+    config = Config({
+        "db_path": ":memory:",
+        "logs_dir": str(tmp_path / "logs"),
+        "max_workers": 2,
+        "retry_policy": {"max_attempts": 5, "escalation_threshold": 2},
+    })
+    orch = Orchestrator(db_conn, config, plan_path=tmp_path / "plan.md", progress_path=tmp_path / "progress.md")
+    task_execution_times = []
+
+    def mock_run_attempt(model, prompt, workspace_path, attempt_logs_dir, **kwargs):
+        start = time.time()
+        time.sleep(0.2)
+        end = time.time()
+        if "Agent Loop Reviewer" not in prompt:
+            task_execution_times.append((start, end))
+        return AttemptResult(success=True, exit_code=0, output='{"decision": "approved", "findings": "OK"}', error="")
+
+    with patch("agent_loop.routing.get_adapter") as mock_get_adapter:
+        mock_adapter = MagicMock()
+        mock_adapter.run_attempt.side_effect = mock_run_attempt
+        mock_get_adapter.return_value = mock_adapter
+
+        orch.run_loop(run_id)
+
+    assert len(task_execution_times) == 2
+    first_start, first_end = task_execution_times[0]
+    second_start, second_end = task_execution_times[1]
+    assert max(first_start, second_start) < min(first_end, second_end)
+
+
+def test_parallel_workers_serialize_overlapping_write_scope(db_conn, tmp_path, monkeypatch):
+    import time
+
+    monkeypatch.setattr("agent_loop.orchestrator.create_worktree", lambda repo, worktree, branch: Path(worktree).mkdir(parents=True, exist_ok=True))
+    monkeypatch.setattr("agent_loop.orchestrator.commit_changes", lambda worktree, message: "mock_sha_123")
+    monkeypatch.setattr("agent_loop.orchestrator.merge_branch", lambda repo, branch, target: (True, []))
+    monkeypatch.setattr("agent_loop.orchestrator.remove_worktree", lambda repo, worktree: None)
+
+    run_repo = RunRepository(db_conn)
+    feat_repo = FeatureRepository(db_conn)
+    task_repo = TaskRepository(db_conn)
+
+    run_id = run_repo.create("Serialized write-scope run", "autonomous")
+    run_repo.update_status(run_id, "planning")
+    run_repo.update_status(run_id, "running")
+    feat_id = feat_repo.create(run_id, "Feature 1", "low")
+
+    task_repo.create(
+        run_id,
+        feat_id,
+        "News DB changes",
+        "implementation",
+        "medium",
+        scope={"writes": ["src/services/news.js", "src/db.js"], "reads": []},
+    )
+    task_repo.create(
+        run_id,
+        feat_id,
+        "YouTube DB changes",
+        "implementation",
+        "medium",
+        scope={"writes": ["src/services/youtube.js", "src/db.js"], "reads": []},
+    )
+
+    config = Config({
+        "db_path": ":memory:",
+        "logs_dir": str(tmp_path / "logs"),
+        "max_workers": 2,
+        "retry_policy": {"max_attempts": 5, "escalation_threshold": 2},
+    })
+    orch = Orchestrator(db_conn, config, plan_path=tmp_path / "plan.md", progress_path=tmp_path / "progress.md")
+    task_execution_times = []
+
+    def mock_run_attempt(model, prompt, workspace_path, attempt_logs_dir, **kwargs):
+        start = time.time()
+        time.sleep(0.1)
+        end = time.time()
+        if "Agent Loop Reviewer" not in prompt:
+            task_execution_times.append((start, end))
+        return AttemptResult(success=True, exit_code=0, output='{"decision": "approved", "findings": "OK"}', error="")
+
+    with patch("agent_loop.routing.get_adapter") as mock_get_adapter:
+        mock_adapter = MagicMock()
+        mock_adapter.run_attempt.side_effect = mock_run_attempt
+        mock_get_adapter.return_value = mock_adapter
+
+        orch.run_loop(run_id)
+
+    assert len(task_execution_times) == 2
+    first_start, first_end = task_execution_times[0]
+    second_start, second_end = task_execution_times[1]
+    assert max(first_start, second_start) >= min(first_end, second_end)
+
 def test_interrupted_attempt_recovery(db_conn, tmp_path):
     config = Config()
     # Mock max_attempts = 3

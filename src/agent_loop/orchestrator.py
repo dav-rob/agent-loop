@@ -185,6 +185,24 @@ class Orchestrator:
 
         return "executor"
 
+    def task_write_scope(self, task: Dict[str, Any]) -> set[str]:
+        scope_data = task.get("scope") or {}
+        if isinstance(scope_data, str):
+            try:
+                scope_data = json.loads(scope_data)
+            except Exception:
+                scope_data = {}
+
+        if not isinstance(scope_data, dict):
+            return set()
+
+        if "writes" in scope_data:
+            writes = scope_data.get("writes") or []
+            return {path for path in writes if isinstance(path, str)}
+
+        files = scope_data.get("files") or []
+        return {path for path in files if isinstance(path, str)}
+
     def reset_provider_errors(self) -> None:
         """Resets transient provider states to available."""
         providers = self.provider_repo.list_all()
@@ -238,6 +256,8 @@ Rules:
 * Prefer fewer tasks.
 * Use planning-role tasks only for architecture/risk decomposition, integration/conflict work, or genuinely high-risk ambiguity.
 * Keep tasks scoped and independently verifiable.
+* For each task scope, set writes to files the task is expected to edit and reads to shared files it may inspect or depend on. Set files to the combined writes+reads list for compatibility.
+* Do not put shared helper files in writes unless the task should actually modify them; read-only overlaps should not serialize independent work.
 * required_verification must be an executable shell command, not prose. Good: "npm test", "python -m pytest", "npm install && npm test". Bad: "Run npm install and confirm it works".
 * If there is no safe non-interactive command for a task, set required_verification to an empty string.
 * Return ONLY schema-valid JSON matching the requested schema.
@@ -2168,39 +2188,25 @@ Only return the raw JSON object. Do not include markdown wrappers.
             max_workers = self.config.max_workers
             available_slots = max_workers - len(running_tasks)
             
-            # Parse running tasks' scopes to get currently active files
-            active_files = set()
+            # Only write scopes block parallel execution. Read-only overlaps are
+            # allowed and Git merge handles any real conflicts after execution.
+            active_write_files = set()
             for rt in running_tasks:
-                if rt.get("scope"):
-                    try:
-                        scope_data = json.loads(rt["scope"]) if isinstance(rt["scope"], str) else rt["scope"]
-                        if isinstance(scope_data, dict) and "files" in scope_data:
-                            for f in scope_data["files"]:
-                                active_files.add(f)
-                    except Exception:
-                        pass
+                active_write_files.update(self.task_write_scope(rt))
 
             # Filter ready tasks that don't conflict with active files or other scheduled tasks in this batch
             scheduled_tasks = []
-            scheduled_files = set()
+            scheduled_write_files = set()
             for rt in ready_tasks:
-                rt_files = set()
-                if rt.get("scope"):
-                    try:
-                        scope_data = json.loads(rt["scope"]) if isinstance(rt["scope"], str) else rt["scope"]
-                        if isinstance(scope_data, dict) and "files" in scope_data:
-                            for f in scope_data["files"]:
-                                rt_files.add(f)
-                    except Exception:
-                        pass
+                rt_write_files = self.task_write_scope(rt)
                 
                 # Check for overlap
-                if (rt_files & active_files) or (rt_files & scheduled_files):
+                if (rt_write_files & active_write_files) or (rt_write_files & scheduled_write_files):
                     # Conflict! Skip scheduling in this batch
                     continue
                 
                 scheduled_tasks.append(rt)
-                scheduled_files.update(rt_files)
+                scheduled_write_files.update(rt_write_files)
                 if len(scheduled_tasks) >= available_slots:
                     break
 
