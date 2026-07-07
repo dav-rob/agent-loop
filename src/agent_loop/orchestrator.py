@@ -93,7 +93,8 @@ def validate_dag(features: List[Dict[str, Any]], tasks: List[Dict[str, Any]]) ->
     return True
 
 
-def parse_review_response(output: str) -> Tuple[Optional[str], Optional[str]]:
+def parse_review_response(output: str, allowed_decisions: Optional[set[str]] = None) -> Tuple[Optional[str], Optional[str]]:
+    allowed_decisions = allowed_decisions or {"approved", "rejected", "follow_up", "assessment", "block"}
     cleaned_output = output.strip()
     if cleaned_output.startswith("```"):
         first_newline = cleaned_output.find("\n")
@@ -117,11 +118,12 @@ def parse_review_response(output: str) -> Tuple[Optional[str], Optional[str]]:
     if isinstance(data, dict) and "decision" in data and "findings" in data:
         dec_val = data["decision"]
         find_val = data["findings"]
-        if dec_val in {"approved", "rejected", "follow_up", "assessment", "block"} and isinstance(find_val, str):
+        if dec_val in allowed_decisions and isinstance(find_val, str):
             return dec_val, find_val
 
+    decision_pattern = "|".join(re.escape(decision) for decision in sorted(allowed_decisions, key=len, reverse=True))
     labelled = re.search(
-        r"\bdecision\s*:\s*(approved|rejected|follow_up|assessment|block)\b",
+        rf"\bdecision\s*:\s*({decision_pattern})\b",
         cleaned_output,
         re.IGNORECASE,
     )
@@ -200,6 +202,202 @@ class Orchestrator:
             return cleaned
         return cleaned[: max_chars - 3].rstrip() + "..."
 
+    def _read_text_tail(self, path: Path, max_chars: int = 2000) -> str:
+        try:
+            text = path.read_text(errors="replace")
+        except Exception:
+            return ""
+        if len(text) <= max_chars:
+            return text.strip()
+        return text[-max_chars:].strip()
+
+    def _shorten_log_text(self, text: str, max_chars: int = 280) -> str:
+        return self._compact_handover_text(text, "", max_chars=max_chars)
+
+    def _extract_timeout_log_facts(self, logs_dir: Path) -> List[str]:
+        facts: List[str] = []
+        seen = set()
+
+        def add_fact(fact: str) -> None:
+            cleaned = self._compact_handover_text(fact, "", max_chars=380)
+            if cleaned and cleaned not in seen:
+                seen.add(cleaned)
+                facts.append(cleaned)
+
+        for stdout_path in sorted(logs_dir.rglob("stdout.log"))[:6]:
+            text = self._read_text_tail(stdout_path, max_chars=12000)
+            if not text:
+                continue
+            parsed_any = False
+            for raw_line in text.splitlines()[-80:]:
+                raw_line = raw_line.strip()
+                if not raw_line:
+                    continue
+                try:
+                    event = json.loads(raw_line)
+                except Exception:
+                    continue
+                item = event.get("item") if isinstance(event, dict) else None
+                if not isinstance(item, dict):
+                    continue
+                item_type = item.get("type")
+                parsed_any = True
+                if item_type == "agent_message":
+                    message = item.get("text") or item.get("message")
+                    if message:
+                        add_fact(f"Agent progress: {message}")
+                elif item_type == "file_change":
+                    changes = item.get("changes") or []
+                    paths = []
+                    if isinstance(changes, list):
+                        for change in changes:
+                            if isinstance(change, dict) and change.get("path"):
+                                paths.append(str(change["path"]))
+                            elif isinstance(change, str):
+                                paths.append(change)
+                    if paths:
+                        add_fact(f"Files touched: {', '.join(paths[:8])}")
+                elif item_type == "command_execution":
+                    command = item.get("command") or item.get("cmd")
+                    exit_code = item.get("exit_code", item.get("status"))
+                    output = item.get("aggregated_output") or item.get("output") or item.get("stderr") or item.get("stdout")
+                    if command:
+                        fact = f"Command observed: {command}"
+                        if exit_code is not None:
+                            fact += f" (exit {exit_code})"
+                        if output:
+                            fact += f" -> {self._shorten_log_text(str(output))}"
+                        add_fact(fact)
+            if not parsed_any:
+                tail = self._shorten_log_text(text, max_chars=520)
+                if tail:
+                    add_fact(f"Log tail from {stdout_path.name}: {tail}")
+
+        for extra_name in ("last_message.txt", "agy.log", "codex.log", "stderr.log"):
+            for extra_path in sorted(logs_dir.rglob(extra_name))[:4]:
+                tail = self._shorten_log_text(self._read_text_tail(extra_path, max_chars=3000), max_chars=520)
+                if tail:
+                    add_fact(f"{extra_name} tail: {tail}")
+
+        return facts[:12]
+
+    def _attempt_verification_summary(self, run_id: int, task_id: int, attempt_id: int) -> Optional[str]:
+        test_runs = [
+            test_run
+            for test_run in self.test_run_repo.get_by_run(run_id)
+            if test_run.get("task_id") == task_id and test_run.get("attempt_id") == attempt_id
+        ]
+        if not test_runs:
+            return None
+        latest = test_runs[-1]
+        command = latest.get("command") or "verification"
+        status = latest.get("exit_status")
+        details = ""
+        output_path = latest.get("output_path")
+        if output_path:
+            try:
+                paths = json.loads(output_path)
+            except Exception:
+                paths = {}
+            if isinstance(paths, dict):
+                stderr = self._read_text_tail(Path(paths.get("stderr", "")), max_chars=1200) if paths.get("stderr") else ""
+                stdout = self._read_text_tail(Path(paths.get("stdout", "")), max_chars=1200) if paths.get("stdout") else ""
+                details = stderr or stdout
+        summary = f"Verification observed: {command} exited {status}."
+        if details:
+            summary += f" Output tail: {self._shorten_log_text(details, max_chars=420)}"
+        return summary
+
+    def _git_attempt_summary(self, worktree_dir: Path, start_sha: Optional[str]) -> Optional[str]:
+        if not worktree_dir.exists():
+            return None
+        try:
+            range_arg = f"{start_sha}..HEAD" if start_sha else "-5"
+            args = ["git", "log", "--oneline", "--reverse", range_arg] if start_sha else ["git", "log", "--oneline", "-5"]
+            res = subprocess.run(
+                args,
+                cwd=worktree_dir,
+                capture_output=True,
+                text=True,
+                stdin=subprocess.DEVNULL,
+                timeout=10,
+            )
+        except Exception:
+            return None
+        if res.returncode != 0 or not res.stdout.strip():
+            return None
+        lines = [line.strip() for line in res.stdout.splitlines() if line.strip()]
+        if not lines:
+            return None
+        return "Commits observed: " + "; ".join(lines[:6])
+
+    def _synthesize_timeout_handover(
+        self,
+        run_id: int,
+        task: Dict[str, Any],
+        attempt_id: int,
+        worktree_dir: Path,
+        logs_dir: Path,
+        patch_path: Optional[str],
+        result: AttemptResult,
+        start_sha: Optional[str],
+    ) -> str:
+        parts = [
+            "Timed out before the executor returned a final handover.",
+            f"Task: {task['name']}.",
+        ]
+        log_facts = self._extract_timeout_log_facts(logs_dir)
+        if log_facts:
+            parts.append("Observed partial work: " + " | ".join(log_facts))
+        git_summary = self._git_attempt_summary(worktree_dir, start_sha)
+        if git_summary:
+            parts.append(git_summary)
+        verification_summary = self._attempt_verification_summary(run_id, task["id"], attempt_id)
+        if verification_summary:
+            parts.append(verification_summary)
+        if patch_path:
+            patch_note = "No uncommitted patch was preserved." if patch_path == "CLEAN" else f"Preserved uncommitted patch: {patch_path}."
+            parts.append(patch_note)
+        if result.error:
+            parts.append(f"Timeout/error: {result.error}")
+        return self._compact_handover_text(" ".join(parts), "Timed out before the executor returned useful handover.", max_chars=2000)
+
+    def _previous_timeout_handover_context(self, run_id: int, task_id: int, max_entries: int = 2) -> str:
+        entries = [
+            entry
+            for entry in self.handover_repo.get_by_task(run_id, task_id)
+            if entry.get("phase") == "executor"
+            and entry.get("decision") in {"failed", "abandoned"}
+            and (
+                "timed out" in (entry.get("summary") or "").lower()
+                or "timeout" in (entry.get("blocking_findings") or "").lower()
+            )
+        ]
+        if not entries:
+            return ""
+
+        context_lines = ["Previous timed-out attempt handovers:"]
+        timeout_reviews = [
+            review
+            for review in self.review_repo.get_by_run(run_id)
+            if review.get("subject_type") == "timeout"
+        ]
+        reviews_by_attempt = {review["subject_id"]: review for review in timeout_reviews}
+
+        for entry in entries[-max_entries:]:
+            attempt_id = entry.get("attempt_id")
+            summary = self._compact_handover_text(entry.get("summary"), "No summary recorded.", max_chars=900)
+            blocking = self._compact_handover_text(entry.get("blocking_findings"), "", max_chars=500)
+            line = f"- Attempt {attempt_id}: {summary}"
+            if blocking:
+                line += f" Blocking/error: {blocking}"
+            review = reviews_by_attempt.get(attempt_id)
+            if review:
+                findings = self._compact_handover_text(review.get("findings"), "", max_chars=500)
+                line += f" Timeout review ({review.get('decision')}): {findings}"
+            context_lines.append(line)
+        return "\n".join(context_lines)
+
     def _record_executor_handover(
         self,
         run_id: int,
@@ -263,8 +461,8 @@ class Orchestrator:
         evidence_paths: List[str],
     ) -> None:
         blocking_findings = findings if decision in {"rejected", "block", "assessment"} else None
-        followups = findings if decision == "follow_up" else None
-        summary = findings if decision == "approved" else f"Reviewer decision: {decision}."
+        followups = findings if decision in {"follow_up", "retry_with_handoff", "abandon", "resume"} else None
+        summary = findings if decision in {"approved", "retry_with_handoff", "abandon", "resume"} else f"Reviewer decision: {decision}."
         self.handover_repo.create(
             run_id=run_id,
             task_id=task_id,
@@ -1155,6 +1353,7 @@ Rules:
 
         with self.db_lock:
             previous_rejection = self.review_repo.get_latest_rejection("task", task_id)
+            previous_timeout_context = self._previous_timeout_handover_context(run_id, task_id)
             goal_text = self.run_repo.get(run_id)['goal']
             
         if is_integration:
@@ -1177,6 +1376,8 @@ Scope: {json.dumps(task['scope'])}
 """
         if previous_rejection:
             prompt += f"\nPrevious attempt was rejected with the following findings:\n{previous_rejection}\n"
+        if previous_timeout_context:
+            prompt += f"\n{previous_timeout_context}\n"
 
         if profile == "executor_escalated":
             prompt += (
@@ -1615,6 +1816,28 @@ Scope: {json.dumps(task['scope'])}
                     )
                     self.notify(run_id, f"quota_alert:{provider}:{model}:unavailable", alert_msg)
                 else:
+                    record_result = result
+                    timeout_handover = None
+                    if result.timed_out:
+                        timeout_handover = self._synthesize_timeout_handover(
+                            run_id=run_id,
+                            task=task,
+                            attempt_id=attempt_id,
+                            worktree_dir=worktree_dir,
+                            logs_dir=logs_dir,
+                            patch_path=patch_path,
+                            result=result,
+                            start_sha=start_sha,
+                        )
+                        record_result = AttemptResult(
+                            success=False,
+                            exit_code=result.exit_code,
+                            output=timeout_handover,
+                            error=result.error,
+                            token_usage=result.token_usage,
+                            timed_out=True,
+                        )
+
                     with self.db_lock:
                         self.attempt_repo.update_outcome(attempt_id, "failed", patch_path=patch_path)
                         self._record_executor_handover(
@@ -1624,7 +1847,7 @@ Scope: {json.dumps(task['scope'])}
                             profile=profile,
                             provider=provider,
                             model=model,
-                            result=result,
+                            result=record_result,
                             outcome="failed",
                             verification_status=failure_verification_status,
                             logs_dir=logs_dir,
@@ -1633,6 +1856,20 @@ Scope: {json.dumps(task['scope'])}
                         failed_attempts = [a for a in attempts if a["outcome"] in ("failed", "abandoned")]
                         is_limit = len(failed_attempts) + 1 >= self.config.retry_policy["max_attempts"]
                         self._render_progress(run_id)
+
+                    timeout_review_decision = None
+                    if result.timed_out and timeout_handover:
+                        timeout_review_decision = self.run_timeout_review(run_id, task_id, attempt_id, timeout_handover)
+
+                    if timeout_review_decision == "block":
+                        with self.db_lock:
+                            self.task_repo.update_status(task_id, "blocked")
+                        self.notify(run_id, "blocked", f"Task '{task['name']}' was blocked after timeout review.")
+                        with self.git_lock:
+                            remove_worktree(Path.cwd(), worktree_dir)
+                        with self.db_lock:
+                            self._render_progress(run_id)
+                        return False
 
                     if is_limit:
                         esc_decision = self.run_task_escalation(run_id, task_id, len(failed_attempts) + 1, "Execution failed verification.")
@@ -1733,6 +1970,91 @@ Please evaluate if this task is experiencing a HARD BLOCKER (e.g. missing creden
 If it's a hard blocker that requires human operator intervention, return "block" with findings explaining why.
 If the executor just needs another try or a specific hint to fix its mistake, return "follow_up" with findings explaining the hint.'''
         return self.run_agent_review(run_id, "task_escalation", task_id, prompt)
+
+    def run_timeout_review(self, run_id: int, task_id: int, attempt_id: int, timeout_handover: str) -> str:
+        review_logs_dir = self.config.logs_dir / str(run_id) / "reviews" / f"timeout_{attempt_id}"
+        review_logs_dir.mkdir(parents=True, exist_ok=True)
+        evidence_paths = [
+            str(review_logs_dir / "stdout.log"),
+            str(review_logs_dir / "stderr.log"),
+        ]
+        provider = None
+        model = None
+        decision = "retry_with_handoff"
+        findings = "Executor timed out. Retry with the synthesized handover context."
+        try:
+            task = self.task_repo.get(task_id)
+            task_name = task["name"] if task else f"task {task_id}"
+            prompt = f"""
+You are the Agent Loop Timeout Reviewer.
+
+Task: {task_name}
+Attempt: {attempt_id}
+
+The executor timed out before returning a final structured handover. The orchestrator synthesized this handover from logs, commits, patches, and verification evidence:
+
+{timeout_handover}
+
+Decide what should happen next.
+- Use "retry_with_handoff" when the partial work contains useful context for the next executor attempt.
+- Use "abandon" when the partial work looks unhelpful but the task can still be retried from scratch.
+- Use "block" only when the evidence shows a real hard blocker requiring operator intervention.
+- Use "resume" only if the evidence clearly indicates an exact provider session can be resumed safely.
+
+Output a JSON response in the following format:
+{{
+  "decision": "retry_with_handoff",
+  "findings": "Explain the timeout, what the next attempt should preserve or avoid, and whether this is a hard blocker."
+}}
+The "decision" must be one of: "retry_with_handoff", "abandon", "block", "resume".
+Only return the raw JSON object. Do not include markdown wrappers.
+"""
+            routed_result = self._model_router().run(
+                profile="reviewer",
+                prompt=prompt,
+                workspace_path=Path.cwd(),
+                logs_root=review_logs_dir,
+            )
+            routed_inner = getattr(routed_result, "result", None)
+            result = routed_inner if isinstance(routed_inner, AttemptResult) else routed_result
+            provider = routed_result.provider
+            model = routed_result.model
+            if result.success:
+                parsed_decision, parsed_findings = parse_review_response(
+                    result.output,
+                    allowed_decisions={"retry_with_handoff", "abandon", "block", "resume"},
+                )
+                if parsed_decision and parsed_findings:
+                    decision = parsed_decision
+                    findings = parsed_findings
+                else:
+                    findings = f"Failed to parse timeout review JSON output. Raw output: {result.output}"
+            else:
+                findings = f"Timeout review prompt failed: {result.error}"
+        except Exception as exc:
+            findings = f"Timeout review crashed with exception: {exc}"
+
+        reviewer_route = f"{provider}:{model}" if provider and model else None
+        self.review_repo.create(
+            run_id=run_id,
+            subject_type="timeout",
+            subject_id=attempt_id,
+            decision=decision,
+            reviewer_route=reviewer_route,
+            findings=findings,
+            evidence_paths=evidence_paths,
+        )
+        self._record_reviewer_handover(
+            run_id=run_id,
+            task_id=task_id,
+            attempt_id=attempt_id,
+            reviewer_route=reviewer_route,
+            decision=decision,
+            findings=findings,
+            evidence_paths=evidence_paths,
+        )
+        self._render_progress(run_id)
+        return decision
 
     def run_agent_review(self, run_id: int, subject_type: str, subject_id: int, review_prompt: str, attempt_id: Optional[int] = None) -> str:
         review_logs_dir = self.config.logs_dir / str(run_id) / "reviews" / f"{subject_type}_{subject_id}"

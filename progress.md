@@ -143,6 +143,13 @@ the Codex child process continued running. Route fallback now stops on
 execution timeouts, provider commands run in killable process groups, Codex
 writes an explicit `codex.log`, and labelled non-JSON reviewer decisions are
 parsed instead of becoming bogus rejected reviews.
+Live monitoring then showed timed-out Codex executor attempts doing useful work
+without returning a final handover, so later retries lost the partial context.
+Timeout failures now synthesize an executor handover from provider logs,
+command/file-change events, verification output, commits, and preserved
+patches; a timeout review records whether the next attempt should retry with
+that handover, abandon the partial context, resume, or block. Retry prompts now
+include previous timeout handovers and timeout-review findings.
 
 ## Next step
 
@@ -180,6 +187,7 @@ No further executor handoff is required for this request.
 - Misclassified planning-task routing fix: new regressions first failed because a file-scoped `planning` task stayed on the `planner` profile and bad plan output was stored unchanged; after the fix, focused regressions passed with 2 tests in 0.17s, the broader config/routing/orchestrator slice passed with 45 tests in 7.24s, and final full-suite verification passed with 150 tests in 17.89s.
 - Progress view active-work fix: new view regressions first failed because a running task with no attempt row still rendered `No active task attempts` and pending provider/model metadata printed as blank values; after the fix, focused view regressions passed with 2 tests in 0.06s, the view/execution slice passed with 5 tests in 0.36s, and final full-suite verification passed with 152 tests in 22.28s.
 - Codex timeout/fallback cleanup: new regressions first failed because timed-out execution still fell through to the Opus route, Codex lacked a provider-specific log file, and labelled `Decision: Approved` reviewer output was stored as rejected. After the fix, focused regressions passed with 4 tests in 0.58s, the affected adapter/router/orchestrator slice passed with 56 tests in 6.92s, and the local full suite passed with 155 tests in 14.19s with the explicit real Codex smoke test deselected.
+- Timeout handover/review lifecycle: new regressions first failed because no timeout review hook existed and retry prompts omitted previous timeout handovers. After the fix, focused task-handover/review/router regressions passed with 7 tests in 0.33s, and final full-suite verification passed with 161 tests in 29.13s.
 - Planner schema/recovery fix: `tests/test_adapters.py::test_plan_schema_is_strict_for_codex_structured_output` passed in 0.02s; `tests/test_cli.py::test_cli_resume tests/test_cli.py::test_cli_resume_replans_blocked_goal_without_features` passed in 0.26s; live `codex exec --output-schema` smoke accepted the schema and returned valid plan JSON; `agent-loop resume 1` in `test-loop` regenerated a plan and moved Goal ID 1 to `awaiting_plan_approval`; full suite passed with 87 tests in 5.83s.
 - Interactive multiline intake fix: `tests/test_cli.py::test_cli_start_captures_pasted_multiline_goal` passed in 0.27s; `tests/test_cli.py` passed with 8 tests in 0.38s; full suite passed with 85 tests in 5.84s.
 - Goal terminology update: `tests/test_cli.py` passed in 0.30s; CLI help verified for goal wording.

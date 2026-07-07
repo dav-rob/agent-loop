@@ -454,7 +454,7 @@ class ReviewRepository:
         self.conn = conn
 
     def create(self, run_id: int, subject_type: str, subject_id: int, decision: str, reviewer_route: Optional[str] = None, findings: Optional[str] = None, evidence_paths: Optional[List[str]] = None) -> int:
-        if decision not in {"approved", "rejected", "follow_up", "assessment", "block"}:
+        if decision not in {"approved", "rejected", "follow_up", "assessment", "block", "resume", "retry_with_handoff", "abandon"}:
             raise ValueError(f"Invalid review decision: {decision}")
         ev_str = json.dumps(evidence_paths) if evidence_paths else None
         cursor = self.conn.cursor()
