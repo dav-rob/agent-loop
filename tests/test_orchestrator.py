@@ -202,6 +202,52 @@ def test_plan_run_drops_prose_required_verification(db_conn, tmp_path):
     assert tasks[0]["required_verification"] == ""
 
 
+def test_plan_run_normalizes_file_scoped_planning_task_to_implementation(db_conn, tmp_path):
+    run_repo = RunRepository(db_conn)
+    run_id = run_repo.create("Build a local dashboard", "none")
+    config = Config({"db_path": ":memory:", "logs_dir": str(tmp_path / "logs")})
+    plan_json = {
+        "objective": "Build a local dashboard",
+        "decisions": [],
+        "features": [
+            {"name": "App", "risk": "medium", "acceptance_criteria": "Starts locally", "dependencies": []}
+        ],
+        "tasks": [
+            {
+                "name": "Define app skeleton, data model, and scheduler boundaries",
+                "feature_name": "App",
+                "role": "planning",
+                "risk": "medium",
+                "scope": {
+                    "files": ["package.json", "src/**", "server/**", "app/**", "README.md"],
+                    "writes": [],
+                    "reads": ["package.json", "src/**", "server/**", "app/**", "README.md"],
+                },
+                "dependencies": [],
+                "required_verification": "test -f package.json",
+            }
+        ],
+    }
+    routed = MagicMock()
+    routed.success = True
+    routed.output = json.dumps(plan_json)
+    routed.error = ""
+
+    orch = Orchestrator(db_conn, config, plan_path=tmp_path / "plan.md", progress_path=tmp_path / "progress.md")
+
+    with patch("agent_loop.orchestrator.ModelRouter") as mock_router_cls:
+        mock_router = MagicMock()
+        mock_router.run.return_value = routed
+        mock_router_cls.return_value = mock_router
+
+        assert orch.plan_run(run_id) is True
+
+    tasks = TaskRepository(db_conn).get_by_run(run_id)
+    assert tasks[0]["role"] == "implementation"
+    assert tasks[0]["scope"]["writes"] == ["package.json", "src/**", "server/**", "app/**", "README.md"]
+    assert tasks[0]["scope"]["reads"] == []
+
+
 def test_review_uses_router_reviewer_profile(db_conn, tmp_path):
     run_repo = RunRepository(db_conn)
     run_id = run_repo.create("Implement login page", "none")
@@ -293,6 +339,28 @@ def test_execution_profile_uses_planner_for_planning_tasks(db_conn, tmp_path):
     task = {"role": "planning", "risk": "high", "scope": {"files": []}}
 
     assert orch.execution_profile_for_task(task, []) == "planner"
+
+
+def test_execution_profile_routes_file_scoped_planning_tasks_to_executor(db_conn, tmp_path):
+    config = Config({
+        "db_path": ":memory:",
+        "logs_dir": str(tmp_path / "logs"),
+        "retry_policy": {"max_attempts": 5, "escalation_threshold": 2},
+    })
+    orch = Orchestrator(db_conn, config, plan_path=tmp_path / "plan.md", progress_path=tmp_path / "progress.md")
+    task = {
+        "role": "planning",
+        "risk": "medium",
+        "required_verification": "test -f package.json",
+        "scope": {
+            "files": ["package.json", "src/**", "server/**", "app/**", "README.md"],
+            "writes": [],
+            "reads": ["package.json", "src/**", "server/**", "app/**", "README.md"],
+        },
+    }
+
+    assert orch.execution_profile_for_task(task, [{"outcome": "completed"}], rejected_review_count=1) == "executor"
+    assert orch.execution_profile_for_task(task, [{"outcome": "completed"}], rejected_review_count=2) == "executor_escalated"
 
 
 def test_task_execution_uses_router_executor_profile_and_records_selected_route(db_conn, tmp_path, monkeypatch):

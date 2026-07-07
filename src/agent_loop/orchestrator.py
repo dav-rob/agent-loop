@@ -7,7 +7,7 @@ import sqlite3
 import subprocess
 import threading
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from agent_loop.database import get_connection
@@ -160,19 +160,57 @@ class Orchestrator:
         )
         return int(cursor.fetchone()[0])
 
-    def execution_profile_for_task(self, task: Dict[str, Any], attempts: List[Dict[str, Any]], rejected_review_count: int = 0) -> str:
-        if task.get("role") == "planning":
-            return "planner"
-
+    def _task_scope_data(self, task: Dict[str, Any]) -> Dict[str, Any]:
         scope_data = task.get("scope") or {}
         if isinstance(scope_data, str):
             try:
                 scope_data = json.loads(scope_data)
             except Exception:
                 scope_data = {}
+        return scope_data if isinstance(scope_data, dict) else {}
 
-        if isinstance(scope_data, dict) and scope_data.get("escalation_hint"):
+    def _string_paths(self, value: Any) -> List[str]:
+        if not isinstance(value, list):
+            return []
+        return [path for path in value if isinstance(path, str) and path]
+
+    def _planning_task_has_implementation_work(self, task: Dict[str, Any], scope_data: Optional[Dict[str, Any]] = None) -> bool:
+        if task.get("role") != "planning":
+            return False
+        scope_data = scope_data if scope_data is not None else self._task_scope_data(task)
+        writes = self._string_paths(scope_data.get("writes"))
+        files = self._string_paths(scope_data.get("files"))
+        if writes:
+            return True
+        return bool(files and task.get("required_verification"))
+
+    def _normalize_planned_task(self, task: Dict[str, Any]) -> Tuple[Dict[str, Any], str]:
+        normalized = dict(task)
+        verification = executable_verification_command(task.get("required_verification"))
+        normalized["required_verification"] = verification
+
+        scope_data = self._task_scope_data(normalized)
+        if self._planning_task_has_implementation_work(normalized, scope_data):
+            normalized["role"] = "implementation"
+            if not self._string_paths(scope_data.get("writes")):
+                files = self._string_paths(scope_data.get("files"))
+                if files:
+                    scope_data = dict(scope_data)
+                    scope_data["writes"] = files
+                    file_set = set(files)
+                    scope_data["reads"] = [path for path in self._string_paths(scope_data.get("reads")) if path not in file_set]
+                    normalized["scope"] = scope_data
+
+        return normalized, verification
+
+    def execution_profile_for_task(self, task: Dict[str, Any], attempts: List[Dict[str, Any]], rejected_review_count: int = 0) -> str:
+        scope_data = self._task_scope_data(task)
+
+        if scope_data.get("escalation_hint"):
             return "executor_escalated"
+
+        if task.get("role") == "planning" and not self._planning_task_has_implementation_work(task, scope_data):
+            return "planner"
 
         escalation_threshold = int(self.config.retry_policy.get("escalation_threshold", 2))
         failed_attempt_count = sum(
@@ -186,15 +224,7 @@ class Orchestrator:
         return "executor"
 
     def task_write_scope(self, task: Dict[str, Any]) -> set[str]:
-        scope_data = task.get("scope") or {}
-        if isinstance(scope_data, str):
-            try:
-                scope_data = json.loads(scope_data)
-            except Exception:
-                scope_data = {}
-
-        if not isinstance(scope_data, dict):
-            return set()
+        scope_data = self._task_scope_data(task)
 
         if "writes" in scope_data:
             writes = scope_data.get("writes") or []
@@ -255,6 +285,7 @@ Rules:
 * Do not create a prose spec.
 * Prefer fewer tasks.
 * Use planning-role tasks only for architecture/risk decomposition, integration/conflict work, or genuinely high-risk ambiguity.
+* Any task that creates or edits project files, scaffolds an app, implements boundaries, or has an executable verification command must use role "implementation", not "planning".
 * Keep tasks scoped and independently verifiable.
 * For each task scope, set writes to files the task is expected to edit and reads to shared files it may inspect or depend on. Set files to the combined writes+reads list for compatibility.
 * Do not put shared helper files in writes unless the task should actually modify them; read-only overlaps should not serialize independent work.
@@ -306,15 +337,16 @@ Rules:
                 feature_ids[feat["name"]] = f_id
 
             for task in tasks:
+                normalized_task, verification = self._normalize_planned_task(task)
                 self.task_repo.create(
                     run_id=run_id,
-                    feature_id=feature_ids[task["feature_name"]],
-                    name=task["name"],
-                    role=task["role"],
-                    risk=task["risk"],
-                    scope=task.get("scope"),
-                    dependencies=task.get("dependencies", []),
-                    required_verification=executable_verification_command(task.get("required_verification"))
+                    feature_id=feature_ids[normalized_task["feature_name"]],
+                    name=normalized_task["name"],
+                    role=normalized_task["role"],
+                    risk=normalized_task["risk"],
+                    scope=normalized_task.get("scope"),
+                    dependencies=normalized_task.get("dependencies", []),
+                    required_verification=verification
                 )
 
             if run["intake_mode"] in {"autonomous", "non_interactive"}:

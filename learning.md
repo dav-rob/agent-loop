@@ -43,6 +43,7 @@ Use this file to record learnings, so that agents do not have to repeat work alr
 - Interactive start copy should describe the user's decision in plain language: ask whether to brainstorm implementation, not whether to choose a `spec` or `none` intake mode. Start confirmations and plan approval messages should identify the goal with a short quoted description, reserving numeric IDs for explicit commands/status contexts. Display `none` intake as `plan mode` in user-facing confirmations.
 - Executor escalation is threshold-based, not only max-attempt based. With the default retry policy, two failed/abandoned executions or two rejected task reviews cause the next implementation attempt to use `executor_escalated`; the default max attempt limit is five so escalated attempts get room to repair before final escalation/blocking.
 - Task scheduling conflicts should be based on write scope, not read scope. New planner scopes include `writes` and `reads`; legacy `files` remains a fallback write scope for older plans. Shared helper files should be `reads` unless a task is expected to edit them.
+- Planner role classification controls model routing. Tasks that create/edit files, scaffold apps, implement boundaries, or have executable verification commands must be `implementation` tasks so they use the Gemini-first executor route; `planning` tasks are reserved for genuine architecture/risk decomposition with no implementation file work.
 
 ## Useful commands
 
