@@ -101,6 +101,10 @@ contract. Prose verification strings are dropped during planning and skipped
 defensively at runtime so they cannot be executed as commands like `Run`.
 Bootstrap `.gitignore` also ignores `node_modules/` to prevent dependency
 directories from being staged by Node-based target attempts.
+Interactive intake option 2 now robustly maps to `none` even when the user
+enters a copied menu label or types the choice quickly after the goal prompt,
+and the brainstorming summary action now says `create plan` instead of
+`draft spec`.
 
 ## Next step
 
@@ -130,6 +134,7 @@ No further executor handoff is required for this request.
 - Intake model fallback: `tests/test_intake.py tests/test_adapters.py` passed with 21 tests in 4.11s. Live brainstorm smoke from `test-loop-intake-revamp` fell back after `agy` auth-required diagnostics and produced a compact spec instead of the auto-draft failure.
 - Visible task worktrees: focused config/git/CLI/orchestrator tests passed with 17 tests in 3.62s; full suite passed with 137 tests in 20.35s.
 - Verification command contract: new regressions for prose verification planning/runtime handling and `node_modules/` ignore passed; full suite passed with 139 tests in 17.78s.
+- Intake none-mode and summary-copy fix: targeted CLI/intake regressions passed with 3 tests in 0.88s; `tests/test_cli.py tests/test_intake.py` passed with 28 tests in 3.92s; full suite passed with 141 tests in 21.57s.
 - Planner schema/recovery fix: `tests/test_adapters.py::test_plan_schema_is_strict_for_codex_structured_output` passed in 0.02s; `tests/test_cli.py::test_cli_resume tests/test_cli.py::test_cli_resume_replans_blocked_goal_without_features` passed in 0.26s; live `codex exec --output-schema` smoke accepted the schema and returned valid plan JSON; `agent-loop resume 1` in `test-loop` regenerated a plan and moved Goal ID 1 to `awaiting_plan_approval`; full suite passed with 87 tests in 5.83s.
 - Interactive multiline intake fix: `tests/test_cli.py::test_cli_start_captures_pasted_multiline_goal` passed in 0.27s; `tests/test_cli.py` passed with 8 tests in 0.38s; full suite passed with 85 tests in 5.84s.
 - Goal terminology update: `tests/test_cli.py` passed in 0.30s; CLI help verified for goal wording.

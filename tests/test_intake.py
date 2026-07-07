@@ -159,7 +159,7 @@ class TestIntake(unittest.TestCase):
             "A working CLI",
             "Run pytest",
             "skip",
-            "draft",
+            "plan",
         ]
 
         with patch("builtins.print") as mock_print:
@@ -168,7 +168,7 @@ class TestIntake(unittest.TestCase):
         printed = "\n".join(str(call.args[0]) for call in mock_print.call_args_list if call.args)
         self.assertIn("Current understanding:", printed)
         self.assertIn("Brainstorming summary:", printed)
-        self.assertEqual(mock_input.call_args_list[-1].args[0], "Continue brainstorming or draft spec? (continue/draft/edit): ")
+        self.assertEqual(mock_input.call_args_list[-1].args[0], "Continue brainstorming or create plan? (continue/plan/edit): ")
         self.assertEqual(mock_router.run.call_count, 4)
         self.assertIn("## Outcome", spec)
 

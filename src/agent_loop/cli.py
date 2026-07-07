@@ -3,6 +3,7 @@ import json
 import select
 import shutil
 import sys
+from collections import deque
 from pathlib import Path
 import sqlite3
 from typing import Any, Dict, List, Optional, Tuple
@@ -30,6 +31,7 @@ def describe_goal(goal: str, max_length: int = 70) -> str:
     return one_line[: max_length - 3].rstrip() + "..."
 
 TERMINAL_RUN_STATUSES = {"complete", "failed", "cancelled"}
+_INPUT_BUFFER = deque()
 
 def _read_ready_tty_lines(stdin: Any, pause_seconds: float = 0.05) -> List[str]:
     try:
@@ -56,7 +58,28 @@ def _read_ready_tty_lines(stdin: Any, pause_seconds: float = 0.05) -> List[str]:
 def _read_goal_input(prompt: str) -> str:
     first_line = input(prompt)
     pasted_lines = _read_ready_tty_lines(sys.stdin)
-    return "\n".join([first_line, *pasted_lines]).strip()
+    goal_lines = [first_line]
+    for line in pasted_lines:
+        if line.strip() in {"1", "2"}:
+            _INPUT_BUFFER.append(line.strip())
+        else:
+            goal_lines.append(line)
+    return "\n".join(goal_lines).strip()
+
+def _prompt_input(prompt: str) -> str:
+    if _INPUT_BUFFER:
+        value = _INPUT_BUFFER.popleft()
+        print(f"{prompt}{value}")
+        return value
+    return input(prompt)
+
+def _normalize_intake_choice(choice: str) -> str:
+    normalized = (choice or "").strip().lower()
+    if normalized.startswith("2"):
+        return "none"
+    if normalized.startswith("1"):
+        return "spec"
+    return "spec"
 
 def _bundled_skills_dir() -> Path:
     return Path(__file__).resolve().parents[2] / "skills"
@@ -298,11 +321,7 @@ def handle_start(args: argparse.Namespace, config: Config) -> None:
             print("\nSelect Intake Mode:")
             print("1) Spec (Discuss and define requirements first)")
             print("2) None (Start planning immediately)")
-            choice = input("Choice [1-2]: ").strip()
-            if choice == "2":
-                intake_mode = "none"
-            else:
-                intake_mode = "spec"
+            intake_mode = _normalize_intake_choice(_prompt_input("Choice [1-2]: "))
                 
         if args.ui:
             force_ui = True

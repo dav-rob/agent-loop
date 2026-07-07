@@ -417,6 +417,90 @@ def test_cli_intake_and_approval(clean_workspace):
     conn.close()
 
 
+def test_cli_start_none_choice_with_label_does_not_run_spec_intake(clean_workspace):
+    test_args = ["agent-loop", "start", "--goal", "Build a dashboard"]
+    user_inputs = [
+        "2) None (Start planning immediately)",
+        "y",
+    ]
+    input_generator = (val for val in user_inputs)
+
+    def mock_plan_run(run_id):
+        db_path = default_db_path()
+        conn = get_connection(db_path)
+        RunRepository(conn).update_status(run_id, "planning")
+        RunRepository(conn).update_status(run_id, "awaiting_plan_approval")
+        conn.close()
+        return True
+
+    with patch("builtins.input", side_effect=lambda *args, **kwargs: next(input_generator)), \
+         patch("agent_loop.cli.Orchestrator") as mock_orch_cls, \
+         patch("agent_loop.intake.run_spec_intake") as mock_spec:
+        mock_orch = MagicMock()
+        mock_orch.plan_run.side_effect = mock_plan_run
+        mock_orch_cls.return_value = mock_orch
+
+        with patch.object(sys, "argv", test_args):
+            main()
+
+    mock_spec.assert_not_called()
+    conn = get_connection(default_db_path())
+    run = RunRepository(conn).list_all()[0]
+    conn.close()
+    assert run["intake_mode"] == "none"
+    assert run["goal"] == "Build a dashboard"
+
+
+def test_cli_start_preserves_fast_none_choice_after_goal(clean_workspace):
+    class ScriptedTTY:
+        def __init__(self):
+            self.lines = ["Build a dashboard\n", "2\n", "y\n"]
+
+        def readline(self):
+            if self.lines:
+                return self.lines.pop(0)
+            return ""
+
+        def isatty(self):
+            return True
+
+        def fileno(self):
+            return 0
+
+    fake_stdin = ScriptedTTY()
+
+    def fake_select(readable, _writable, _exceptional, _timeout=0):
+        if fake_stdin.lines and fake_stdin.lines[0].strip() == "2":
+            return readable, [], []
+        return [], [], []
+
+    def mock_plan_run(run_id):
+        db_path = default_db_path()
+        conn = get_connection(db_path)
+        RunRepository(conn).update_status(run_id, "planning")
+        RunRepository(conn).update_status(run_id, "awaiting_plan_approval")
+        conn.close()
+        return True
+
+    with patch.object(sys, "stdin", fake_stdin), \
+         patch("select.select", side_effect=fake_select), \
+         patch("agent_loop.cli.Orchestrator") as mock_orch_cls, \
+         patch("agent_loop.intake.run_spec_intake") as mock_spec:
+        mock_orch = MagicMock()
+        mock_orch.plan_run.side_effect = mock_plan_run
+        mock_orch_cls.return_value = mock_orch
+
+        with patch.object(sys, "argv", ["agent-loop", "start"]):
+            main()
+
+    mock_spec.assert_not_called()
+    conn = get_connection(default_db_path())
+    run = RunRepository(conn).list_all()[0]
+    conn.close()
+    assert run["intake_mode"] == "none"
+    assert run["goal"] == "Build a dashboard"
+
+
 def test_cli_start_spec_collects_model_question_and_saves_spec(clean_workspace):
     user_inputs = [
         "1",

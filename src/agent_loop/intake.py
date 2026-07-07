@@ -107,14 +107,14 @@ def _ask_after_summary(goal: str, transcript: str, current_understanding: str) -
     print("\nBrainstorming summary:")
     print(_brainstorm_summary(goal, transcript, current_understanding))
     while True:
-        choice = input("Continue brainstorming or draft spec? (continue/draft/edit): ").strip().lower()
-        if choice in {"", "draft", "d", "yes", "y"}:
+        choice = input("Continue brainstorming or create plan? (continue/plan/edit): ").strip().lower()
+        if choice in {"", "plan", "p", "draft", "d", "yes", "y"}:
             return "draft"
         if choice in {"continue", "c", "no", "n"}:
             return "continue"
         if choice in {"edit", "e"}:
             return "edit"
-        print("Please enter 'continue', 'draft', or 'edit'.")
+        print("Please enter 'continue', 'plan', or 'edit'.")
 
 
 def run_brainstorm_discussion(goal: str, config: Config) -> str:
