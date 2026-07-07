@@ -5,7 +5,7 @@ import tomllib
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 import pytest
-from agent_loop.cli import main, describe_goal
+from agent_loop.cli import main, describe_goal, _normalize_intake_choice
 from agent_loop.config import Config
 from agent_loop.database import get_connection, migrate
 from agent_loop.repositories import RunRepository, FeatureRepository, TaskRepository, AttemptRepository
@@ -374,7 +374,7 @@ def test_cli_resume_explains_awaiting_plan_approval(clean_workspace, capsys):
     assert "agent-loop approve 1" in captured.out
 
 
-def test_cli_intake_and_approval(clean_workspace):
+def test_cli_intake_and_approval(clean_workspace, capsys):
     # Test interactive wizard with "none" intake and plan approval
     test_args = ["agent-loop", "start"]
 
@@ -416,6 +416,16 @@ def test_cli_intake_and_approval(clean_workspace):
     assert runs[0]["status"] == "running" # Transitioned by 'y' approval
     conn.close()
 
+    captured = capsys.readouterr()
+    assert "Do you want to brainstorm the implementation:" in captured.out
+    assert "1) Yes (brainstorm implementation)" in captured.out
+    assert "2) No (create a plan immediately)" in captured.out
+    assert 'Started goal "Design a nice portal" in plan mode.' in captured.out
+    assert f'Plan generated for goal "Design a nice portal" (see {clean_workspace / default_state_dir() / "plan.md"}).' in captured.out
+    assert "Select Intake Mode:" not in captured.out
+    assert "Started goal 1 in none mode" not in captured.out
+    assert "Plan generated for goal 1" not in captured.out
+
 
 def test_cli_start_none_choice_with_label_does_not_run_spec_intake(clean_workspace):
     test_args = ["agent-loop", "start", "--goal", "Build a dashboard"]
@@ -449,6 +459,45 @@ def test_cli_start_none_choice_with_label_does_not_run_spec_intake(clean_workspa
     conn.close()
     assert run["intake_mode"] == "none"
     assert run["goal"] == "Build a dashboard"
+
+
+def test_normalize_intake_choice_accepts_prompt_echo_and_terminal_sequences():
+    assert _normalize_intake_choice("Choice [1-2]: 2") == "none"
+    assert _normalize_intake_choice("\x1b[200~2\x1b[201~") == "none"
+    assert _normalize_intake_choice("Choice [1-2]: 1") == "spec"
+
+
+def test_cli_start_prompt_echo_choice_does_not_run_spec_intake(clean_workspace):
+    test_args = ["agent-loop", "start", "--goal", "Build a dashboard"]
+    user_inputs = [
+        "Choice [1-2]: 2",
+        "y",
+    ]
+    input_generator = (val for val in user_inputs)
+
+    def mock_plan_run(run_id):
+        db_path = default_db_path()
+        conn = get_connection(db_path)
+        RunRepository(conn).update_status(run_id, "planning")
+        RunRepository(conn).update_status(run_id, "awaiting_plan_approval")
+        conn.close()
+        return True
+
+    with patch("builtins.input", side_effect=lambda *args, **kwargs: next(input_generator)), \
+         patch("agent_loop.cli.Orchestrator") as mock_orch_cls, \
+         patch("agent_loop.intake.run_spec_intake") as mock_spec:
+        mock_orch = MagicMock()
+        mock_orch.plan_run.side_effect = mock_plan_run
+        mock_orch_cls.return_value = mock_orch
+
+        with patch.object(sys, "argv", test_args):
+            main()
+
+    mock_spec.assert_not_called()
+    conn = get_connection(default_db_path())
+    run = RunRepository(conn).list_all()[0]
+    conn.close()
+    assert run["intake_mode"] == "none"
 
 
 def test_cli_start_preserves_fast_none_choice_after_goal(clean_workspace):

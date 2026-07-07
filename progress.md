@@ -105,6 +105,15 @@ Interactive intake option 2 now robustly maps to `none` even when the user
 enters a copied menu label or types the choice quickly after the goal prompt,
 and the brainstorming summary action now says `create plan` instead of
 `draft spec`.
+Interactive intake option 2 also tolerates echoed prompts and terminal control
+sequences around the choice, so input like `Choice [1-2]: 2` or bracketed-paste
+wrapped `2` still bypasses spec intake and starts planning.
+The interactive start prompt now asks whether to brainstorm implementation
+rather than exposing internal `spec`/`none` intake labels, and the generated
+plan message names the goal by a short quoted description instead of showing
+the internal numeric ID in that sentence.
+The start confirmation now also uses the short quoted goal description and
+user-facing mode names, so `none` intake is announced as `plan mode`.
 Live monitoring of `test-loop-intake-revamp4` showed repeated task-review
 rejections still using the normal executor route (`agy` Gemini 3.1 Pro High)
 instead of the configured `executor_escalated` route. Execution routing now
@@ -148,6 +157,8 @@ No further executor handoff is required for this request.
 - Intake none-mode and summary-copy fix: targeted CLI/intake regressions passed with 3 tests in 0.88s; `tests/test_cli.py tests/test_intake.py` passed with 28 tests in 3.92s; full suite passed with 141 tests in 21.57s.
 - Executor escalation threshold fix: new regressions first failed because `execution_profile_for_task` ignored failed attempts/rejected reviews and the live-style third task attempt still used `executor`; after the fix, focused escalation/config tests passed with 5 tests in 0.66s, `tests/test_config.py tests/test_routing.py tests/test_orchestrator.py` passed with 41 tests in 3.60s, and final full-suite verification passed with 144 tests in 19.75s.
 - Write-scope scheduling fix: new parallel scheduler regressions first showed overlapping `writes` were ignored; after the fix, shared read scopes run concurrently while overlapping write scopes serialize. Focused scheduler tests passed with 2 tests in 3.29s, schema/planning smoke tests passed with 4 tests in 0.54s, the broader adapters/config/routing/orchestrator slice passed with 57 tests in 16.45s, and final full-suite verification passed with 146 tests in 23.36s.
+- Intake prompt-echo parser fix: new regressions first failed because `Choice [1-2]: 2` defaulted to spec intake; after the fix, prompt-echo and bracketed-paste wrapped choices select the intended mode. Focused regressions passed with 2 tests in 0.38s, `tests/test_cli.py` passed with 20 tests in 3.65s, and full-suite verification passed with 148 tests in 17.79s.
+- Intake wording fix: the start-flow regression first failed on the old `Select Intake Mode` prompt; after the copy update, focused intake prompt/message tests passed with 3 tests in 0.68s, the prior spec-mode mock regression was fixed, and final full-suite verification passed with 148 tests in 22.44s. The follow-up start-confirmation wording regression first failed on `Started goal 1 in none mode`; after the fix, focused start/intake tests passed with 5 tests in 0.65s and final full-suite verification passed with 148 tests in 23.00s.
 - Planner schema/recovery fix: `tests/test_adapters.py::test_plan_schema_is_strict_for_codex_structured_output` passed in 0.02s; `tests/test_cli.py::test_cli_resume tests/test_cli.py::test_cli_resume_replans_blocked_goal_without_features` passed in 0.26s; live `codex exec --output-schema` smoke accepted the schema and returned valid plan JSON; `agent-loop resume 1` in `test-loop` regenerated a plan and moved Goal ID 1 to `awaiting_plan_approval`; full suite passed with 87 tests in 5.83s.
 - Interactive multiline intake fix: `tests/test_cli.py::test_cli_start_captures_pasted_multiline_goal` passed in 0.27s; `tests/test_cli.py` passed with 8 tests in 0.38s; full suite passed with 85 tests in 5.84s.
 - Goal terminology update: `tests/test_cli.py` passed in 0.30s; CLI help verified for goal wording.

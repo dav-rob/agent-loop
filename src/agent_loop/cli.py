@@ -1,5 +1,6 @@
 import argparse
 import json
+import re
 import select
 import shutil
 import sys
@@ -32,6 +33,8 @@ def describe_goal(goal: str, max_length: int = 70) -> str:
 
 TERMINAL_RUN_STATUSES = {"complete", "failed", "cancelled"}
 _INPUT_BUFFER = deque()
+_ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+_INTAKE_MENU_CHOICE_RE = re.compile(r"(?<!\d)([12])(?!\d)")
 
 def _read_ready_tty_lines(stdin: Any, pause_seconds: float = 0.05) -> List[str]:
     try:
@@ -74,12 +77,29 @@ def _prompt_input(prompt: str) -> str:
     return input(prompt)
 
 def _normalize_intake_choice(choice: str) -> str:
-    normalized = (choice or "").strip().lower()
+    normalized = _ANSI_ESCAPE_RE.sub("", choice or "").strip().lower()
     if normalized.startswith("2"):
         return "none"
     if normalized.startswith("1"):
         return "spec"
+
+    prompt_value = normalized.rsplit(":", 1)[-1].strip()
+    if prompt_value.startswith("2"):
+        return "none"
+    if prompt_value.startswith("1"):
+        return "spec"
+
+    choices = _INTAKE_MENU_CHOICE_RE.findall(normalized)
+    if choices:
+        return "none" if choices[-1] == "2" else "spec"
     return "spec"
+
+def _display_start_mode(intake_mode: str) -> str:
+    if intake_mode == "none":
+        return "plan"
+    if intake_mode == "spec":
+        return "brainstorm"
+    return intake_mode
 
 def _bundled_skills_dir() -> Path:
     return Path(__file__).resolve().parents[2] / "skills"
@@ -293,7 +313,10 @@ def handle_start(args: argparse.Namespace, config: Config) -> None:
             intake_mode=intake_mode,
             config_snapshot=cfg_snap
         )
-        print(f"Started goal {run_id} in {intake_mode} mode (unattended policy: {args.unattended_policy}).")
+        print(
+            f'Started goal "{describe_goal(goal, 50)}" in {_display_start_mode(intake_mode)} mode '
+            f"(unattended policy: {args.unattended_policy})."
+        )
     else:
         # Interactive Wizard
         print("=== Agent Loop Intake Wizard ===")
@@ -318,9 +341,9 @@ def handle_start(args: argparse.Namespace, config: Config) -> None:
             intake_mode = "none"
 
         if not intake_mode:
-            print("\nSelect Intake Mode:")
-            print("1) Spec (Discuss and define requirements first)")
-            print("2) None (Start planning immediately)")
+            print("\nDo you want to brainstorm the implementation:")
+            print("1) Yes (brainstorm implementation)")
+            print("2) No (create a plan immediately)")
             intake_mode = _normalize_intake_choice(_prompt_input("Choice [1-2]: "))
                 
         if args.ui:
@@ -343,7 +366,7 @@ def handle_start(args: argparse.Namespace, config: Config) -> None:
             intake_mode=intake_mode,
             config_snapshot=cfg_snap
         )
-        print(f"\nStarted goal {run_id} in {intake_mode} mode.")
+        print(f'\nStarted goal "{describe_goal(goal, 50)}" in {_display_start_mode(intake_mode)} mode.')
 
     # Render initial Markdown views
     render_plan_md(conn, run_id, config.plan_path)
@@ -360,7 +383,8 @@ def handle_start(args: argparse.Namespace, config: Config) -> None:
             orch.run_loop(run_id)
         elif run["status"] == "awaiting_plan_approval":
             if not args.non_interactive:
-                print(f"\nPlan generated for goal {run_id} (see {config.plan_path}).")
+                display_goal = run.get("goal") or goal
+                print(f'\nPlan generated for goal "{describe_goal(display_goal, 50)}" (see {config.plan_path}).')
                 approve = input("Do you approve this plan? (yes/no): ").strip().lower()
                 if approve in {"yes", "y"}:
                     run_repo.update_status(run_id, "running")
