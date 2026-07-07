@@ -15,5 +15,6 @@ __pycache__/
 .pytest_cache/
 src/agent_loop.egg-info/
 .DS_Store
+tmp/
 
 uv.lock
