@@ -745,7 +745,7 @@ def test_worktree_creation_failures_respect_retry_limit(db_conn, tmp_path, monke
     assert len(attempt_repo.get_by_run(run_id)) == 2
 
 
-def test_execute_task_uses_agent_loop_worktrees_by_default(db_conn, tmp_path, monkeypatch):
+def test_execute_task_uses_visible_worktrees_by_default(db_conn, tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     config = Config({
         "db_path": ":memory:",
@@ -792,7 +792,7 @@ def test_execute_task_uses_agent_loop_worktrees_by_default(db_conn, tmp_path, mo
     assert orch._execute_task_impl(run_id, task) is True
 
     assert created_worktrees == [
-        tmp_path / ".agent-loop" / "worktrees" / f"run-{run_id}-task-{task_id}-attempt-1"
+        tmp_path / "worktrees" / f"run-{run_id}-task-{task_id}-attempt-1"
     ]
 
 

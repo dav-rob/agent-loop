@@ -92,6 +92,10 @@ Spec intake model calls now use provider-neutral route fallback with useful
 diagnostics. Intake preserves the old preference for configured `agy` routes,
 falls back to later configured routes such as Codex, and writes model-call logs
 under `.agent-loop/logs/intake/` instead of disposable temp directories.
+Task worktrees now default back to visible root-level `worktrees/` so `agy` can
+open them as workspaces; `.agent-loop/` remains the home for the database,
+logs, generated plan/progress/learning views, and specs. Bootstrap `.gitignore`
+now ignores both `.agent-loop/` and `worktrees/`.
 
 ## Next step
 
@@ -119,6 +123,7 @@ No further executor handoff is required for this request.
 - Idempotent retry reset crash: added regression for already-ready retry cleanup; focused config/orchestrator suite passed with 23 tests in 6.17s.
 - Codex event parsing and execution follow-up extension: added adapter and orchestrator regressions; `tests/test_adapters.py tests/test_config.py tests/test_orchestrator.py` passed with 38 tests in 38.45s.
 - Intake model fallback: `tests/test_intake.py tests/test_adapters.py` passed with 21 tests in 4.11s. Live brainstorm smoke from `test-loop-intake-revamp` fell back after `agy` auth-required diagnostics and produced a compact spec instead of the auto-draft failure.
+- Visible task worktrees: focused config/git/CLI/orchestrator tests passed with 17 tests in 3.62s; full suite passed with 137 tests in 20.35s.
 - Planner schema/recovery fix: `tests/test_adapters.py::test_plan_schema_is_strict_for_codex_structured_output` passed in 0.02s; `tests/test_cli.py::test_cli_resume tests/test_cli.py::test_cli_resume_replans_blocked_goal_without_features` passed in 0.26s; live `codex exec --output-schema` smoke accepted the schema and returned valid plan JSON; `agent-loop resume 1` in `test-loop` regenerated a plan and moved Goal ID 1 to `awaiting_plan_approval`; full suite passed with 87 tests in 5.83s.
 - Interactive multiline intake fix: `tests/test_cli.py::test_cli_start_captures_pasted_multiline_goal` passed in 0.27s; `tests/test_cli.py` passed with 8 tests in 0.38s; full suite passed with 85 tests in 5.84s.
 - Goal terminology update: `tests/test_cli.py` passed in 0.30s; CLI help verified for goal wording.

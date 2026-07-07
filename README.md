@@ -72,7 +72,7 @@ max_workers = 4
 state_dir = ".agent-loop"
 db_path = ".agent-loop/agent-loop.db"
 logs_dir = ".agent-loop/logs"
-worktrees_dir = ".agent-loop/worktrees"
+worktrees_dir = "worktrees"
 
 [routes]
 intake = [

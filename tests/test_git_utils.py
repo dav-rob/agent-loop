@@ -67,7 +67,7 @@ def test_ensure_initial_commit_bootstraps_empty_repo(tmp_path, monkeypatch):
     assert created is True
     assert run_git(["config", "--local", "user.name"], repo_path).stdout.strip() == "Agent Loop"
     assert run_git(["config", "--local", "user.email"], repo_path).stdout.strip() == "agent-loop@local"
-    assert (repo_path / ".gitignore").read_text() == ".agent-loop/\n"
+    assert (repo_path / ".gitignore").read_text() == ".agent-loop/\nworktrees/\n"
     assert ".gitignore" in run_git(["ls-tree", "--name-only", "HEAD"], repo_path).stdout.splitlines()
 
     after = subprocess.run(["git", "rev-parse", "--verify", "HEAD"], cwd=repo_path, capture_output=True, text=True)

@@ -52,7 +52,7 @@ max_workers = 4
 state_dir = ".agent-loop"
 db_path = ".agent-loop/agent-loop.db"
 logs_dir = ".agent-loop/logs"
-worktrees_dir = ".agent-loop/worktrees"
+worktrees_dir = "worktrees"
 webhook_env_var = "AGENT_LOOP_WEBHOOK_URL"
 
 # Optional binary overrides.
@@ -123,7 +123,7 @@ Runtime files are written under the current repository:
 - `.agent-loop/progress.md`: current goal state, blockers, tests, and next action
 - `.agent-loop/learning.md`: durable notes for this repository's goals
 - `.agent-loop/logs/`: provider prompts, stdout/stderr, patches, reviews, and test output
-- `.agent-loop/worktrees/`: isolated task worktrees used during execution
+- `worktrees/`: isolated task worktrees used during execution; kept visible so CLI agents can open them as workspaces
 - `.agent-loop/goals/`, `.agent-loop/plans/`, `.agent-loop/specs/`: structured workspace folders for future goal-specific artifacts
 
 ## Basic Workflow
