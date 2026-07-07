@@ -92,6 +92,34 @@ def validate_dag(features: List[Dict[str, Any]], tasks: List[Dict[str, Any]]) ->
     return True
 
 
+PROSE_VERIFICATION_PREFIXES = (
+    "run ",
+    "start ",
+    "open ",
+    "confirm ",
+    "verify ",
+    "check ",
+    "inspect ",
+    "click ",
+    "resolve ",
+    "manually ",
+    "use ",
+)
+
+
+def executable_verification_command(command: Optional[str]) -> str:
+    """Return a shell command only when the planner supplied one."""
+    if not command:
+        return ""
+    normalized = str(command).strip()
+    if not normalized:
+        return ""
+    first_line = normalized.splitlines()[0].strip().lower()
+    if first_line.startswith(PROSE_VERIFICATION_PREFIXES):
+        return ""
+    return normalized
+
+
 class Orchestrator:
     def __init__(self, conn: sqlite3.Connection, config: Config, plan_path: Path = None, progress_path: Path = None, git_lock = None, db_lock = None, get_now = None, sleep_func = None):
         import datetime
@@ -186,6 +214,8 @@ Rules:
 * Prefer fewer tasks.
 * Use planning-role tasks only for architecture/risk decomposition, integration/conflict work, or genuinely high-risk ambiguity.
 * Keep tasks scoped and independently verifiable.
+* required_verification must be an executable shell command, not prose. Good: "npm test", "python -m pytest", "npm install && npm test". Bad: "Run npm install and confirm it works".
+* If there is no safe non-interactive command for a task, set required_verification to an empty string.
 * Return ONLY schema-valid JSON matching the requested schema.
 * Do not include markdown.
 """
@@ -240,7 +270,7 @@ Rules:
                     risk=task["risk"],
                     scope=task.get("scope"),
                     dependencies=task.get("dependencies", []),
-                    required_verification=task.get("required_verification")
+                    required_verification=executable_verification_command(task.get("required_verification"))
                 )
 
             if run["intake_mode"] in {"autonomous", "non_interactive"}:
@@ -335,9 +365,30 @@ Rules:
         Note: Under trusted-host execution mode, commands executed via shell=True 
         will run with the full permissions and privileges of the current user.
         """
+        command = executable_verification_command(command)
         start_time = time.time()
         test_out_file = logs_dir / "test_run_stdout.log"
         test_err_file = logs_dir / "test_run_stderr.log"
+
+        if not command:
+            test_out_file.write_text("Skipped prose verification because no executable shell command was provided.\n")
+            test_err_file.write_text("")
+            output_json = json.dumps({
+                "stdout": str(test_out_file),
+                "stderr": str(test_err_file)
+            })
+            with self.db_lock:
+                self.test_run_repo.create(
+                    run_id=run_id,
+                    task_id=task_id,
+                    attempt_id=attempt_id,
+                    command="",
+                    scope=None,
+                    exit_status=0,
+                    duration_seconds=0.0,
+                    output_path=output_json
+                )
+            return True
         
         try:
             # Ensure dependencies are installed before verifying

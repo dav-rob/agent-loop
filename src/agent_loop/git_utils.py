@@ -2,7 +2,7 @@ import subprocess
 from pathlib import Path
 from typing import Optional
 
-DEFAULT_GITIGNORE_ENTRIES = (".agent-loop/", "worktrees/")
+DEFAULT_GITIGNORE_ENTRIES = (".agent-loop/", "worktrees/", "node_modules/")
 
 def run_git(args: list[str], cwd: Path) -> subprocess.CompletedProcess:
     return subprocess.run(

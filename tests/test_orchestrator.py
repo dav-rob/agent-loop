@@ -159,6 +159,49 @@ def test_planning_uses_router_planner_profile(db_conn, tmp_path):
     assert mock_router.run.call_args.kwargs["profile"] == "planner"
 
 
+def test_plan_run_drops_prose_required_verification(db_conn, tmp_path):
+    run_repo = RunRepository(db_conn)
+    run_id = run_repo.create("Build a local dashboard", "none")
+    config = Config({"db_path": ":memory:", "logs_dir": str(tmp_path / "logs")})
+    plan_json = {
+        "objective": "Build a local dashboard",
+        "decisions": [],
+        "features": [
+            {"name": "App", "risk": "low", "acceptance_criteria": "Starts locally", "dependencies": []}
+        ],
+        "tasks": [
+            {
+                "name": "Create app",
+                "feature_name": "App",
+                "role": "implementation",
+                "risk": "low",
+                "scope": {"files": ["package.json"]},
+                "dependencies": [],
+                "required_verification": "Run npm install and start the app; confirm it opens.",
+            }
+        ],
+    }
+    routed = MagicMock()
+    routed.success = True
+    routed.output = json.dumps(plan_json)
+    routed.error = ""
+
+    orch = Orchestrator(db_conn, config, plan_path=tmp_path / "plan.md", progress_path=tmp_path / "progress.md")
+
+    with patch("agent_loop.orchestrator.ModelRouter") as mock_router_cls:
+        mock_router = MagicMock()
+        mock_router.run.return_value = routed
+        mock_router_cls.return_value = mock_router
+
+        assert orch.plan_run(run_id) is True
+
+    prompt = mock_router.run.call_args.kwargs["prompt"]
+    assert "required_verification must be an executable shell command" in prompt
+
+    tasks = TaskRepository(db_conn).get_by_run(run_id)
+    assert tasks[0]["required_verification"] == ""
+
+
 def test_review_uses_router_reviewer_profile(db_conn, tmp_path):
     run_repo = RunRepository(db_conn)
     run_id = run_repo.create("Implement login page", "none")
@@ -429,6 +472,44 @@ def test_run_verification_success_and_failure(db_conn, tmp_path):
     test_runs = orch.test_run_repo.get_by_run(run_id)
     assert len(test_runs) == 2
     assert test_runs[1]["exit_status"] == 1
+
+
+def test_run_verification_skips_prose_instead_of_executing_shell(db_conn, tmp_path):
+    config = Config()
+    orch = Orchestrator(db_conn, config, plan_path=tmp_path / "plan.md", progress_path=tmp_path / "progress.md")
+
+    worktree_dir = tmp_path / "wt"
+    worktree_dir.mkdir()
+    logs_dir = tmp_path / "logs"
+    logs_dir.mkdir()
+
+    run_repo = RunRepository(db_conn)
+    feat_repo = FeatureRepository(db_conn)
+    task_repo = TaskRepository(db_conn)
+    attempt_repo = AttemptRepository(db_conn)
+
+    run_id = run_repo.create("Test run", "autonomous")
+    feat_id = feat_repo.create(run_id, "Core", "low")
+    task_id = task_repo.create(run_id, feat_id, "Test task", "implementation", "low")
+    attempt_id = attempt_repo.create(run_id, task_id, "impl", "codex", "gpt-5", "high", str(worktree_dir), None, str(logs_dir))
+
+    with patch("agent_loop.orchestrator.subprocess.run") as mock_run:
+        success = orch.run_verification(
+            run_id=run_id,
+            task_id=task_id,
+            attempt_id=attempt_id,
+            command="Run npm install and start the app; confirm tables exist.",
+            worktree_dir=worktree_dir,
+            logs_dir=logs_dir,
+        )
+
+    assert success is True
+    mock_run.assert_not_called()
+    test_runs = orch.test_run_repo.get_by_run(run_id)
+    assert test_runs[0]["exit_status"] == 0
+    assert test_runs[0]["command"] == ""
+    assert "Skipped prose verification" in (logs_dir / "test_run_stdout.log").read_text()
+
 
 def test_reviews_fail_closed(db_conn, tmp_path):
     config = Config()

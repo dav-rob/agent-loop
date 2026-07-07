@@ -110,7 +110,7 @@ def test_cli_start_bootstraps_empty_git_repo(clean_workspace):
 
     after = subprocess.run(["git", "rev-parse", "--verify", "HEAD"], cwd=clean_workspace, capture_output=True, text=True)
     assert after.returncode == 0
-    assert (clean_workspace / ".gitignore").read_text() == ".agent-loop/\nworktrees/\n"
+    assert (clean_workspace / ".gitignore").read_text() == ".agent-loop/\nworktrees/\nnode_modules/\n"
     committed_files = subprocess.run(
         ["git", "ls-tree", "--name-only", "HEAD"],
         cwd=clean_workspace,
@@ -144,7 +144,7 @@ def test_cli_start_initializes_missing_git_repo(clean_workspace):
     assert inside.stdout.strip() == "true"
     head = subprocess.run(["git", "rev-parse", "--verify", "HEAD"], cwd=clean_workspace, capture_output=True, text=True)
     assert head.returncode == 0
-    assert (clean_workspace / ".gitignore").read_text() == ".agent-loop/\nworktrees/\n"
+    assert (clean_workspace / ".gitignore").read_text() == ".agent-loop/\nworktrees/\nnode_modules/\n"
 
 def test_cli_plan_details(clean_workspace, capsys):
     # Setup test run in db
