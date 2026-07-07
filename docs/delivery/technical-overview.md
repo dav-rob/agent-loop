@@ -104,7 +104,7 @@ escalation_reviewer = [
 ]
 
 [retry_policy]
-max_attempts = 3
+max_attempts = 5
 escalation_threshold = 2
 
 [commands]

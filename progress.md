@@ -105,6 +105,13 @@ Interactive intake option 2 now robustly maps to `none` even when the user
 enters a copied menu label or types the choice quickly after the goal prompt,
 and the brainstorming summary action now says `create plan` instead of
 `draft spec`.
+Live monitoring of `test-loop-intake-revamp4` showed repeated task-review
+rejections still using the normal executor route (`agy` Gemini 3.1 Pro High)
+instead of the configured `executor_escalated` route. Execution routing now
+uses `escalation_threshold`: after two failed/abandoned attempts or two
+rejected task reviews, the next implementation attempt uses the escalated
+executor profile. The default retry limit is now five attempts, so attempts
+3-5 can use stronger models before the max-attempt escalation/block path.
 
 ## Next step
 
@@ -135,6 +142,7 @@ No further executor handoff is required for this request.
 - Visible task worktrees: focused config/git/CLI/orchestrator tests passed with 17 tests in 3.62s; full suite passed with 137 tests in 20.35s.
 - Verification command contract: new regressions for prose verification planning/runtime handling and `node_modules/` ignore passed; full suite passed with 139 tests in 17.78s.
 - Intake none-mode and summary-copy fix: targeted CLI/intake regressions passed with 3 tests in 0.88s; `tests/test_cli.py tests/test_intake.py` passed with 28 tests in 3.92s; full suite passed with 141 tests in 21.57s.
+- Executor escalation threshold fix: new regressions first failed because `execution_profile_for_task` ignored failed attempts/rejected reviews and the live-style third task attempt still used `executor`; after the fix, focused escalation/config tests passed with 5 tests in 0.66s, `tests/test_config.py tests/test_routing.py tests/test_orchestrator.py` passed with 41 tests in 3.60s, and final full-suite verification passed with 144 tests in 19.75s.
 - Planner schema/recovery fix: `tests/test_adapters.py::test_plan_schema_is_strict_for_codex_structured_output` passed in 0.02s; `tests/test_cli.py::test_cli_resume tests/test_cli.py::test_cli_resume_replans_blocked_goal_without_features` passed in 0.26s; live `codex exec --output-schema` smoke accepted the schema and returned valid plan JSON; `agent-loop resume 1` in `test-loop` regenerated a plan and moved Goal ID 1 to `awaiting_plan_approval`; full suite passed with 87 tests in 5.83s.
 - Interactive multiline intake fix: `tests/test_cli.py::test_cli_start_captures_pasted_multiline_goal` passed in 0.27s; `tests/test_cli.py` passed with 8 tests in 0.38s; full suite passed with 85 tests in 5.84s.
 - Goal terminology update: `tests/test_cli.py` passed in 0.30s; CLI help verified for goal wording.

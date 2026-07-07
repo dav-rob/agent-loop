@@ -89,7 +89,7 @@ def test_default_agent_loop_toml_contains_all_defaults(tmp_path):
     data = tomllib.loads(target.read_text())
     assert data["state_dir"] == ".agent-loop"
     assert data["worktrees_dir"] == "worktrees"
-    assert data["retry_policy"]["max_attempts"] == 3
+    assert data["retry_policy"]["max_attempts"] == 5
     assert data["routes"]["intake"]
     assert data["routes"]["spec_reviewer"]
     assert data["routes"]["planner"]

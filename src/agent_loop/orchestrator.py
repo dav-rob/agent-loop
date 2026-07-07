@@ -145,7 +145,22 @@ class Orchestrator:
     def _model_router(self) -> ModelRouter:
         return ModelRouter(config=self.config, provider_repo=self.provider_repo)
 
-    def execution_profile_for_task(self, task: Dict[str, Any], attempts: List[Dict[str, Any]]) -> str:
+    def _task_rejected_review_count(self, run_id: int, task_id: int) -> int:
+        cursor = self.conn.cursor()
+        cursor.execute(
+            """
+            SELECT COUNT(*)
+            FROM reviews
+            WHERE run_id = ?
+              AND subject_type = 'task'
+              AND subject_id = ?
+              AND decision = 'rejected';
+            """,
+            (run_id, task_id),
+        )
+        return int(cursor.fetchone()[0])
+
+    def execution_profile_for_task(self, task: Dict[str, Any], attempts: List[Dict[str, Any]], rejected_review_count: int = 0) -> str:
         if task.get("role") == "planning":
             return "planner"
 
@@ -157,6 +172,15 @@ class Orchestrator:
                 scope_data = {}
 
         if isinstance(scope_data, dict) and scope_data.get("escalation_hint"):
+            return "executor_escalated"
+
+        escalation_threshold = int(self.config.retry_policy.get("escalation_threshold", 2))
+        failed_attempt_count = sum(
+            1
+            for attempt in attempts
+            if attempt.get("outcome") in {"failed", "abandoned", "escalated"}
+        )
+        if failed_attempt_count + rejected_review_count >= escalation_threshold:
             return "executor_escalated"
 
         return "executor"
@@ -864,7 +888,8 @@ Rules:
             render_progress_md(self.conn, run_id, self.progress_path)
 
             attempts = [a for a in self.attempt_repo.get_by_run(run_id) if a["task_id"] == task_id]
-        profile = self.execution_profile_for_task(task, attempts)
+            rejected_review_count = self._task_rejected_review_count(run_id, task_id)
+        profile = self.execution_profile_for_task(task, attempts, rejected_review_count=rejected_review_count)
 
         with self.db_lock:
             attempt_id = self.attempt_repo.create(
@@ -964,6 +989,14 @@ Scope: {json.dumps(task['scope'])}
 """
         if previous_rejection:
             prompt += f"\nPrevious attempt was rejected with the following findings:\n{previous_rejection}\n"
+
+        if profile == "executor_escalated":
+            prompt += (
+                "\nEscalated execution instructions:\n"
+                "- Step back before editing and identify why prior attempts failed.\n"
+                "- Do not repeat the same narrow fix unless the evidence clearly supports it.\n"
+                "- Make a coherent repair that addresses the reviewer findings and the task objective together.\n"
+            )
             
         if not is_integration:
             prompt += "\nPlease implement this task in the workspace. You MUST make atomic, fine-grained git commits with descriptive messages as you progress through the task. Run verification to confirm success before exiting.\n"

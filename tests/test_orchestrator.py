@@ -6,7 +6,7 @@ import pytest
 
 from agent_loop.config import Config
 from agent_loop.database import get_connection, migrate
-from agent_loop.repositories import RunRepository, FeatureRepository, TaskRepository, DecisionRepository, AttemptRepository
+from agent_loop.repositories import RunRepository, FeatureRepository, TaskRepository, DecisionRepository, AttemptRepository, ReviewRepository
 from agent_loop.orchestrator import validate_dag, Orchestrator
 from agent_loop.adapters import AttemptResult
 
@@ -228,16 +228,51 @@ def test_review_uses_router_reviewer_profile(db_conn, tmp_path):
     assert reviews[0]["reviewer_route"] == "codex:gpt-5.5"
 
 
-def test_execution_profile_stays_executor_before_escalation(db_conn, tmp_path):
-    config = Config({"db_path": ":memory:", "logs_dir": str(tmp_path / "logs")})
+def test_execution_profile_stays_executor_before_threshold(db_conn, tmp_path):
+    config = Config({
+        "db_path": ":memory:",
+        "logs_dir": str(tmp_path / "logs"),
+        "retry_policy": {"max_attempts": 5, "escalation_threshold": 2},
+    })
     orch = Orchestrator(db_conn, config, plan_path=tmp_path / "plan.md", progress_path=tmp_path / "progress.md")
     task = {"role": "implementation", "risk": "high", "scope": {"files": []}}
     attempts = [
         {"outcome": "failed"},
-        {"outcome": "failed"},
     ]
 
     assert orch.execution_profile_for_task(task, attempts) == "executor"
+
+
+def test_execution_profile_uses_escalated_profile_after_failed_attempt_threshold(db_conn, tmp_path):
+    config = Config({
+        "db_path": ":memory:",
+        "logs_dir": str(tmp_path / "logs"),
+        "retry_policy": {"max_attempts": 5, "escalation_threshold": 2},
+    })
+    orch = Orchestrator(db_conn, config, plan_path=tmp_path / "plan.md", progress_path=tmp_path / "progress.md")
+    task = {"role": "implementation", "risk": "high", "scope": {"files": []}}
+    attempts = [
+        {"outcome": "failed"},
+        {"outcome": "abandoned"},
+    ]
+
+    assert orch.execution_profile_for_task(task, attempts) == "executor_escalated"
+
+
+def test_execution_profile_uses_escalated_profile_after_rejected_review_threshold(db_conn, tmp_path):
+    config = Config({
+        "db_path": ":memory:",
+        "logs_dir": str(tmp_path / "logs"),
+        "retry_policy": {"max_attempts": 5, "escalation_threshold": 2},
+    })
+    orch = Orchestrator(db_conn, config, plan_path=tmp_path / "plan.md", progress_path=tmp_path / "progress.md")
+    task = {"role": "implementation", "risk": "high", "scope": {"files": []}}
+    attempts = [
+        {"outcome": "completed"},
+        {"outcome": "completed"},
+    ]
+
+    assert orch.execution_profile_for_task(task, attempts, rejected_review_count=2) == "executor_escalated"
 
 
 def test_execution_profile_uses_escalated_profile_after_escalation_hint(db_conn, tmp_path):
@@ -301,6 +336,65 @@ def test_task_execution_uses_router_executor_profile_and_records_selected_route(
     assert attempts[0]["route"] == "executor"
     assert attempts[0]["provider"] == "agy"
     assert attempts[0]["model"] == "Claude Sonnet 4.5"
+
+
+def test_task_execution_escalates_route_after_two_rejected_reviews(db_conn, tmp_path, monkeypatch):
+    monkeypatch.setattr("agent_loop.orchestrator.create_worktree", lambda repo, worktree, branch: Path(worktree).mkdir(parents=True, exist_ok=True))
+    monkeypatch.setattr("agent_loop.orchestrator.commit_changes", lambda worktree, message: "mock_sha")
+    monkeypatch.setattr("agent_loop.orchestrator.merge_branch", lambda repo, branch, target: (True, []))
+    monkeypatch.setattr("agent_loop.orchestrator.remove_worktree", lambda repo, worktree: None)
+
+    run_repo = RunRepository(db_conn)
+    feat_repo = FeatureRepository(db_conn)
+    task_repo = TaskRepository(db_conn)
+    attempt_repo = AttemptRepository(db_conn)
+    review_repo = ReviewRepository(db_conn)
+
+    run_id = run_repo.create("Build engine", "none")
+    feat_id = feat_repo.create(run_id, "Core", "low")
+    task_id = task_repo.create(run_id, feat_id, "Implement CLI", "implementation", "medium", scope={"files": []})
+    task_repo.update_status(task_id, "ready")
+
+    for _ in range(2):
+        attempt_id = attempt_repo.create(run_id, task_id, route="executor", provider="agy", model="Gemini 3.1 Pro (High)")
+        attempt_repo.update_outcome(attempt_id, "completed", commit_sha="old_sha")
+        review_repo.create(
+            run_id,
+            "task",
+            task_id,
+            "rejected",
+            reviewer_route="codex:gpt-5.5",
+            findings="Still wrong",
+        )
+
+    config = Config({
+        "db_path": ":memory:",
+        "logs_dir": str(tmp_path / "logs"),
+        "retry_policy": {"max_attempts": 5, "escalation_threshold": 2},
+    })
+    orch = Orchestrator(db_conn, config, plan_path=tmp_path / "plan.md", progress_path=tmp_path / "progress.md")
+    routed = MagicMock()
+    routed.success = True
+    routed.output = ""
+    routed.error = ""
+    routed.provider = "codex"
+    routed.model = "gpt-5.5"
+    routed.reasoning_level = "high"
+
+    with patch("agent_loop.orchestrator.ModelRouter") as mock_router_cls, \
+         patch.object(orch, "_ensure_workspace_deps"), \
+         patch.object(orch, "run_task_review", return_value="approved"):
+        mock_router = MagicMock()
+        mock_router.run.return_value = routed
+        mock_router_cls.return_value = mock_router
+
+        assert orch._execute_task_impl(run_id, task_repo.get(task_id)) is True
+
+    assert mock_router.run.call_args.kwargs["profile"] == "executor_escalated"
+    attempts = [attempt for attempt in attempt_repo.get_by_run(run_id) if attempt["task_id"] == task_id]
+    assert attempts[-1]["route"] == "executor_escalated"
+    assert attempts[-1]["provider"] == "codex"
+    assert attempts[-1]["model"] == "gpt-5.5"
 
 def test_orchestrator_planning_route_failover(db_conn, tmp_path):
     run_repo = RunRepository(db_conn)
