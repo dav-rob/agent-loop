@@ -694,7 +694,7 @@ def test_ui_lab_brief_workflow_paths(tmp_path, monkeypatch):
     assert mock_spec.call_args.kwargs["force_ui"] is None
     clear_db()
 
-    # 3. Legacy ui_lab maps to spec intake with UI enabled.
+    # 3. Legacy ui_lab maps to spec intake and preserves the compatibility flag.
     with patch("agent_loop.cli.Orchestrator", return_value=mock_orch), \
          patch("agent_loop.intake.run_spec_intake", return_value="# Compact Spec\n\n## Outcome\nCreate UI") as mock_spec:
         with patch.object(sys, "argv", ["agent-loop", "start", "--goal", "Create a page", "--intake", "ui_lab"]):
@@ -1671,5 +1671,4 @@ def test_genuine_lifecycle_via_run_loop(db_conn, tmp_path, monkeypatch):
     test_runs = orch.test_run_repo.get_by_run(run_id)
     assert any(tr["exit_status"] == 0 for tr in test_runs), \
         "Regression test must have passed (exit_status=0)"
-
 

@@ -421,7 +421,9 @@ def test_cli_start_spec_collects_model_question_and_saves_spec(clean_workspace):
     user_inputs = [
         "1",
         "Parse source files into an AST first.",
-        "no",
+        "Generate a CLI command that prints parse errors clearly.",
+        "Run parser fixtures and unit tests.",
+        "draft",
         "y",
     ]
     input_generator = (val for val in user_inputs)
@@ -438,11 +440,21 @@ def test_cli_start_spec_collects_model_question_and_saves_spec(clean_workspace):
         "status": "question",
         "question": "What is the first compiler milestone?",
         "reason": "Need scope",
+        "current_understanding": "The compiler needs a first milestone.",
     }))
-    routed_ready = MagicMock(success=True, output=json.dumps({
-        "status": "ready",
-        "question": "",
-        "reason": "Enough scope",
+    routed_question_2 = MagicMock(success=True, output=json.dumps({
+        "status": "question",
+        "question": "What user-facing behavior should the first cut expose?",
+        "reason": "Need operator workflow",
+        "current_understanding": "The first cut parses source files into an AST.",
+    }))
+    routed_question_3 = MagicMock(success=True, output=json.dumps({
+        "status": "question",
+        "question": "How should the parser be verified?",
+        "reason": "Need acceptance criteria",
+        "current_understanding": "The parser should expose clear CLI behavior and parse errors.",
+    }))
+    routed_draft = MagicMock(success=True, output=json.dumps({
         "draft_spec": "# Compact Spec\n\n## Outcome\nBuild a compiler parser\n\n## Requirements\n- Parse source files into an AST first.",
     }))
     routed_review = MagicMock(
@@ -464,7 +476,7 @@ def test_cli_start_spec_collects_model_question_and_saves_spec(clean_workspace):
         mock_orch.plan_run.side_effect = mock_plan_run
         mock_orch_cls.return_value = mock_orch
         mock_router = MagicMock()
-        mock_router.run.side_effect = [routed_question, routed_ready, routed_review]
+        mock_router.run.side_effect = [routed_question, routed_question_2, routed_question_3, routed_draft, routed_review]
         mock_router_cls.return_value = mock_router
 
         with patch.object(sys, "argv", ["agent-loop", "start", "--goal", "Build a compiler"]):
@@ -487,7 +499,9 @@ def test_cli_start_spec_uses_tailored_model_question(clean_workspace):
     user_inputs = [
         "1",
         "A terminal dashboard I can leave open",
-        "no",
+        "It should refresh itself without manual commands",
+        "Show stale or failed updates clearly",
+        "draft",
         "y",
         "y",
     ]
@@ -505,11 +519,21 @@ def test_cli_start_spec_uses_tailored_model_question(clean_workspace):
         "status": "question",
         "question": "What would make this useful on day one?",
         "reason": "Need first outcome",
+        "current_understanding": "The dashboard needs a first useful outcome.",
     }))
-    routed_ready = MagicMock(success=True, output=json.dumps({
-        "status": "ready",
-        "question": "",
-        "reason": "Enough scope",
+    routed_question_2 = MagicMock(success=True, output=json.dumps({
+        "status": "question",
+        "question": "How should it behave while you leave it open?",
+        "reason": "Need runtime behavior",
+        "current_understanding": "The user wants a terminal dashboard they can leave open.",
+    }))
+    routed_question_3 = MagicMock(success=True, output=json.dumps({
+        "status": "question",
+        "question": "What should happen when data is stale or updates fail?",
+        "reason": "Need error states",
+        "current_understanding": "The dashboard should refresh without manual commands.",
+    }))
+    routed_draft = MagicMock(success=True, output=json.dumps({
         "draft_spec": "# Compact Spec\n\n## Outcome\nA terminal dashboard I can leave open",
     }))
     routed_review = MagicMock(
@@ -532,13 +556,13 @@ def test_cli_start_spec_uses_tailored_model_question(clean_workspace):
         mock_orch_cls.return_value = mock_orch
 
         mock_router = MagicMock()
-        mock_router.run.side_effect = [routed_question, routed_ready, routed_review]
+        mock_router.run.side_effect = [routed_question, routed_question_2, routed_question_3, routed_draft, routed_review]
         mock_router_cls.return_value = mock_router
 
         with patch.object(sys, "argv", ["agent-loop", "start", "--goal", "Create my personal dashboard"]):
             main()
 
-        assert mock_router.run.call_count == 3
+        assert mock_router.run.call_count == 5
         mock_orch.run_loop.assert_called_once()
 
     db_path = default_db_path()

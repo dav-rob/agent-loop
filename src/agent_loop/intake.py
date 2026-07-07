@@ -8,6 +8,10 @@ from agent_loop.database import get_connection, migrate
 from agent_loop.repositories import ProviderStateRepository
 from agent_loop.routing import ModelRouter
 
+BRAINSTORM_MIN_QUESTIONS = 3
+BRAINSTORM_MAX_QUESTIONS = 5
+
+
 def _extract_json_object(text: str) -> Dict[str, Any]:
     cleaned = (text or "").strip()
     if not cleaned:
@@ -53,6 +57,7 @@ def _call_intake_model(prompt: str, config: Config, phase: str, warning_label: s
     try:
         migrate(conn)
         router = ModelRouter(config=config, provider_repo=ProviderStateRepository(conn))
+        print(f"{warning_label} thinking...", flush=True)
         res = router.run(
             profile=profile,
             prompt=prompt,
@@ -71,10 +76,53 @@ def _call_intake_model(prompt: str, config: Config, phase: str, warning_label: s
     print(f"Warning: {warning_label} model call failed ({provider_label}). Error: {diagnostic}")
     return res
 
+
+def _fallback_brainstorm_question(index: int) -> str:
+    questions = [
+        "Who is the main user or operator, and what do they need this to do first?",
+        "What should be true when the first useful version is complete?",
+        "What integrations, data sources, persistence, or constraints matter most?",
+        "What should be explicitly out of scope or easy to get wrong?",
+        "How should agent-loop verify that the result works?",
+    ]
+    return questions[min(index, len(questions) - 1)]
+
+
+def _brainstorm_summary(goal: str, transcript: str, current_understanding: str) -> str:
+    summary = current_understanding.strip()
+    if summary:
+        return summary
+
+    answers = [
+        line[3:].strip()
+        for line in transcript.splitlines()
+        if line.startswith("A:") and line[3:].strip()
+    ]
+    if answers:
+        return " ".join(answers)
+    return f"The goal is to {goal.strip()}"
+
+
+def _ask_after_summary(goal: str, transcript: str, current_understanding: str) -> str:
+    print("\nBrainstorming summary:")
+    print(_brainstorm_summary(goal, transcript, current_understanding))
+    while True:
+        choice = input("Continue brainstorming or draft spec? (continue/draft/edit): ").strip().lower()
+        if choice in {"", "draft", "d", "yes", "y"}:
+            return "draft"
+        if choice in {"continue", "c", "no", "n"}:
+            return "continue"
+        if choice in {"edit", "e"}:
+            return "edit"
+        print("Please enter 'continue', 'draft', or 'edit'.")
+
+
 def run_brainstorm_discussion(goal: str, config: Config) -> str:
     transcript = ""
+    current_understanding = ""
+    questions_asked = 0
     
-    for turn in range(6):
+    for turn in range(BRAINSTORM_MAX_QUESTIONS):
         prompt = f"""You are the Agent Loop Brainstormer.
 
 Goal:
@@ -83,22 +131,29 @@ Goal:
 Conversation so far:
 {transcript}
 
-Decide whether another question is needed before drafting a compact implementation spec.
+Questions asked so far: {questions_asked}
+Minimum questions before drafting: {BRAINSTORM_MIN_QUESTIONS}
+Maximum questions: {BRAINSTORM_MAX_QUESTIONS}
+
+Decide the next single question needed before drafting a compact implementation spec.
 
 Return ONLY JSON:
 {{
 "status": "question" | "ready",
 "question": "one concrete question if status=question",
 "reason": "short internal reason",
+"current_understanding": "one or two sentences summarizing what is known so far",
 "draft_spec": "compact spec if status=ready"
 }}
 
 Rules:
 * Ask at most one question.
+* Ask at least {BRAINSTORM_MIN_QUESTIONS} questions before status=ready unless the goal is genuinely trivial.
 * Ask only a question specific to this goal.
 * Prefer concrete tradeoffs, scope boundaries, integration points, verification, first useful outcome.
 * Do not ask generic product-manager questions.
-* Stop as soon as the planner can safely proceed.
+* After each user answer, update current_understanding.
+* Stop after {BRAINSTORM_MAX_QUESTIONS} questions even if more could be discussed.
 * The compact spec must follow the project skill format.
 * Keep the spec compact."""
         
@@ -115,17 +170,45 @@ Rules:
         if not data:
             print("Error: Brainstorming failed after 3 API attempts. Moving to auto-draft.")
             break
+
+        current_understanding = (data.get("current_understanding") or current_understanding).strip()
             
-        if data.get("status") == "ready" and data.get("draft_spec"):
-            return data["draft_spec"]
+        if data.get("status") == "ready" and data.get("draft_spec") and questions_asked >= BRAINSTORM_MIN_QUESTIONS:
+            action = _ask_after_summary(goal, transcript, current_understanding)
+            if action == "draft":
+                return data["draft_spec"]
+            if action == "edit":
+                feedback = input("What should change in the summary?: ").strip()
+                if feedback:
+                    transcript += f"\nSummary revision: {feedback}\n"
+                return draft_compact_spec(goal, transcript, config)
+            if questions_asked >= BRAINSTORM_MAX_QUESTIONS:
+                return data["draft_spec"]
+            continue
             
         question = data.get("question")
         if not question or data.get("status") != "question":
-            break
+            if questions_asked >= BRAINSTORM_MIN_QUESTIONS:
+                break
+            question = _fallback_brainstorm_question(questions_asked)
             
         print(f"\n[Brainstormer] {question}")
         answer = input("Your answer: ").strip()
         transcript += f"\nQ: {question}\nA: {answer}\n"
+        questions_asked += 1
+
+        if current_understanding:
+            print(f"Current understanding: {current_understanding}")
+
+        if questions_asked >= BRAINSTORM_MIN_QUESTIONS:
+            action = _ask_after_summary(goal, transcript, current_understanding)
+            if action == "draft":
+                return draft_compact_spec(goal, transcript, config)
+            if action == "edit":
+                feedback = input("What should change in the summary?: ").strip()
+                if feedback:
+                    transcript += f"\nSummary revision: {feedback}\n"
+                return draft_compact_spec(goal, transcript, config)
         
     # If we exit the loop without returning a spec, force draft it
     return draft_compact_spec(goal, transcript, config)
@@ -171,28 +254,8 @@ Keep it compact."""
     return f"# Compact Spec\n\n## Outcome\n{goal}\n\n## Requirements\n(Auto-generated spec failed)"
 
 def run_ui_branch(spec: str, config: Config) -> str:
-    print("\n--- UI Brainstorming ---")
-    script_path = None
-    
-    # Try workspace first
-    ws_script = config.state_dir / "skills" / "brainstorming" / "scripts" / "start-server.sh"
-    if ws_script.exists():
-        script_path = ws_script
-    else:
-        # Try bundled
-        bundled_script = Path(__file__).resolve().parents[2] / "skills" / "brainstorming" / "scripts" / "start-server.sh"
-        if bundled_script.exists():
-            script_path = bundled_script
-            
-    if not script_path:
-        print("Warning: UI companion scripts not found. Continuing with terminal-only UI brainstorming.")
-        # We could fallback to terminal-only UI logic, but for simplicity we'll just return the spec unchanged
-        # or append a simple terminal question.
-        return spec
-        
-    print(f"Found visual companion at {script_path}. (Implementation of full visual server loop goes here...)")
-    # For now, append a placeholder to prove it ran
-    return spec + "\n\n## Visual Direction\nVisual UI brainstorming was executed."
+    print("UI brainstorming is deferred for now; continuing with text spec intake.")
+    return spec
 
 def run_spec_review(spec: str, config: Config) -> Tuple[str, str]:
     prompt = f"""You are the Agent Loop Compact Spec Reviewer.
@@ -254,17 +317,9 @@ Rules:
 def run_spec_intake(goal: str, config: Config, force_ui: Optional[bool] = None, spec_review: bool = True) -> Optional[str]:
     print("\n--- Spec Intake Phase ---")
     spec = run_brainstorm_discussion(goal, config)
-    
-    ui_choice = False
+
     if force_ui is True:
-        ui_choice = True
-    elif force_ui is None:
-        ans = input("\nDo you want to brainstorm the UI / visual behaviour? (yes/no): ").strip().lower()
-        if ans in {"yes", "y"}:
-            ui_choice = True
-            
-    if ui_choice:
-        spec = run_ui_branch(spec, config)
+        print("UI brainstorming is deferred for now; continuing with text spec intake.")
         
     while True:
         if spec_review:

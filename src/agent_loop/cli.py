@@ -234,7 +234,7 @@ def handle_start(args: argparse.Namespace, config: Config) -> None:
         intake_mode = args.intake
         force_ui = None
         if intake_mode == "ui_lab":
-            print("Warning: 'ui_lab' intake mode is deprecated. Use 'spec' instead. Defaulting to 'spec' with UI enabled.")
+            print("Warning: 'ui_lab' intake mode is deprecated. Use 'spec' instead. UI brainstorming is deferred.")
             intake_mode = "spec"
             force_ui = True
         elif intake_mode == "brainstorm":
@@ -284,7 +284,7 @@ def handle_start(args: argparse.Namespace, config: Config) -> None:
         intake_mode = args.intake
         force_ui = None
         if intake_mode == "ui_lab":
-            print("Warning: 'ui_lab' intake mode is deprecated. Use 'spec' instead. Defaulting to 'spec' with UI enabled.")
+            print("Warning: 'ui_lab' intake mode is deprecated. Use 'spec' instead. UI brainstorming is deferred.")
             intake_mode = "spec"
             force_ui = True
         elif intake_mode == "brainstorm":
@@ -648,8 +648,8 @@ def main() -> None:
     start_parser.add_argument("--goal", type=str, help="Broad goal to execute")
     start_parser.add_argument("--intake", choices=["none", "spec", "brainstorm", "ui_lab", "autonomous"], help="Intake mode")
     start_parser.add_argument("--unattended-policy", choices=["approve", "reject"], default="approve", help="Unattended policy for plan approval")
-    start_parser.add_argument("--ui", action="store_true", help="Force UI brainstorming branch")
-    start_parser.add_argument("--no-ui", action="store_true", help="Skip UI brainstorming branch")
+    start_parser.add_argument("--ui", action="store_true", help="Accepted for compatibility; UI brainstorming is currently deferred")
+    start_parser.add_argument("--no-ui", action="store_true", help="Accepted for compatibility; UI brainstorming is currently deferred")
     start_parser.add_argument("--no-spec-review", action="store_true", help="Skip internal spec review")
 
     # resume

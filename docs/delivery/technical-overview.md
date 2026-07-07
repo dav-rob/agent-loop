@@ -145,7 +145,7 @@ agent-loop start \
 Use an explicit intake mode when you know how much discovery you want:
 
 ```bash
-agent-loop start --goal "Improve the settings page layout" --intake spec --ui
+agent-loop start --goal "Improve the settings page layout" --intake spec
 agent-loop start --goal "Add CSV export for reports" --intake spec
 agent-loop start --goal "Fix flaky retry tests" --intake none
 ```
@@ -326,17 +326,20 @@ agent-loop plan --details
 Resume reconciles interrupted attempts, regenerates `.agent-loop/plan.md` and
 `.agent-loop/progress.md`, and continues execution when the goal is runnable.
 
-### Example 5: Use UI Brainstorming for UI Work
+### Example 5: Define UI Work With Spec Intake
 
-Run this when defining an actual UI goal to engage the visual companion server:
+Run this when defining a UI goal. The current intake will discuss the product,
+states, and visual direction in text before planning. The browser/HTML visual
+companion is deferred for a later release.
 
 ```bash
 agent-loop start \
   --goal "Improve the empty state for the dashboard page" \
-  --intake spec --ui
+  --intake spec
 ```
 
-The `--ui` flag seamlessly opens an optional branch in the spec discussion to evaluate layout options before planning.
+The `--ui` flag is still accepted for compatibility but does not currently open
+a separate UI brainstorming phase.
 
 ## Troubleshooting
 

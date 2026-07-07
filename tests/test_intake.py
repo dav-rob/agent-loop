@@ -138,6 +138,41 @@ class TestIntake(unittest.TestCase):
                 self.assertEqual(mock_repo.create.call_args_list[1][1]["intake_mode"], "spec")
 
     @patch("agent_loop.intake.ModelRouter")
+    @patch("builtins.input")
+    def test_brainstorm_requires_minimum_turns_and_summary_approval(self, mock_input, mock_router_cls):
+        responses = [
+            '{"status": "question", "question": "Who is this for?", "current_understanding": "The audience is still unclear."}',
+            '{"status": "question", "question": "What is the first useful outcome?", "current_understanding": "The tool needs a focused first cut."}',
+            '{"status": "question", "question": "How should it be verified?", "current_understanding": "We now know audience, outcome, and verification."}',
+            '{"status": "ready", "draft_spec": "# Compact Spec\\n\\n## Outcome\\nBuild the useful thing"}',
+            '{"draft_spec": "# Compact Spec\\n\\n## Outcome\\nBuild the useful thing"}',
+        ]
+
+        mock_router = MagicMock()
+        mock_router.run.side_effect = [
+            MagicMock(success=True, output=output, error="")
+            for output in responses
+        ]
+        mock_router_cls.return_value = mock_router
+        mock_input.side_effect = [
+            "Operators",
+            "A working CLI",
+            "Run pytest",
+            "skip",
+            "draft",
+        ]
+
+        with patch("builtins.print") as mock_print:
+            spec = run_brainstorm_discussion("Build a CLI", self.config)
+
+        printed = "\n".join(str(call.args[0]) for call in mock_print.call_args_list if call.args)
+        self.assertIn("Current understanding:", printed)
+        self.assertIn("Brainstorming summary:", printed)
+        self.assertEqual(mock_input.call_args_list[-1].args[0], "Continue brainstorming or draft spec? (continue/draft/edit): ")
+        self.assertEqual(mock_router.run.call_count, 4)
+        self.assertIn("## Outcome", spec)
+
+    @patch("agent_loop.intake.ModelRouter")
     def test_draft_spec_uses_central_router(self, mock_router_cls):
         config = Config({
             "state_dir": str(Path(self.tmpdir.name) / "fallback-state"),
@@ -164,6 +199,37 @@ class TestIntake(unittest.TestCase):
         self.assertIn("## Outcome", spec)
         mock_router.run.assert_called_once()
         self.assertEqual(mock_router.run.call_args.kwargs["profile"], "intake")
+
+    @patch("agent_loop.intake.ModelRouter")
+    def test_model_calls_print_progress_before_waiting(self, mock_router_cls):
+        succeeded = MagicMock()
+        succeeded.success = True
+        succeeded.output = '{"draft_spec": "# Compact Spec\\n\\n## Outcome\\nDone"}'
+        succeeded.error = ""
+        mock_router = MagicMock()
+        mock_router.run.return_value = succeeded
+        mock_router_cls.return_value = mock_router
+
+        with patch("builtins.print") as mock_print:
+            draft_compact_spec("Goal", "", self.config)
+
+        printed = [call.args[0] for call in mock_print.call_args_list if call.args]
+        self.assertIn("Draft spec thinking...", printed)
+
+    @patch("agent_loop.intake.run_ui_branch")
+    @patch("agent_loop.intake.run_brainstorm_discussion")
+    @patch("agent_loop.intake.run_spec_review")
+    @patch("builtins.input")
+    def test_spec_intake_defers_ui_phase(self, mock_input, mock_review, mock_brainstorm, mock_ui_branch):
+        mock_brainstorm.return_value = "# Compact Spec\n\n## Outcome\nBuild a dashboard"
+        mock_review.return_value = ("approved", "# Compact Spec\n\n## Outcome\nBuild a dashboard")
+        mock_input.side_effect = ["yes", "yes"]
+
+        spec = run_spec_intake("Build a dashboard", self.config)
+
+        self.assertIn("Build a dashboard", spec)
+        mock_ui_branch.assert_not_called()
+        self.assertEqual(mock_input.call_args_list[0].args[0], "Approve this spec and start planning? (yes/no/edit): ")
 
     @patch("agent_loop.intake.ModelRouter")
     def test_model_failures_print_non_empty_diagnostic(self, mock_router_cls):

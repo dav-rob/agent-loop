@@ -315,10 +315,10 @@ agent-loop start --goal "Add webhook retry support" --intake spec
 
 Answer the agent's questions, review the generated compact spec, and then approve it to start planning.
 
-For UI work:
+For UI work, use normal spec intake. The visual/browser companion is deferred:
 
 ```bash
-agent-loop start --goal "Improve the dashboard empty state" --intake spec --ui
+agent-loop start --goal "Improve the dashboard empty state" --intake spec
 ```
 
 For a stopped run:
@@ -342,7 +342,7 @@ implementation. The broad shape is there, but these are the main gaps or rough
 edges to keep in mind:
 
 - The interactive `spec` intake now uses an adaptive multi-turn agent conversation to draft a "compact spec", followed by an internal review pass. Legacy aliases (`autonomous`, `brainstorm`, `ui_lab`) are deprecated but mapped to `none` and `spec`.
-- UI brainstorming is now an optional branch natively integrated within the `spec` mode rather than a separate intake mode.
+- UI brainstorming is deferred. The `--ui` flag is still accepted for compatibility, but active intake is text-only until the visual/browser companion is implemented.
 - `resume` can restart a goal from `blocked`, but if the underlying blocked task
   is still blocked and no other task is runnable, the goal will just become
   blocked again. The app needs a clearer operator workflow for resolving
