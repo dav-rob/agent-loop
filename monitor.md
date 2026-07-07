@@ -63,6 +63,25 @@ find .agent-loop/logs -maxdepth 4 -type f | sort
 find .agent-loop/handoffs -maxdepth 1 -type f -name '*.md' -print -exec sed -n '1,220p' {} \;
 ```
 
+## Rolling Concerns File
+
+For active monitoring, keep a rolling concerns file in this repository's local `./tmp/` directory. Use the target directory name in the filename, for example:
+
+```sh
+mkdir -p ./tmp
+$EDITOR ./tmp/TARGET_DIRECTORY_NAME-monitor-concerns.md
+```
+
+This file is monitoring scratch state, not a permanent report. Update it on every monitoring pass:
+
+- Rewrite the current judgement with the latest common-sense assessment.
+- Add new concerns when there is evidence of real risk: hangs, repeated rejected attempts, model/quota failover, stale DB/process mismatch, missing verification, bad retry behavior, merge conflicts, or orphaned child processes.
+- Amend existing concerns with new evidence rather than duplicating them.
+- Delete or move concerns to a cleared section when later evidence resolves them.
+- Keep a short `Watch next` section for the next practical checks.
+
+The concerns file should help the next monitor understand what matters without rereading every log. It should not become an append-only event stream; the database and logs already provide that evidence.
+
 ## Monitoring Report
 
 A monitoring report should use common sense, not just paste command output. The purpose is to help the user understand whether the loop is doing the expected jobs and tasks, or whether it has run into problems.
