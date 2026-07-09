@@ -1,10 +1,12 @@
 import os
 import json
+import sys
+import time
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 import pytest
 import subprocess
-from agent_loop.adapters import CodexAdapter, AgyAdapter, redact_secrets, get_adapter
+from agent_loop.adapters import CodexAdapter, AgyAdapter, redact_secrets, get_adapter, _run_provider_process
 
 def test_secret_redaction():
     # Setup sensitive environment variables
@@ -78,6 +80,50 @@ def test_agy_discover_capabilities():
         assert "Gemini 3.5 Flash (High)" in caps["models"]
         assert "Claude Opus 4.6 (Thinking)" in caps["models"]
         assert mock_subprocess.call_count == 2
+
+
+def test_provider_timeout_kills_workspace_child_process_that_escapes_group(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    marker = f"agent-loop-nested-child-{os.getpid()}-{time.time_ns()}"
+    child_script = tmp_path / "child.py"
+    launcher_script = tmp_path / "launcher.py"
+    child_script.write_text(
+        "import time, sys\n"
+        "print(sys.argv[1], flush=True)\n"
+        "time.sleep(30)\n"
+    )
+    launcher_script.write_text(
+        "import subprocess, sys, time\n"
+        "subprocess.Popen([sys.executable, sys.argv[1], sys.argv[2]], start_new_session=True)\n"
+        "time.sleep(30)\n"
+    )
+
+    with pytest.raises(subprocess.TimeoutExpired):
+        _run_provider_process(
+            [sys.executable, str(launcher_script), str(child_script), marker],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=0.5,
+            cwd=workspace,
+        )
+
+    deadline = time.time() + 5
+    alive_output = ""
+    while time.time() < deadline:
+        alive = subprocess.run(
+            ["ps", "-axo", "pid,command"],
+            capture_output=True,
+            text=True,
+            stdin=subprocess.DEVNULL,
+        )
+        alive_output = alive.stdout
+        if marker not in alive_output:
+            break
+        time.sleep(0.2)
+
+    assert marker not in alive_output
 
 def test_codex_run_attempt_success(tmp_path):
     adapter = CodexAdapter()
