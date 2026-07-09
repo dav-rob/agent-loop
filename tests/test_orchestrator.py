@@ -1291,8 +1291,9 @@ def test_task_review_prompt_guides_continuation_feedback(db_conn, tmp_path, monk
 
     captured = {}
 
-    def fake_run_agent_review(run_id_arg, subject_type, subject_id, prompt, attempt_id=None):
+    def fake_run_agent_review(run_id_arg, subject_type, subject_id, prompt, attempt_id=None, workspace_path=None):
         captured["prompt"] = prompt
+        captured["workspace_path"] = workspace_path
         return "approved"
 
     monkeypatch.setattr(orch, "run_agent_review", fake_run_agent_review)
@@ -1301,6 +1302,7 @@ def test_task_review_prompt_guides_continuation_feedback(db_conn, tmp_path, monk
     assert "task branch that will normally be continued" in captured["prompt"]
     assert "Prefer precise repair instructions" in captured["prompt"]
     assert "Reject only for blocking issues" in captured["prompt"]
+    assert captured["workspace_path"] == orch._task_worktree_dir(run_id, task_id)
 
 
 def test_implementation_route_failover_reaches_codex_after_agy_routes_unavailable(db_conn, tmp_path, monkeypatch):

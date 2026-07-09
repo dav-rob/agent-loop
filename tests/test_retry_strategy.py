@@ -119,6 +119,62 @@ def test_task_review_records_retry_strategy_on_attempt(db_conn, tmp_path):
     assert attempt["retry_strategy_reason"] == "Wrong stack."
 
 
+def test_task_review_runs_in_task_worktree_and_prompts_with_review_metadata(db_conn, tmp_path):
+    run_repo = RunRepository(db_conn)
+    feature_repo = FeatureRepository(db_conn)
+    task_repo = TaskRepository(db_conn)
+    attempt_repo = AttemptRepository(db_conn)
+
+    run_id = run_repo.create("Build resilient retries", "none")
+    feature_id = feature_repo.create(run_id, "Retry continuity", "medium")
+    task_id = task_repo.create(run_id, feature_id, "Continue failed work", "implementation", "medium")
+    attempt_id = attempt_repo.create(run_id, task_id, route="executor")
+
+    config = Config({
+        "db_path": ":memory:",
+        "logs_dir": str(tmp_path / "logs"),
+        "worktrees_dir": str(tmp_path / "worktrees"),
+    })
+    orch = Orchestrator(
+        db_conn,
+        config,
+        plan_path=tmp_path / "plan.md",
+        progress_path=tmp_path / "progress.md",
+    )
+
+    task_worktree = orch._task_worktree_dir(run_id, task_id)
+    task_worktree.mkdir(parents=True)
+
+    routed = MagicMock()
+    routed.provider = "codex"
+    routed.model = "gpt-5.5"
+    routed.reasoning_level = "high"
+    routed.result = AttemptResult(
+        success=True,
+        exit_code=0,
+        output='{"decision": "approved", "findings": "The task branch is correct."}',
+        error="",
+    )
+
+    with patch("agent_loop.orchestrator.ModelRouter") as router_cls:
+        router = MagicMock()
+        router.run.return_value = routed
+        router_cls.return_value = router
+
+        decision = orch.run_task_review(run_id, task_id, "start123", "end456", attempt_id=attempt_id)
+
+    assert decision == "approved"
+    call = router.run.call_args.kwargs
+    assert call["workspace_path"] == task_worktree
+    prompt = call["prompt"]
+    assert f"Task worktree: {task_worktree}" in prompt
+    assert f"Task branch: agent-loop-run-{run_id}-task-{task_id}" in prompt
+    assert f"Attempt ID: {attempt_id}" in prompt
+    assert "Start SHA: start123" in prompt
+    assert "End SHA: end456" in prompt
+    assert "authoritative checkout for file inspection and verification commands" in prompt
+
+
 def test_timeout_review_records_retry_strategy_on_attempt(db_conn, tmp_path):
     run_repo = RunRepository(db_conn)
     feature_repo = FeatureRepository(db_conn)

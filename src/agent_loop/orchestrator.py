@@ -2511,7 +2511,15 @@ Only return the raw JSON object. Do not include markdown wrappers.
         self._render_progress(run_id)
         return decision
 
-    def run_agent_review(self, run_id: int, subject_type: str, subject_id: int, review_prompt: str, attempt_id: Optional[int] = None) -> str:
+    def run_agent_review(
+        self,
+        run_id: int,
+        subject_type: str,
+        subject_id: int,
+        review_prompt: str,
+        attempt_id: Optional[int] = None,
+        workspace_path: Optional[Path] = None,
+    ) -> str:
         review_logs_dir = self.config.logs_dir / str(run_id) / "reviews" / f"{subject_type}_{subject_id}"
         review_logs_dir.mkdir(parents=True, exist_ok=True)
         
@@ -2523,6 +2531,7 @@ Only return the raw JSON object. Do not include markdown wrappers.
         provider = None
         model = None
         review_task_id = subject_id if subject_type in {"task", "task_escalation"} and self.task_repo.get(subject_id) else None
+        review_workspace_path = Path(workspace_path).resolve() if workspace_path else Path.cwd().resolve()
         self.lifecycle.review_started(
             run_id=run_id,
             task_id=review_task_id,
@@ -2553,7 +2562,7 @@ Only return the raw JSON object. Do not include markdown wrappers.
             routed_result = self._model_router().run(
                 profile="escalation_reviewer" if subject_type == "task_escalation" else "reviewer",
                 prompt=prompt,
-                workspace_path=Path.cwd(),
+                workspace_path=review_workspace_path,
                 logs_root=review_logs_dir,
             )
             routed_inner = getattr(routed_result, "result", None)
@@ -2650,13 +2659,15 @@ Only return the raw JSON object. Do not include markdown wrappers.
             return "rejected"
 
     def run_task_review(self, run_id: int, task_id: int, start_sha: Optional[str], end_sha: Optional[str], attempt_id: Optional[int] = None) -> str:
+        task_worktree = self._task_worktree_dir(run_id, task_id)
+        task_branch = self._task_branch_name(run_id, task_id)
         diff = "No commit SHA provided."
         if start_sha and end_sha:
             try:
                 with self.git_lock:
                     res = subprocess.run(
                         ["git", "log", "-p", "--reverse", f"{start_sha}..{end_sha}"],
-                        cwd=Path.cwd(),
+                        cwd=task_worktree if task_worktree.exists() else Path.cwd(),
                         capture_output=True,
                         text=True,
                         check=True
@@ -2672,6 +2683,16 @@ Only return the raw JSON object. Do not include markdown wrappers.
         prompt = f"""
 Please review task '{task_name}' diff:
 
+Task review metadata:
+- Task worktree: {task_worktree}
+- Task branch: {task_branch}
+- Attempt ID: {attempt_id if attempt_id is not None else 'unknown'}
+- Start SHA: {start_sha or 'unknown'}
+- End SHA: {end_sha or 'unknown'}
+
+The task worktree is the authoritative checkout for file inspection and verification commands.
+The diff below is evidence for this attempt; inspect the task worktree directly if you need more context.
+
 {diff}
 
 You are reviewing a task branch that will normally be continued on the next attempt.
@@ -2683,7 +2704,14 @@ Classify your guidance in the findings:
 - block: stop for a human decision.
 Reject only for blocking issues. If you recommend restart, explain why continuing the branch is unsafe or wasteful.
 """
-        return self.run_agent_review(run_id, "task", task_id, prompt, attempt_id=attempt_id)
+        return self.run_agent_review(
+            run_id,
+            "task",
+            task_id,
+            prompt,
+            attempt_id=attempt_id,
+            workspace_path=task_worktree,
+        )
 
     def run_feature_review(self, run_id: int, feature_id: int) -> str:
         with self.db_lock:
