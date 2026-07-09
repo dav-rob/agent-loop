@@ -6,8 +6,9 @@ import urllib.request
 import sqlite3
 import subprocess
 import threading
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Iterator, List, Optional
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from agent_loop.database import get_connection
@@ -94,7 +95,38 @@ def validate_dag(features: List[Dict[str, Any]], tasks: List[Dict[str, Any]]) ->
     return True
 
 
-def parse_review_response(output: str, allowed_decisions: Optional[set[str]] = None) -> Tuple[Optional[str], Optional[str]]:
+RETRY_STRATEGIES = {
+    "continue_existing_branch",
+    "restart_from_main",
+    "restart_from_last_good_commit",
+    "apply_patch_to_clean_branch",
+    "block_for_human",
+}
+
+
+@dataclass(frozen=True)
+class ReviewParseResult:
+    decision: Optional[str]
+    findings: Optional[str]
+    retry_strategy: Optional[str] = None
+    retry_strategy_reason: Optional[str] = None
+
+    def __iter__(self) -> Iterator[Optional[str]]:
+        yield self.decision
+        yield self.findings
+
+
+def _default_retry_strategy_for_decision(decision: Optional[str]) -> Optional[str]:
+    if decision in {"rejected", "retry_with_handoff", "resume"}:
+        return "continue_existing_branch"
+    if decision == "abandon":
+        return "restart_from_main"
+    if decision == "block":
+        return "block_for_human"
+    return None
+
+
+def parse_review_response(output: str, allowed_decisions: Optional[set[str]] = None) -> ReviewParseResult:
     allowed_decisions = allowed_decisions or {"approved", "rejected", "follow_up", "assessment", "block"}
     cleaned_output = output.strip()
     if cleaned_output.startswith("```"):
@@ -120,7 +152,14 @@ def parse_review_response(output: str, allowed_decisions: Optional[set[str]] = N
         dec_val = data["decision"]
         find_val = data["findings"]
         if dec_val in allowed_decisions and isinstance(find_val, str):
-            return dec_val, find_val
+            raw_strategy = data.get("retry_strategy")
+            strategy = raw_strategy if raw_strategy in RETRY_STRATEGIES else None
+            if not strategy:
+                strategy = _default_retry_strategy_for_decision(dec_val)
+            reason = data.get("retry_strategy_reason")
+            if not isinstance(reason, str):
+                reason = None
+            return ReviewParseResult(dec_val, find_val, strategy, reason)
 
     decision_pattern = "|".join(re.escape(decision) for decision in sorted(allowed_decisions, key=len, reverse=True))
     labelled = re.search(
@@ -130,9 +169,13 @@ def parse_review_response(output: str, allowed_decisions: Optional[set[str]] = N
     )
     if labelled:
         decision = labelled.group(1).lower()
-        return decision, f"Parsed labelled non-JSON review output as {decision}. Raw output: {output}"
+        return ReviewParseResult(
+            decision,
+            f"Parsed labelled non-JSON review output as {decision}. Raw output: {output}",
+            _default_retry_strategy_for_decision(decision),
+        )
 
-    return None, None
+    return ReviewParseResult(None, None, None)
 
 
 PROSE_VERIFICATION_PREFIXES = (
@@ -221,6 +264,76 @@ class Orchestrator:
             if self._worktree_matches_branch(worktree_dir, branch_name):
                 return
         create_worktree(repo_path, worktree_dir, branch_name)
+
+    def _delete_task_branch(self, repo_path: Path, branch_name: str) -> None:
+        subprocess.run(
+            ["git", "branch", "-D", branch_name],
+            cwd=repo_path,
+            capture_output=True,
+            text=True,
+            stdin=subprocess.DEVNULL,
+        )
+
+    def _prepare_task_worktree(
+        self,
+        repo_path: Path,
+        worktree_dir: Path,
+        branch_name: str,
+        strategy: str,
+        patch_path: Optional[str] = None,
+        base_sha: Optional[str] = None,
+    ) -> None:
+        if strategy == "block_for_human":
+            raise RuntimeError("Retry strategy block_for_human prevents automatic task execution.")
+
+        if strategy in {"restart_from_main", "restart_from_last_good_commit", "apply_patch_to_clean_branch"}:
+            remove_worktree(repo_path, worktree_dir)
+            self._delete_task_branch(repo_path, branch_name)
+            create_worktree(repo_path, worktree_dir, branch_name, base_commit=base_sha or "main")
+            if strategy == "apply_patch_to_clean_branch" and patch_path and patch_path != "CLEAN":
+                subprocess.run(
+                    ["git", "apply", str(patch_path)],
+                    cwd=worktree_dir,
+                    capture_output=True,
+                    text=True,
+                    check=True,
+                    stdin=subprocess.DEVNULL,
+                )
+            return
+
+        self._ensure_task_worktree(repo_path, worktree_dir, branch_name)
+
+    def _latest_retry_strategy(self, attempts: List[Dict[str, Any]]) -> Tuple[str, Optional[str], Optional[str], Optional[str]]:
+        latest_with_strategy = None
+        for attempt in sorted(attempts, key=lambda item: item["id"], reverse=True):
+            if attempt.get("retry_strategy"):
+                latest_with_strategy = attempt
+                break
+        if not latest_with_strategy:
+            return "continue_existing_branch", None, None, None
+        base_ref = latest_with_strategy.get("base_sha")
+        if latest_with_strategy.get("retry_strategy") == "restart_from_last_good_commit":
+            base_ref = latest_with_strategy.get("commit_sha") or base_ref
+        return (
+            latest_with_strategy.get("retry_strategy") or "continue_existing_branch",
+            latest_with_strategy.get("retry_strategy_reason"),
+            latest_with_strategy.get("patch_path"),
+            base_ref,
+        )
+
+    def _git_rev_parse(self, repo_path: Path, ref: str) -> Optional[str]:
+        try:
+            res = subprocess.run(
+                ["git", "rev-parse", ref],
+                cwd=repo_path,
+                capture_output=True,
+                text=True,
+                check=True,
+                stdin=subprocess.DEVNULL,
+            )
+            return res.stdout.strip()
+        except Exception:
+            return None
 
     def _compact_handover_text(self, text: Optional[str], fallback: str, max_chars: int = 1200) -> str:
         cleaned = " ".join((text or "").split())
@@ -1179,6 +1292,36 @@ Rules:
         except Exception:
             return None
 
+    def _interrupted_retry_strategy(
+        self,
+        run_id: int,
+        task_id: int,
+        attempt_id: int,
+        worktree_path: Optional[str],
+        patch_path: Optional[str],
+    ) -> Tuple[str, str, bool]:
+        if patch_path and patch_path != "CLEAN":
+            return (
+                "apply_patch_to_clean_branch",
+                f"Preserved interrupted work from attempt {attempt_id} as patch {patch_path}.",
+                True,
+            )
+
+        if worktree_path:
+            wt_dir = Path(worktree_path)
+            if wt_dir.exists() and wt_dir.resolve() == self._task_worktree_dir(run_id, task_id):
+                return (
+                    "continue_existing_branch",
+                    f"Preserved interrupted worktree for durable task branch at {worktree_path}.",
+                    True,
+                )
+
+        return (
+            "restart_from_main",
+            f"No useful interrupted work was preserved for attempt {attempt_id}.",
+            False,
+        )
+
     def reconcile_interrupted_run(self, run_id: int) -> int:
         cursor = self.conn.cursor()
         
@@ -1193,6 +1336,7 @@ Rules:
         # 2. Preserve uncommitted changes for all running attempts
         successful_abandon_attempts = []
         patches = {}
+        recovery_strategies = {}
         for att_id, task_id, wt_path in running_attempts:
             if wt_path:
                 wt_dir = Path(wt_path)
@@ -1211,6 +1355,16 @@ Rules:
             else:
                 successful_abandon_attempts.append((att_id, task_id, wt_path))
 
+        for att_id, task_id, wt_path in successful_abandon_attempts:
+            strategy, reason, keep_worktree = self._interrupted_retry_strategy(
+                run_id=run_id,
+                task_id=task_id,
+                attempt_id=att_id,
+                worktree_path=wt_path,
+                patch_path=patches.get(att_id),
+            )
+            recovery_strategies[att_id] = (strategy, reason, keep_worktree)
+
         # 3. Database updates in a single transaction
         with self.db_lock:
             cursor.execute("BEGIN TRANSACTION;")
@@ -1218,9 +1372,21 @@ Rules:
                 for att_id, task_id, wt_path in successful_abandon_attempts:
                     # Update attempt to abandoned and record its patch path
                     patch_path = patches.get(att_id)
+                    strategy, reason, _keep_worktree = recovery_strategies.get(
+                        att_id,
+                        ("restart_from_main", f"No useful interrupted work was preserved for attempt {att_id}.", False),
+                    )
                     cursor.execute(
-                        "UPDATE attempts SET outcome = 'abandoned', patch_path = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?;",
-                        (patch_path, att_id)
+                        """
+                        UPDATE attempts
+                        SET outcome = 'abandoned',
+                            patch_path = ?,
+                            retry_strategy = ?,
+                            retry_strategy_reason = ?,
+                            updated_at = CURRENT_TIMESTAMP
+                        WHERE id = ?;
+                        """,
+                        (patch_path, strategy, reason, att_id)
                     )
                     
                     # Check total attempts for this task
@@ -1249,6 +1415,12 @@ Rules:
 
         # 4. Filesystem/Git cleanup (outside database transaction)
         for att_id, task_id, wt_path in successful_abandon_attempts:
+            _strategy, _reason, keep_worktree = recovery_strategies.get(
+                att_id,
+                ("restart_from_main", "", False),
+            )
+            if keep_worktree:
+                continue
             if wt_path:
                 wt_dir = Path(wt_path)
                 if wt_dir.exists():
@@ -1271,7 +1443,17 @@ Rules:
         # 5. Clean up any leftover worktrees from previously crashed/interrupted recoveries
         with self.db_lock:
             cursor.execute(
-                "SELECT id, task_id, worktree_path FROM attempts WHERE run_id = ? AND outcome = 'abandoned' AND worktree_path IS NOT NULL;",
+                """
+                SELECT id, task_id, worktree_path
+                FROM attempts
+                WHERE run_id = ?
+                  AND outcome = 'abandoned'
+                  AND worktree_path IS NOT NULL
+                  AND (
+                      retry_strategy IS NULL
+                      OR retry_strategy NOT IN ('continue_existing_branch', 'apply_patch_to_clean_branch')
+                  );
+                """,
                 (run_id,)
             )
             leftover_attempts = cursor.fetchall()
@@ -1387,6 +1569,7 @@ Rules:
             attempts = [a for a in self.attempt_repo.get_by_run(run_id) if a["task_id"] == task_id]
             rejected_review_count = self._task_rejected_review_count(run_id, task_id)
         profile = self.execution_profile_for_task(task, attempts, rejected_review_count=rejected_review_count)
+        retry_strategy, retry_strategy_reason, retry_patch_path, retry_base_sha = self._latest_retry_strategy(attempts)
 
         with self.db_lock:
             attempt_id = self.attempt_repo.create(
@@ -1397,7 +1580,9 @@ Rules:
                 model=None,
                 reasoning_level=None,
                 worktree_path=None,
-                logs_path=None
+                logs_path=None,
+                retry_strategy=retry_strategy,
+                retry_strategy_reason=retry_strategy_reason,
             )
 
         worktree_dir = self._task_worktree_dir(run_id, task_id)
@@ -1420,11 +1605,32 @@ Rules:
                 logs_path=str(logs_dir),
             )
 
+        if retry_strategy == "block_for_human":
+            with self.db_lock:
+                self.attempt_repo.update_outcome(attempt_id, "abandoned")
+                self.task_repo.update_status(task_id, "blocked")
+                self.lifecycle.task_blocked(
+                    run_id,
+                    task_id,
+                    retry_strategy_reason or f"Task '{task['name']}' requires human recovery decision.",
+                )
+                self._render_progress(run_id)
+            self.notify(run_id, "blocked", f"Task '{task['name']}' requires human recovery decision.")
+            return False
+
         branch_name = self._task_branch_name(run_id, task_id)
         should_cleanup_worktree = True
         try:
             with self.git_lock:
-                self._ensure_task_worktree(Path.cwd(), worktree_dir, branch_name)
+                base_sha = retry_base_sha or self._git_rev_parse(Path.cwd(), "main")
+                self._prepare_task_worktree(
+                    repo_path=Path.cwd(),
+                    worktree_dir=worktree_dir,
+                    branch_name=branch_name,
+                    strategy=retry_strategy,
+                    patch_path=retry_patch_path,
+                    base_sha=base_sha,
+                )
         except Exception as exc:
             with self.db_lock:
                 self.attempt_repo.update_outcome(attempt_id, "failed")
@@ -1471,6 +1677,15 @@ Rules:
                 start_sha = res.stdout.strip()
             except Exception:
                 start_sha = None
+
+        with self.db_lock:
+            self.attempt_repo.update_start_metadata(
+                attempt_id=attempt_id,
+                start_sha=start_sha,
+                base_sha=base_sha,
+                retry_strategy=retry_strategy,
+                retry_strategy_reason=retry_strategy_reason,
+            )
 
         with self.db_lock:
             previous_rejection = self.review_repo.get_latest_rejection("task", task_id)
@@ -2223,9 +2438,12 @@ Decide what should happen next.
 Output a JSON response in the following format:
 {{
   "decision": "retry_with_handoff",
-  "findings": "Explain the timeout, what the next attempt should preserve or avoid, and whether this is a hard blocker."
+  "findings": "Explain the timeout, what the next attempt should preserve or avoid, and whether this is a hard blocker.",
+  "retry_strategy": "continue_existing_branch",
+  "retry_strategy_reason": "Why this retry strategy is appropriate."
 }}
 The "decision" must be one of: "retry_with_handoff", "abandon", "block", "resume".
+The "retry_strategy" must be one of: "continue_existing_branch", "restart_from_main", "restart_from_last_good_commit", "apply_patch_to_clean_branch", "block_for_human".
 Only return the raw JSON object. Do not include markdown wrappers.
 """
             routed_result = self._model_router().run(
@@ -2239,13 +2457,21 @@ Only return the raw JSON object. Do not include markdown wrappers.
             provider = routed_result.provider
             model = routed_result.model
             if result.success:
-                parsed_decision, parsed_findings = parse_review_response(
+                parsed_review = parse_review_response(
                     result.output,
                     allowed_decisions={"retry_with_handoff", "abandon", "block", "resume"},
                 )
+                parsed_decision, parsed_findings = parsed_review
                 if parsed_decision and parsed_findings:
                     decision = parsed_decision
                     findings = parsed_findings
+                    self.attempt_repo.update_retry_strategy(
+                        attempt_id,
+                        parsed_review.retry_strategy
+                        or _default_retry_strategy_for_decision(parsed_decision)
+                        or "continue_existing_branch",
+                        retry_strategy_reason=parsed_review.retry_strategy_reason or parsed_findings,
+                    )
                 else:
                     findings = f"Failed to parse timeout review JSON output. Raw output: {result.output}"
             else:
@@ -2316,9 +2542,12 @@ Apply a blocking severity threshold:
 Output a JSON response in the following format:
 {{
   "decision": "approved",
-  "findings": "Detail findings here..."
+  "findings": "Detail findings here...",
+  "retry_strategy": "continue_existing_branch",
+  "retry_strategy_reason": "Only include when rejecting, blocking, or recommending a restart."
 }}
 The "decision" must be one of: "approved", "rejected", "follow_up", "assessment", "block".
+For rejected task reviews, include "retry_strategy" as one of: "continue_existing_branch", "restart_from_main", "restart_from_last_good_commit", "apply_patch_to_clean_branch", "block_for_human".
 Only return the raw JSON object. Do not include markdown wrappers.
 """
             routed_result = self._model_router().run(
@@ -2336,10 +2565,19 @@ Only return the raw JSON object. Do not include markdown wrappers.
             findings = "Diff checked"
             
             if result.success:
-                parsed_decision, parsed_findings = parse_review_response(result.output)
+                parsed_review = parse_review_response(result.output)
+                parsed_decision, parsed_findings = parsed_review
                 if parsed_decision and parsed_findings:
                     decision = parsed_decision
                     findings = parsed_findings
+                    if attempt_id is not None and subject_type == "task":
+                        strategy = parsed_review.retry_strategy or _default_retry_strategy_for_decision(parsed_decision)
+                        if strategy:
+                            self.attempt_repo.update_retry_strategy(
+                                attempt_id,
+                                strategy,
+                                retry_strategy_reason=parsed_review.retry_strategy_reason or parsed_findings,
+                            )
                 else:
                     findings = f"Failed to parse review JSON output. Raw output: {result.output}"
             else:

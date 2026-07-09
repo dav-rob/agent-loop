@@ -88,6 +88,39 @@ def test_task_handover_markdown_renders_executor_and_reviewer_entries(db_conn, t
     assert "Reviewer should reject only issues that block this task now" in content
 
 
+def test_task_handover_markdown_renders_attempt_retry_strategy(db_conn, tmp_path):
+    run_repo = RunRepository(db_conn)
+    feat_repo = FeatureRepository(db_conn)
+    task_repo = TaskRepository(db_conn)
+    attempt_repo = AttemptRepository(db_conn)
+    handover_repo = HandoverRepository(db_conn)
+
+    run_id = run_repo.create("Build a robust dashboard", "none")
+    feat_id = feat_repo.create(run_id, "Foundation", "medium")
+    task_id = task_repo.create(run_id, feat_id, "Scaffold dashboard", "implementation", "medium")
+    attempt_id = attempt_repo.create(
+        run_id,
+        task_id,
+        route="executor",
+        retry_strategy="restart_from_main",
+        retry_strategy_reason="Reviewer found the branch was solving the wrong task.",
+    )
+    handover_repo.create(
+        run_id=run_id,
+        task_id=task_id,
+        attempt_id=attempt_id,
+        phase="reviewer",
+        decision="rejected",
+        summary="Restart from a clean base.",
+    )
+
+    path = render_task_handover_md(db_conn, run_id, task_id, tmp_path / "handoffs")
+    content = path.read_text()
+
+    assert "- **Retry strategy:** restart_from_main" in content
+    assert "- **Retry strategy reason:** Reviewer found the branch was solving the wrong task." in content
+
+
 def test_task_execution_writes_handover_and_refreshes_progress_after_verification(db_conn, tmp_path, monkeypatch):
     monkeypatch.setattr(
         "agent_loop.orchestrator.create_worktree",

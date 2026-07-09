@@ -1858,7 +1858,7 @@ def test_preserve_partial_work_on_recovery(db_conn, tmp_path, monkeypatch):
         mock_status = MagicMock(returncode=0, stdout="")
         return mock_status
 
-    # We also mock remove_worktree to verify it got called
+    # Preserved interrupted work should keep the worktree available for retry.
     mock_remove_wt = MagicMock()
     monkeypatch.setattr("agent_loop.orchestrator.remove_worktree", mock_remove_wt)
 
@@ -1866,14 +1866,15 @@ def test_preserve_partial_work_on_recovery(db_conn, tmp_path, monkeypatch):
         # Trigger recovery
         orch.reconcile_interrupted_run(run_id)
 
-    # Verify remove_worktree was called
-    mock_remove_wt.assert_called_once()
+    mock_remove_wt.assert_not_called()
 
     # Verify that patch file was written and is inspectable
     # Patch path is stored in the database for the attempt
     attempt = attempt_repo.get(attempt_id)
     assert attempt["outcome"] == "abandoned"
     assert attempt["patch_path"] is not None
+    assert attempt["worktree_path"] == str(wt_dir)
+    assert attempt["retry_strategy"] == "apply_patch_to_clean_branch"
 
     patch_file = Path(attempt["patch_path"])
     assert patch_file.exists()
