@@ -279,17 +279,94 @@ Add or update focused tests:
 - Record start/end SHAs in lifecycle metadata if DB migration is deferred.
 - Update prompts to say continuation vs restart.
 
-### Phase 2: Retry Strategy Metadata
+### Phase 1.5: Typed Follow-Ups And Recovery Closure
+
+Live continuity testing showed the durable branch behavior working, but exposed
+a bug in merge-conflict recovery: an approved task can hit merge conflicts,
+spawn a conflict-resolution task, and then remain blocked even after the
+conflict-resolution chain completes successfully.
+
+Fix this before the larger retry-strategy phase by making follow-up semantics
+explicit:
+
+- `non_blocking_follow_up`: the original task is complete enough to proceed.
+  Mark the original task complete, create the follow-up as separate dependent
+  work, and allow downstream tasks to run.
+- `blocking_recovery_follow_up`: the original task is still blocked until the
+  recovery chain completes. Preserve `origin_task_id` across all recovery
+  follow-ups, not just the immediate parent task.
+- `retry_extension_follow_up`: the original task needs another guided attempt
+  rather than a separate downstream task. Keep this as retry/escalation
+  behavior, not a normal task dependency.
+
+Merge-conflict tasks should use `blocking_recovery_follow_up` semantics:
+
+1. When an approved task fails to merge, mark the original task blocked with a
+   merge-conflict reason and create a recovery task with `origin_task_id`.
+2. Create recovery and recovery-follow-up tasks with implementation-style
+   routing when they are expected to edit files, resolve conflicts, regenerate
+   lockfiles, or run verification. Do not route file-changing recovery work as
+   pure planning just because it was spawned by an integration path.
+3. If the recovery task itself creates follow-up work, copy the same
+   `origin_task_id` into the follow-up scope.
+4. When the recovery chain reaches an approved terminal state, mark the
+   original task complete, unblock dependents, and continue scheduling.
+5. If recovery fails or is explicitly blocked, keep the original task blocked
+   with the latest recovery findings.
+
+Add focused regressions:
+
+- Approved task with merge conflict creates a blocking recovery task linked to
+  the original task.
+- Successful recovery task marks the original task complete.
+- Recovery task with non-blocking follow-up keeps `origin_task_id` through the
+  follow-up chain.
+- Successful recovery follow-up closes the original blocked task and allows
+  dependent tasks to become ready.
+- Normal non-blocking reviewer follow-up still marks the original task complete
+  immediately and creates a separate dependent follow-up task.
+- Merge-conflict and recovery-follow-up tasks that edit files are classified
+  and routed as implementation/executor work, not planner-only work.
+
+### Phase 2: Retry Strategy And Recovery Review
+
+Retry strategy metadata and patch/resume recovery are one mechanism, not two
+separate systems. The orchestrator gathers evidence, a reviewer or recovery
+reviewer chooses a strategy, and the orchestrator records and executes that
+strategy.
 
 - Add DB support for retry strategy/start SHA/base SHA.
-- Parse optional `retry_strategy` from reviews.
-- Display strategy in status/progress/handoffs.
+- Gather recovery evidence for rejected, timed-out, interrupted, or dirty
+  worktree states:
+  - current branch and HEAD
+  - committed changes since attempt start
+  - uncommitted patch
+  - merge/rebase state
+  - changed files
+  - provider logs and synthesized handover
+- Parse optional `retry_strategy` from task reviews and timeout/recovery
+  reviews.
+- Default missing `retry_strategy` to `continue_existing_branch` for ordinary
+  rejected reviews.
+- Execute the selected strategy:
+  - `continue_existing_branch`: keep the task branch/worktree.
+  - `restart_from_main`: archive/remove current branch/worktree and recreate
+    from `main`.
+  - `restart_from_last_good_commit`: restart from a selected useful attempt
+    commit.
+  - `apply_patch_to_clean_branch`: recreate clean and apply the preserved
+    patch.
+  - `block_for_human`: block with evidence.
+- Display strategy and evidence in status/progress/handoffs.
+- Improve `resume` to keep useful durable task worktrees and route ambiguous
+  or unsafe states through the same strategy decision.
 
-### Phase 3: Patch And Resume Recovery
+### Phase 3: Operator Restart/Archive Commands
 
-- Apply preserved patches when selected.
-- Improve `resume` to keep useful durable task worktrees.
-- Add explicit archive/restart paths.
+- Add CLI commands only as thin wrappers over the same retry strategy executor.
+- Support forcing restart/archive of a task branch when continuation is clearly
+  wrong.
+- Defer broader UX if it starts introducing a second orchestration path.
 
 ### Phase 4: Review Tuning
 

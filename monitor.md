@@ -82,6 +82,24 @@ This file is monitoring scratch state, not a permanent report. Update it on ever
 
 The concerns file should help the next monitor understand what matters without rereading every log. It should not become an append-only event stream; the database and logs already provide that evidence.
 
+## Live User Updates
+
+When the user asks for periodic monitoring, update the rolling concerns file and
+also report a short summary back in the current CLI/chat after every monitoring
+pass. Do not silently write only to the concerns file.
+
+Keep the live update concise:
+
+- one or two paragraphs, not raw command output
+- current judgement first
+- what changed since the last pass
+- the main concern, if any
+- what the next pass will watch
+
+If the state is unchanged, say that plainly. If a new blocker or likely bug is
+found, call it out in the live update and make sure the concerns file is updated
+with the same judgement.
+
 ## Monitoring Report
 
 A monitoring report should use common sense, not just paste command output. The purpose is to help the user understand whether the loop is doing the expected jobs and tasks, or whether it has run into problems.
