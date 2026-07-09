@@ -196,6 +196,32 @@ class Orchestrator:
     def _render_task_handover(self, run_id: int, task_id: int) -> None:
         render_task_handover_md(self.conn, run_id, task_id, self.config.handoffs_dir)
 
+    def _task_branch_name(self, run_id: int, task_id: int) -> str:
+        return f"agent-loop-run-{run_id}-task-{task_id}"
+
+    def _task_worktree_dir(self, run_id: int, task_id: int) -> Path:
+        return (self.config.worktrees_dir / f"run-{run_id}-task-{task_id}").resolve()
+
+    def _worktree_matches_branch(self, worktree_dir: Path, branch_name: str) -> bool:
+        try:
+            res = subprocess.run(
+                ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+                cwd=worktree_dir,
+                capture_output=True,
+                text=True,
+                check=True,
+                stdin=subprocess.DEVNULL,
+            )
+        except Exception:
+            return False
+        return res.stdout.strip() == branch_name
+
+    def _ensure_task_worktree(self, repo_path: Path, worktree_dir: Path, branch_name: str) -> None:
+        if worktree_dir.exists():
+            if self._worktree_matches_branch(worktree_dir, branch_name):
+                return
+        create_worktree(repo_path, worktree_dir, branch_name)
+
     def _compact_handover_text(self, text: Optional[str], fallback: str, max_chars: int = 1200) -> str:
         cleaned = " ".join((text or "").split())
         if not cleaned:
@@ -1322,7 +1348,7 @@ Rules:
                 logs_path=None
             )
 
-        worktree_dir = (self.config.worktrees_dir / f"run-{run_id}-task-{task_id}-attempt-{attempt_id}").resolve()
+        worktree_dir = self._task_worktree_dir(run_id, task_id)
         logs_dir = (self.config.logs_dir / str(run_id) / str(task_id) / str(attempt_id)).resolve()
         logs_dir.mkdir(parents=True, exist_ok=True)
 
@@ -1342,10 +1368,11 @@ Rules:
                 logs_path=str(logs_dir),
             )
 
-        branch_name = f"agent-loop-run-{run_id}-task-{task_id}-att-{attempt_id}"
+        branch_name = self._task_branch_name(run_id, task_id)
+        should_cleanup_worktree = True
         try:
             with self.git_lock:
-                create_worktree(Path.cwd(), worktree_dir, branch_name)
+                self._ensure_task_worktree(Path.cwd(), worktree_dir, branch_name)
         except Exception as exc:
             with self.db_lock:
                 self.attempt_repo.update_outcome(attempt_id, "failed")
@@ -1418,6 +1445,12 @@ Scope: {json.dumps(task['scope'])}
 """
         if previous_rejection:
             prompt += f"\nPrevious attempt was rejected with the following findings:\n{previous_rejection}\n"
+        if attempts and not is_integration:
+            prompt += (
+                "\nThis is a continuation attempt on the existing task branch.\n"
+                "Do not rebuild from scratch. Read the current diff and commits first, then apply the reviewer feedback as a targeted repair.\n"
+                "If the branch should be discarded, explain that in the handover and stop after making no broad rewrite.\n"
+            )
         if previous_timeout_context:
             prompt += f"\n{previous_timeout_context}\n"
 
@@ -1710,14 +1743,16 @@ Scope: {json.dumps(task['scope'])}
                         else:
                             with self.db_lock:
                                 self._reset_task_for_retry(task_id, run_id=run_id)
+                            should_cleanup_worktree = False
                     else:
                         with self.db_lock:
                             self.task_repo.update_status(task_id, "blocked")
                             self.lifecycle.task_blocked(run_id, task_id, f"Task '{task['name']}' had unknown review decision '{decision}'.")
                         self.notify(run_id, "blocked", f"Task '{task['name']}' had unknown review decision '{decision}'.")
 
-                with self.git_lock:
-                    remove_worktree(Path.cwd(), worktree_dir)
+                if should_cleanup_worktree:
+                    with self.git_lock:
+                        remove_worktree(Path.cwd(), worktree_dir)
                 with self.db_lock:
                     self._render_progress(run_id)
                 return True
@@ -2351,7 +2386,20 @@ Only return the raw JSON object. Do not include markdown wrappers.
         
         with self.db_lock:
             task_name = self.task_repo.get(task_id)['name']
-        prompt = f"Please review task '{task_name}' diff:\n\n{diff}"
+        prompt = f"""
+Please review task '{task_name}' diff:
+
+{diff}
+
+You are reviewing a task branch that will normally be continued on the next attempt.
+Prefer precise repair instructions that can be applied to the current branch.
+Classify your guidance in the findings:
+- continue: keep the branch and fix these specific issues.
+- partial_revert: keep useful parts, remove or replace the problematic parts.
+- restart: discard this approach and restart from a clean base because continuing is unsafe or wasteful.
+- block: stop for a human decision.
+Reject only for blocking issues. If you recommend restart, explain why continuing the branch is unsafe or wasteful.
+"""
         return self.run_agent_review(run_id, "task", task_id, prompt, attempt_id=attempt_id)
 
     def run_feature_review(self, run_id: int, feature_id: int) -> str:

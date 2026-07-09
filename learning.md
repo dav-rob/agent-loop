@@ -51,6 +51,8 @@ Use this file to record learnings, so that agents do not have to repeat work alr
 - Reviewer output is expected to be strict JSON, but a clearly labelled non-JSON decision such as `Decision: Approved` should be parsed as that decision rather than stored as a rejected review and injected into the next executor prompt as a bogus failure.
 - A timed-out executor may have made useful commits, edits, or diagnostic progress without returning a final structured handover. The orchestrator should synthesize a timeout handover from provider logs, command/file-change events, verification output, commits, and preserved patches, record a timeout review, and inject that context into the next retry prompt.
 - Runtime lifecycle events are DB-backed in `lifecycle_events` and recorded through `TaskLifecycleRecorder`; generated `progress.md` should render a recent event timeline from that table instead of relying only on derived task/attempt state.
+- Normal task execution uses durable task-scoped branches/worktrees by default: branch `agent-loop-run-{goal_id}-task-{task_id}` and worktree `worktrees/run-{goal_id}-task-{task_id}`. Attempt logs remain attempt-scoped. Reviewer rejection keeps the task worktree so the next attempt continues the branch; approved/block/restart-style paths clean up as before.
+- A pre-existing worktree path is only reused when it is on the expected task branch. Otherwise setup calls `create_worktree` so real Git can either create/recover the expected worktree or fail through the normal retry/block path; this prevents a stale plain directory from silently launching an executor in the wrong workspace.
 
 ## Useful commands
 

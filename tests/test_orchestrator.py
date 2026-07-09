@@ -1189,8 +1189,118 @@ def test_execute_task_uses_visible_worktrees_by_default(db_conn, tmp_path, monke
     assert orch._execute_task_impl(run_id, task) is True
 
     assert created_worktrees == [
-        tmp_path / "worktrees" / f"run-{run_id}-task-{task_id}-attempt-1"
+        tmp_path / "worktrees" / f"run-{run_id}-task-{task_id}"
     ]
+
+
+def test_rejected_retry_continues_same_task_worktree(db_conn, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    config = Config({
+        "db_path": ":memory:",
+        "worktrees_dir": str(tmp_path / "worktrees"),
+        "logs_dir": str(tmp_path / ".agent-loop" / "logs"),
+        "retry_policy": {"max_attempts": 3, "escalation_threshold": 2},
+        "routes": {
+            "implementation": [{"provider": "codex", "model": "gpt-5.4-mini"}],
+            "planning": [{"provider": "codex", "model": "gpt-5.5"}],
+        },
+        "commands": {
+            "narrow_test": "",
+            "regression_test": "",
+        },
+    })
+    orch = Orchestrator(db_conn, config, plan_path=tmp_path / "plan.md", progress_path=tmp_path / "progress.md")
+
+    run_repo = RunRepository(db_conn)
+    feat_repo = FeatureRepository(db_conn)
+    task_repo = TaskRepository(db_conn)
+    attempt_repo = AttemptRepository(db_conn)
+
+    run_id = run_repo.create("Continue rejected work", "autonomous")
+    run_repo.update_status(run_id, "planning")
+    run_repo.update_status(run_id, "running")
+    feat_id = feat_repo.create(run_id, "Feature 1", "low")
+    task_id = task_repo.create(run_id, feat_id, "Task 1", "implementation", "low")
+    task_repo.update_status(task_id, "ready")
+
+    expected_worktree = tmp_path / "worktrees" / f"run-{run_id}-task-{task_id}"
+    expected_branch = f"agent-loop-run-{run_id}-task-{task_id}"
+    created_worktrees = []
+    removed_worktrees = []
+    prompts = []
+
+    def fake_create_worktree(repo_path, worktree_path, branch_name):
+        created_worktrees.append((Path(worktree_path), branch_name))
+        Path(worktree_path).mkdir(parents=True, exist_ok=True)
+
+    def fake_remove_worktree(repo_path, worktree_path):
+        removed_worktrees.append(Path(worktree_path))
+
+    class FakeRouter:
+        provider = "codex"
+        model = "gpt-5.4-mini"
+        reasoning_level = "high"
+
+        def run(self, profile, prompt, workspace_path, logs_root):
+            prompts.append(prompt)
+            return type("RoutedResult", (), {
+                "provider": self.provider,
+                "model": self.model,
+                "reasoning_level": self.reasoning_level,
+                "result": AttemptResult(success=True, exit_code=0, output="implemented", error=""),
+            })()
+
+    monkeypatch.setattr("agent_loop.orchestrator.create_worktree", fake_create_worktree)
+    monkeypatch.setattr("agent_loop.orchestrator.commit_changes", lambda worktree_dir, message: f"sha-{len(attempt_repo.get_by_run(run_id))}")
+    monkeypatch.setattr("agent_loop.orchestrator.remove_worktree", fake_remove_worktree)
+    monkeypatch.setattr(orch, "_model_router", lambda: FakeRouter())
+    monkeypatch.setattr(orch, "_worktree_matches_branch", lambda worktree_path, branch_name: Path(worktree_path) == expected_worktree and branch_name == expected_branch)
+    monkeypatch.setattr(orch, "run_task_review", MagicMock(side_effect=["rejected", "approved"]))
+    monkeypatch.setattr("agent_loop.orchestrator.merge_branch", lambda repo_path, source_branch, target_branch: (True, []))
+
+    assert orch._execute_task_impl(run_id, task_repo.get(task_id)) is True
+    assert task_repo.get(task_id)["status"] == "ready"
+    assert created_worktrees == [(expected_worktree, expected_branch)]
+    assert removed_worktrees == []
+
+    assert orch._execute_task_impl(run_id, task_repo.get(task_id)) is True
+    assert task_repo.get(task_id)["status"] == "complete"
+    assert created_worktrees == [(expected_worktree, expected_branch)]
+    assert removed_worktrees == [expected_worktree]
+    assert [Path(attempt["worktree_path"]) for attempt in attempt_repo.get_by_run(run_id)] == [
+        expected_worktree,
+        expected_worktree,
+    ]
+    assert "continuation attempt on the existing task branch" in prompts[1]
+
+
+def test_task_review_prompt_guides_continuation_feedback(db_conn, tmp_path, monkeypatch):
+    config = Config({
+        "db_path": ":memory:",
+        "logs_dir": str(tmp_path / ".agent-loop" / "logs"),
+    })
+    orch = Orchestrator(db_conn, config, plan_path=tmp_path / "plan.md", progress_path=tmp_path / "progress.md")
+
+    run_repo = RunRepository(db_conn)
+    feat_repo = FeatureRepository(db_conn)
+    task_repo = TaskRepository(db_conn)
+
+    run_id = run_repo.create("Review continuation guidance", "autonomous")
+    feat_id = feat_repo.create(run_id, "Feature 1", "low")
+    task_id = task_repo.create(run_id, feat_id, "Task 1", "implementation", "low")
+
+    captured = {}
+
+    def fake_run_agent_review(run_id_arg, subject_type, subject_id, prompt, attempt_id=None):
+        captured["prompt"] = prompt
+        return "approved"
+
+    monkeypatch.setattr(orch, "run_agent_review", fake_run_agent_review)
+
+    assert orch.run_task_review(run_id, task_id, None, None, attempt_id=1) == "approved"
+    assert "task branch that will normally be continued" in captured["prompt"]
+    assert "Prefer precise repair instructions" in captured["prompt"]
+    assert "Reject only for blocking issues" in captured["prompt"]
 
 
 def test_implementation_route_failover_reaches_codex_after_agy_routes_unavailable(db_conn, tmp_path, monkeypatch):
