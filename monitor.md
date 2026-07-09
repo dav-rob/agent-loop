@@ -65,17 +65,24 @@ find .agent-loop/handoffs -maxdepth 1 -type f -name '*.md' -print -exec sed -n '
 
 ## Rolling Concerns File
 
-For active monitoring, keep a rolling concerns file in this repository's local `./tmp/` directory. Use the target directory name in the filename, for example:
+For active monitoring, create a new rolling concerns file in this repository's
+local `./tmp/` directory for each monitoring request/session. Do not reuse the
+previous session's concerns file except for explicit comparison. Use the target
+directory name plus a timestamp or sequence number in the filename, for
+example:
 
 ```sh
 mkdir -p ./tmp
-$EDITOR ./tmp/TARGET_DIRECTORY_NAME-monitor-concerns.md
+$EDITOR ./tmp/TARGET_DIRECTORY_NAME-monitor-20260710-1430-concerns.md
+# or
+$EDITOR ./tmp/TARGET_DIRECTORY_NAME-monitor-1-concerns.md
 ```
 
 This file is monitoring scratch state, not a permanent report. Update it on every monitoring pass:
 
 - Rewrite the current judgement with the latest common-sense assessment.
-- Add new concerns when there is evidence of real risk: hangs, repeated rejected attempts, model/quota failover, stale DB/process mismatch, missing verification, bad retry behavior, merge conflicts, or orphaned child processes.
+- Add new concerns when there is evidence of a real concern: hangs, repeated rejected attempts, model/quota failover, stale DB/process mismatch, missing verification, bad retry behavior, merge conflicts, or orphaned child processes.
+- Sort active concerns using `High Concern`, `Medium Concern`, and `Low Concern` sections. Put likely correctness failures, hangs, leaked/orphaned processes, unsafe command execution, data loss, and blocked progress in `High Concern`; architectural smells and likely future cleanup in `Medium Concern`; noisy but non-blocking observations in `Low Concern`.
 - Amend existing concerns with new evidence rather than duplicating them.
 - Delete or move concerns to a cleared section when later evidence resolves them.
 - Keep a short `Watch next` section for the next practical checks.
@@ -91,6 +98,7 @@ pass. Do not silently write only to the concerns file.
 Keep the live update concise:
 
 - one or two paragraphs, not raw command output
+- the concerns file name/path being updated
 - current judgement first
 - what changed since the last pass
 - the main concern, if any
