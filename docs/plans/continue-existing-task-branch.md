@@ -335,6 +335,21 @@ separate systems. The orchestrator gathers evidence, a reviewer or recovery
 reviewer chooses a strategy, and the orchestrator records and executes that
 strategy.
 
+Implemented baseline:
+
+- Attempts persist `start_sha`, `base_sha`, `retry_strategy`, and
+  `retry_strategy_reason`.
+- Task and timeout reviews can return `retry_strategy`; older rejected reviews
+  default to `continue_existing_branch`.
+- Interrupted resume recovery preserves useful worktree/patch evidence and
+  records the selected retry strategy instead of blindly deleting worktrees.
+- Attempt start uses the latest recorded retry strategy:
+  `continue_existing_branch`, `restart_from_main`,
+  `restart_from_last_good_commit`, `apply_patch_to_clean_branch`, or
+  `block_for_human`.
+- Generated progress and task handover markdown display retry strategy
+  metadata for operator monitoring.
+
 - Add DB support for retry strategy/start SHA/base SHA.
 - Gather recovery evidence for rejected, timed-out, interrupted, or dirty
   worktree states:
@@ -360,6 +375,60 @@ strategy.
 - Display strategy and evidence in status/progress/handoffs.
 - Improve `resume` to keep useful durable task worktrees and route ambiguous
   or unsafe states through the same strategy decision.
+
+### Phase 2.5: Task Review Workspace Fix
+
+Live continuity monitoring showed that task reviewers can be launched from the
+target repository root on `main` even when they are meant to review a durable
+task branch/worktree. In the observed run the reviewer noticed the mismatch and
+recovered by inspecting the task branch/commit directly, but that is too
+fragile: task review should not depend on the model realizing it is in the
+wrong checkout.
+
+Fix task reviews so the reviewer is both placed in and explicitly told about
+the work it is assessing:
+
+- For task and task-escalation reviews, run the reviewer with
+  `workspace_path` set to the durable task worktree, not `Path.cwd()`.
+- Include task review metadata in the prompt:
+  - task worktree path
+  - task branch name
+  - attempt id
+  - start SHA and end SHA / reviewed commit
+  - instruction that the task worktree is the authoritative checkout for file
+    inspection and verification commands
+- Generate the attempt diff from the reviewed worktree/commit range, but make
+  the reviewer prompt clear that the diff is evidence and the task worktree is
+  the workspace to inspect.
+- Keep feature/final reviews on the repository root unless they are reviewing a
+  specific task branch.
+- Add regressions proving task review model calls receive the task worktree as
+  `workspace_path` and the prompt includes the task branch/worktree/commit
+  metadata.
+
+### Phase 2.6: Nested Process Cleanup Fix
+
+Live continuity monitoring showed a cleanup gap when an executor process
+spawns its own child process tree. In the observed run, the executor launched a
+Node probe that in turn spawned `agy`; after the parent attempt timed out, the
+nested `agy` process outlived the timed-out attempt. This is a hardening issue
+because model/tool subprocesses can continue consuming resources after the
+orchestrator has marked the attempt failed or started a retry.
+
+Fix process cleanup so timeout and cancellation reliably terminate the full
+process group/tree, including child processes spawned by executor-created
+scripts:
+
+- Launch provider commands in an isolated process group/session where the
+  platform supports it.
+- On timeout, terminate the process group first, then escalate to kill after a
+  short grace period.
+- Detect and record suspected orphaned descendants in lifecycle events and
+  handover evidence.
+- Add regressions with a nested child process that outlives its immediate
+  parent unless process-tree cleanup is correct.
+- Keep timeout handover behavior intact: preserve commits, patches, logs, and
+  verification evidence before or during cleanup.
 
 ### Phase 3: Operator Restart/Archive Commands
 

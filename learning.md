@@ -55,6 +55,9 @@ Use this file to record learnings, so that agents do not have to repeat work alr
 - A pre-existing worktree path is only reused when it is on the expected task branch. Otherwise setup calls `create_worktree` so real Git can either create/recover the expected worktree or fail through the normal retry/block path; this prevents a stale plain directory from silently launching an executor in the wrong workspace.
 - Merge-conflict recovery is a blocking follow-up chain, not a normal non-blocking follow-up. Recovery tasks carry `follow_up_type = "blocking_recovery_follow_up"` and `origin_task_id`; recovery follow-ups must preserve that origin so a successful terminal approval can mark the original blocked task complete.
 - Merge-conflict recovery tasks are implementation work when they resolve files, lockfiles, or verification failures. They should carry `writes` scope for conflicting files and route through executor profiles rather than planner-only profiles.
+- Retry strategy is explicit attempt metadata. Attempts now persist `start_sha`, `base_sha`, `retry_strategy`, and `retry_strategy_reason`; task/timeout reviews may return a strategy, and missing ordinary rejected-review strategies default to `continue_existing_branch`.
+- Resume recovery should preserve useful interrupted work instead of deleting it blindly. If a running attempt has a preserved patch, mark it abandoned with `apply_patch_to_clean_branch` and keep the worktree path; durable task worktrees without patches default to `continue_existing_branch`; only no-evidence attempts default to `restart_from_main`.
+- Strategy execution happens before executor launch. `continue_existing_branch` reuses the task branch/worktree, restart strategies recreate the task branch from `main` or the selected commit, `apply_patch_to_clean_branch` applies the preserved patch to a clean branch, and `block_for_human` blocks without launching the executor.
 
 ## Useful commands
 
