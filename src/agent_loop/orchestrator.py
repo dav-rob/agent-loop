@@ -592,6 +592,58 @@ class Orchestrator:
 
         return normalized, verification
 
+    def _blocking_recovery_origin_task_id(self, scope_data: Dict[str, Any]) -> Optional[int]:
+        if not isinstance(scope_data, dict):
+            return None
+        if scope_data.get("follow_up_type") == "blocking_recovery_follow_up":
+            origin_id = scope_data.get("origin_task_id") or scope_data.get("original_task_id")
+            return int(origin_id) if isinstance(origin_id, int) or str(origin_id).isdigit() else None
+        if "source_branch" in scope_data and scope_data.get("original_task_id"):
+            origin_id = scope_data.get("origin_task_id") or scope_data.get("original_task_id")
+            return int(origin_id) if isinstance(origin_id, int) or str(origin_id).isdigit() else None
+        return None
+
+    def _complete_recovery_origin_if_needed(self, run_id: int, scope_data: Dict[str, Any]) -> None:
+        origin_task_id = self._blocking_recovery_origin_task_id(scope_data)
+        if not origin_task_id:
+            return
+        origin_task = self.task_repo.get(origin_task_id)
+        if not origin_task or origin_task["status"] == "complete":
+            return
+        self.task_repo.update_status(origin_task_id, "complete", force=True)
+        self.lifecycle.task_completed(
+            run_id,
+            origin_task_id,
+            f"Task '{origin_task['name']}' completed after recovery follow-up chain.",
+        )
+
+    def _followup_scope_for_task(self, task: Dict[str, Any], task_scope: Dict[str, Any], findings: str) -> Dict[str, Any]:
+        recovery_origin_id = self._blocking_recovery_origin_task_id(task_scope)
+        if recovery_origin_id:
+            origin_task = self.task_repo.get(recovery_origin_id)
+            origin_scope = origin_task["scope"] if origin_task else task_scope.get("original_task_scope", {})
+            return {
+                "follow_up_type": "blocking_recovery_follow_up",
+                "origin_task_id": recovery_origin_id,
+                "original_task_id": recovery_origin_id,
+                "original_task_name": origin_task["name"] if origin_task else task_scope.get("original_task_name", task["name"]),
+                "original_task_scope": origin_scope or {},
+                "parent_task_id": task["id"],
+                "parent_task_name": task["name"],
+                "reviewer_findings": findings,
+                "files": task_scope.get("files") or task_scope.get("conflicting_files", []),
+                "writes": task_scope.get("writes") or task_scope.get("conflicting_files", []),
+            }
+
+        return {
+            "follow_up_type": "non_blocking_follow_up",
+            "original_task_id": task["id"],
+            "original_task_name": task["name"],
+            "original_task_scope": task_scope,
+            "reviewer_findings": findings,
+            "files": task_scope.get("files", [])
+        }
+
     def execution_profile_for_task(self, task: Dict[str, Any], attempts: List[Dict[str, Any]], rejected_review_count: int = 0) -> str:
         scope_data = self._task_scope_data(task)
 
@@ -1560,8 +1612,7 @@ Scope: {json.dumps(task['scope'])}
                         with self.db_lock:
                             self.task_repo.update_status(task_id, "complete")
                             self.lifecycle.task_completed(run_id, task_id, f"Task '{task['name']}' completed and merged.")
-                            if is_integration and "original_task_id" in scope_data:
-                                self.task_repo.update_status(scope_data["original_task_id"], "complete", force=True)
+                            self._complete_recovery_origin_if_needed(run_id, scope_data)
                             
                             is_assessment = isinstance(scope_data, dict) and "original_task_id" in scope_data and task["name"].startswith("Architectural Assessment:")
                             if is_assessment and "original_task_id" in scope_data:
@@ -1644,13 +1695,7 @@ Scope: {json.dumps(task['scope'])}
                         with self.git_lock:
                             merged, conflicting_files = merge_branch(Path.cwd(), branch_name, "main")
                         orig_scope = json.loads(task["scope"]) if isinstance(task["scope"], str) else (task["scope"] or {})
-                        followup_scope = {
-                            "original_task_id": task["id"],
-                            "original_task_name": task["name"],
-                            "original_task_scope": orig_scope,
-                            "reviewer_findings": findings,
-                            "files": orig_scope.get("files", [])
-                        }
+                        followup_scope = self._followup_scope_for_task(task, orig_scope, findings)
                         if merged:
                             with self.db_lock:
                                 self.task_repo.update_status(task_id, "complete")
@@ -2417,14 +2462,24 @@ Reject only for blocking issues. If you recommend restart, explain why continuin
         return decision == "approved"
 
     def create_integration_task(self, run_id: int, task: Dict[str, Any], branch_name: str, source_commit: Optional[str] = None, target_baseline: Optional[str] = None, conflicting_files: Optional[list] = None) -> None:
+        task_scope = self._task_scope_data(task)
+        origin_task_id = self._blocking_recovery_origin_task_id(task_scope) or task["id"]
+        origin_task = self.task_repo.get(origin_task_id)
+        files = [path for path in (conflicting_files or []) if isinstance(path, str) and path]
         integration_scope = {
+            "follow_up_type": "blocking_recovery_follow_up",
             "source_branch": branch_name,
             "source_commit": source_commit,
             "target_baseline": target_baseline,
-            "conflicting_files": conflicting_files or [],
+            "conflicting_files": files,
             "required_verification": task.get("required_verification"),
-            "original_task_id": task["id"],
-            "original_task_name": task["name"]
+            "origin_task_id": origin_task_id,
+            "original_task_id": origin_task_id,
+            "original_task_name": origin_task["name"] if origin_task else task["name"],
+            "parent_task_id": task["id"],
+            "parent_task_name": task["name"],
+            "files": files,
+            "writes": files,
         }
         
         with self.db_lock:
@@ -2439,7 +2494,7 @@ Reject only for blocking issues. If you recommend restart, explain why continuin
                 run_id=run_id,
                 feature_id=task["feature_id"],
                 name=f"Resolve merge conflict on {task['name']}",
-                role="planning",
+                role="implementation",
                 risk="high",
                 scope=integration_scope,
                 dependencies=[],

@@ -163,6 +163,11 @@ continues from the existing branch instead of recreating work from prose.
 Executor retry prompts now say when an attempt is continuing an existing task
 branch, and task reviewer prompts ask for precise continuation-oriented repair
 guidance with restart/block only when justified.
+Merge-conflict recovery follow-ups now preserve the original blocked task link
+through the whole recovery chain. If conflict resolution needs follow-up work,
+that follow-up can complete the original task once approved instead of leaving
+the goal blocked after successful recovery. Merge-conflict recovery tasks are
+also routed as implementation work when they edit files.
 
 ## Next step
 
@@ -203,6 +208,7 @@ No further executor handoff is required for this request.
 - Timeout handover/review lifecycle: new regressions first failed because no timeout review hook existed and retry prompts omitted previous timeout handovers. After the fix, focused task-handover/review/router regressions passed with 7 tests in 0.33s, and final full-suite verification passed with 161 tests in 29.13s.
 - Lifecycle event recorder: new regressions first failed because `LifecycleEventRepository` did not exist and orchestrator execution emitted no lifecycle events. After adding schema version 6, `TaskLifecycleRecorder`, progress timeline rendering, and orchestrator callouts, focused lifecycle regressions passed with 5 tests in 0.65s and full-suite verification passed with 163 tests in 28.20s.
 - Durable task branch retry: new regression first failed because rejected retry attempts used attempt-scoped branches/worktrees and removed the worktree after rejection; after the fix, focused durable retry/reviewer prompt tests passed and `tests/test_orchestrator.py` plus related handover/view/git regression slices passed.
+- Typed recovery follow-up closure: new regressions first failed because merge-conflict recovery follow-ups lost the original task link and recovery tasks were routed as planning work. After the fix, focused recovery tests passed with 2 tests, the merge/review interaction slice passed with 5 tests, and full-suite verification passed with 167 tests in 27.48s.
 - Planner schema/recovery fix: `tests/test_adapters.py::test_plan_schema_is_strict_for_codex_structured_output` passed in 0.02s; `tests/test_cli.py::test_cli_resume tests/test_cli.py::test_cli_resume_replans_blocked_goal_without_features` passed in 0.26s; live `codex exec --output-schema` smoke accepted the schema and returned valid plan JSON; `agent-loop resume 1` in `test-loop` regenerated a plan and moved Goal ID 1 to `awaiting_plan_approval`; full suite passed with 87 tests in 5.83s.
 - Interactive multiline intake fix: `tests/test_cli.py::test_cli_start_captures_pasted_multiline_goal` passed in 0.27s; `tests/test_cli.py` passed with 8 tests in 0.38s; full suite passed with 85 tests in 5.84s.
 - Goal terminology update: `tests/test_cli.py` passed in 0.30s; CLI help verified for goal wording.
