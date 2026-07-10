@@ -2,7 +2,7 @@
 
 ## Mission
 
-Work autonomously from the user's goal until complete, blocked, or unsafe.  Do not stop for conversational input unless a stop condition is hit.
+This project creates an agent that will work autonomously from the user's goal until complete, blocked, or unsafe.  It should not stop for conversational input unless a stop condition is hit, however, the initial intake phase must be potentially highly conversational to get as much, or as little, detail that the user wants - the user may want to talk a lot about the idea, or just get the agent to run with it, with little additional input.
 
 The app must behave like a balanced, mature, effective development team, that can move fast and break things to start but then quickly focus, tighten up, harden and extend in an architecturally elegant way:
 
@@ -12,15 +12,6 @@ The app must behave like a balanced, mature, effective development team, that ca
    ii) Maintain a list of concerns and recommendations for future goals
    iii) Become more focussed as each goal is completed 
 
-
-
-## Current context handoff
-
-Before resuming any work related to the live `agent-loop` monitoring or the target repository
-`/Users/davidroberts/projects/quick-scripts/test-loop`, read
-`context-summary.md` in this repository.
-
-That file records the local commits ahead of `origin/main` and the live, unblocked state of the target run. Goal 1 in `test-loop` is actively running in the background and self-healing. Do not blindly restart the live loop; instead, use SQLite queries to monitor its execution progress (see `context-summary.md` for the exact queries).
 
 ## Product language
 
@@ -36,14 +27,13 @@ user, prefer `Goal ID` and explain that it is internally the run ID.
 
 ## Files
 
-- `plan.md` = current task breakdown
 - `progress.md` = current execution state
 - `learning.md` = durable project knowledge
 - `skills/` = reusable methods and workflows
 
 Product runtime note: when `agent-loop` is used in a target repository, it
 stores its own state under that repository's `.agent-loop/` directory. The
-current root-level `plan.md`, `progress.md`, and `learning.md` files are the
+current root-level `progress.md`, and `learning.md` files are the
 manual development loop files for this repository.
 
 ## Runtime source of truth
@@ -59,29 +49,6 @@ as `agent-loop status`, `agent-loop plan --details`, or direct SQLite queries
 when needed. Use logs only after the database points to the relevant attempt or
 evidence path.
 
-## Work loop
-
-Repeat:
-
-1. Read `AGENTS.md`, `plan.md`, `progress.md`, `learning.md`.
-2. Choose the next smallest useful step.
-3. Execute it.
-4. Run the narrowest relevant tests.
-5. Update `progress.md`.
-6. Update `learning.md` only for reusable facts.
-7. Continue unless a stop condition is hit.
-
-## Stop conditions
-
-Stop only when:
-
-- task is complete
-- protected test change is required
-- credentials/secrets are missing
-- destructive action is required
-- product decision is genuinely ambiguous
-- same failure repeats three times
-- all useful local work is exhausted
 
 ## Test policy
 
