@@ -73,10 +73,6 @@ DEFAULT_CONFIG = {
     "retry_policy": {
         "max_attempts": 5,
         "escalation_threshold": 2
-    },
-    "commands": {
-        "narrow_test": "pytest {test_path}",
-        "regression_test": "pytest tests"
     }
 }
 
@@ -224,14 +220,6 @@ class Config:
     def execution_mode(self) -> str:
         return str(self.data.get("execution_mode", DEFAULT_CONFIG["execution_mode"]))
 
-    @property
-    def commands(self) -> Dict[str, str]:
-        cmds = self.data.get("commands", DEFAULT_CONFIG["commands"])
-        if "PYTEST_CURRENT_TEST" in os.environ and cmds.get("regression_test") == "pytest tests":
-            cmds = cmds.copy()
-            cmds["regression_test"] = ""
-        return cmds
-
     @classmethod
     def load(cls, path: Path = None) -> "Config":
         if path is None:
@@ -279,10 +267,6 @@ class Config:
             "[retry_policy]",
             f"max_attempts = {DEFAULT_CONFIG['retry_policy']['max_attempts']}",
             f"escalation_threshold = {DEFAULT_CONFIG['retry_policy']['escalation_threshold']}",
-            "",
-            "[commands]",
-            f"narrow_test = {_toml_value(DEFAULT_CONFIG['commands']['narrow_test'])}",
-            f"regression_test = {_toml_value(DEFAULT_CONFIG['commands']['regression_test'])}",
             "",
         ])
 

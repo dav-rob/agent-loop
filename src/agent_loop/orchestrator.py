@@ -774,8 +774,6 @@ class Orchestrator:
             for item in task.get("verification_requirements", [])
             if isinstance(item, str) and item.strip()
         ]
-        if not requirements:
-            requirements = [f"Verify {task.get('name', 'the task')} against its acceptance criteria."]
         normalized["verification_requirements"] = requirements
 
         scope_data = self._task_scope_data(normalized)
@@ -3232,68 +3230,6 @@ Reject only for blocking issues. If you recommend restart, explain why continuin
             
         return required_routes
 
-    def run_regression_test(self, run_id: int) -> bool:
-        command = self.config.commands.get("regression_test")
-        if not command:
-            return True
-        
-        start_time = time.time()
-        run_logs_dir = (self.config.logs_dir / str(run_id)).resolve()
-        run_logs_dir.mkdir(parents=True, exist_ok=True)
-        test_out_file = run_logs_dir / "regression_stdout.log"
-        test_err_file = run_logs_dir / "regression_stderr.log"
-        
-        try:
-            with test_out_file.open("w") as out_f, test_err_file.open("w") as err_f:
-                process = subprocess.run(
-                    command,
-                    shell=True,
-                    cwd=Path.cwd(),
-                    stdin=subprocess.DEVNULL,
-                    stdout=out_f,
-                    stderr=err_f,
-                    timeout=300.0
-                )
-            duration = time.time() - start_time
-            
-            output_json = json.dumps({
-                "stdout": str(test_out_file),
-                "stderr": str(test_err_file)
-            })
-            
-            with self.db_lock:
-                self.test_run_repo.create(
-                    run_id=run_id,
-                    task_id=None,
-                    attempt_id=None,
-                    command=command,
-                    scope=None,
-                    exit_status=process.returncode,
-                    duration_seconds=duration,
-                    output_path=output_json
-                )
-            return process.returncode == 0
-        except Exception as e:
-            duration = time.time() - start_time
-            output_json = json.dumps({
-                "stdout": str(test_out_file),
-                "stderr": str(test_err_file)
-            })
-            with self.db_lock:
-                self.test_run_repo.create(
-                    run_id=run_id,
-                    task_id=None,
-                    attempt_id=None,
-                    command=command,
-                    scope=None,
-                    exit_status=-1,
-                    duration_seconds=duration,
-                    output_path=output_json
-                )
-            with test_err_file.open("a") as err_f:
-                err_f.write(f"\nRegression test failed with exception: {e}\n")
-            return False
-
     def check_and_recover_quotas(self, run_id: int, required_routes: List[Dict[str, Any]]) -> bool:
         import datetime
         
@@ -3511,22 +3447,17 @@ Reject only for blocking issues. If you recommend restart, explain why continuin
                     final_approved = self.run_final_review(run_id)
                     
                     if final_approved:
-                        regression_success = self.run_regression_test(run_id)
-                        if regression_success:
-                            migrations = self.test_migration_repo.get_by_run(run_id)
-                            has_pending = any(m["approval_status"] == "pending" for m in migrations)
-                            has_rejected = any(m["approval_status"] == "rejected" for m in migrations)
-                            if has_rejected:
-                                self.run_repo.update_status(run_id, "blocked")
-                                self.notify(run_id, "blocked", "A test migration was rejected. Run is blocked.")
-                            elif has_pending:
-                                self.run_repo.update_status(run_id, "complete_pending_test_review")
-                                self.notify(run_id, "pending_test_review", "Run is pending test migration reviews.")
-                            else:
-                                self.complete_goal(run_id)
+                        migrations = self.test_migration_repo.get_by_run(run_id)
+                        has_pending = any(m["approval_status"] == "pending" for m in migrations)
+                        has_rejected = any(m["approval_status"] == "rejected" for m in migrations)
+                        if has_rejected:
+                            self.run_repo.update_status(run_id, "blocked")
+                            self.notify(run_id, "blocked", "A test migration was rejected. Run is blocked.")
+                        elif has_pending:
+                            self.run_repo.update_status(run_id, "complete_pending_test_review")
+                            self.notify(run_id, "pending_test_review", "Run is pending test migration reviews.")
                         else:
-                            self.run_repo.update_status(run_id, "failed")
-                            self.notify(run_id, "failed", "Regression test verification failed. Run is failed.")
+                            self.complete_goal(run_id)
                     else:
                         self.run_repo.update_status(run_id, "blocked")
                         self.notify(run_id, "blocked", "Final review was rejected. Run is blocked.")

@@ -137,3 +137,35 @@ def test_legacy_planner_command_is_inert_during_task_execution(db_conn, tmp_path
 
     assert not sentinel.exists()
     assert tasks.get(task_id)["status"] == "complete"
+
+
+def test_configured_regression_command_is_inert_after_final_review(db_conn, tmp_path):
+    sentinel = tmp_path / "config-command-executed"
+    runs = RunRepository(db_conn)
+    features = FeatureRepository(db_conn)
+    tasks = TaskRepository(db_conn)
+    run_id = runs.create("Build dashboard", "autonomous")
+    runs.update_status(run_id, "planning")
+    runs.update_status(run_id, "running")
+    feature_id = features.create(run_id, "Dashboard", "low")
+    task_id = tasks.create(run_id, feature_id, "Build dashboard", "implementation", "low")
+    tasks.update_status(task_id, "complete", force=True)
+    features.update_review_status(feature_id, "approved")
+    orch = Orchestrator(
+        db_conn,
+        Config(
+            {
+                "db_path": ":memory:",
+                "logs_dir": str(tmp_path / "logs"),
+                "commands": {"regression_test": f"touch {sentinel}"},
+            }
+        ),
+        plan_path=tmp_path / "plan.md",
+        progress_path=tmp_path / "progress.md",
+    )
+
+    with patch.object(orch, "run_final_review", return_value=True):
+        orch.run_loop(run_id)
+
+    assert runs.get(run_id)["status"] == "complete"
+    assert not sentinel.exists()
