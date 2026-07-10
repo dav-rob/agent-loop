@@ -181,17 +181,6 @@ task handover markdown now expose strategy metadata for monitoring.
 
 No further executor handoff is required for this request.
 
-The 30-minute goal-lifecycle continuity experiment is complete. A fresh target
-captured the full broad idea, inferred and explicitly confirmed `prototype`,
-and began execution in about 2m35s. Durable task continuity preserved ten useful
-commits and recovered a timed-out executor through a useful handover. The goal
-did not deliver: all five attempts were rejected by the same immutable
-plain-`python` verification command on a host with only `python3`, so task 1
-never reached review or merge. Deadline shutdown also exposed an orphaned,
-reparented escalation reviewer that required a separate cleanup pass. The
-framework-focused report is
-`tmp/test-loop-worktree-continuity1-monitor-20260710-165016-concerns.md`.
-
 The verification boundary has now been repaired. New plans contain declarative
 verification outcomes rather than shell commands. Executors establish their own
 task environments, task reviewers independently run checks in the durable
@@ -199,6 +188,15 @@ worktree, and SQLite stores structured evidence. The orchestrator no longer
 contains `shell=True`, no longer installs project dependencies, and no longer
 executes task or final regression commands from planning/config/database data.
 Legacy command rows remain inert audit history.
+
+The repeat 30-minute continuity experiment confirmed the repair. Task 1 reached
+review, received three concrete functional findings, was repaired on the same
+branch, approved, merged, and passed feature review. Task 2 then completed its
+executor pass and entered review before the deadline. Reviewers persisted 18
+verification evidence rows while deterministic `test_runs` remained at zero.
+The main loop and reparented reviewer/build children were stopped at the cutoff.
+The framework-focused report is
+`tmp/test-loop-worktree-continuity1-monitor-20260710-210313-concerns.md`.
 
 ## Tests run
 
@@ -256,6 +254,8 @@ Legacy command rows remain inert audit history.
 - Goal lifecycle integration: documentation now covers the flat goal-type model, recommendation adoption, and delivery reports. Final full-suite verification passed with 220 tests in 21.41s and `git diff --check` passed.
 - Goal lifecycle continuity experiment: the scripted intake selected immediate planning, approved inferred `prototype`, and approved the plan. SQLite was polled every 150 seconds for 30 minutes. No runnable app appeared; five attempts failed the same unavailable plain-`python` verification before review, while durable branch and timeout handover continuity preserved ten task commits. The main loop and a separately reparented escalation reviewer were stopped at the deadline.
 - Final post-experiment verification: `.venv/bin/python -m pytest -q` passed with 220 tests in 28.95s; `git diff --check` passed.
+- Verification-boundary continuity experiment: the scripted intake approved inferred `prototype` and its three-task plan; Task 1 completed after one evidence-backed repair, feature review approved, and Task 2 completed implementation before cutoff. SQLite recorded 18 reviewer verification evidence rows, 14 recommendations, and zero deterministic `test_runs`. All attributable processes were stopped at 21:34 BST.
+- Final verification-boundary regression: `.venv/bin/python -m pytest -q -rs` passed with 225 tests and 6 explicitly documented obsolete skips in 23.67s; `git diff --check` passed.
 
 ## Blockers
 

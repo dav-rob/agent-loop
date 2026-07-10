@@ -19,4 +19,4 @@ Detailed plan: `docs/superpowers/plans/2026-07-10-goal-types-and-delivery-lifecy
 - [x] Make task reviewers own independent environment setup and verification
 - [x] Block reviewer/environment failures instead of retrying implementation
 - [x] Update follow-up tasks, views, compatibility tests, and documentation
-- [ ] Repeat the live continuity experiment
+- [x] Repeat the live continuity experiment
