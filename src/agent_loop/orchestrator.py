@@ -23,6 +23,12 @@ from agent_loop.git_utils import (
 )
 from agent_loop.lifecycle import TaskLifecycleRecorder
 from agent_loop.review_policy import goal_review_policy
+from agent_loop.delivery import (
+    DeliveryDetails,
+    parse_delivery_details,
+    render_delivery_report,
+    validate_delivery_details,
+)
 from agent_loop.repositories import (
     RunRepository,
     FeatureRepository,
@@ -36,6 +42,7 @@ from agent_loop.repositories import (
     TestMigrationRepository,
     TestRunRepository,
     RecommendationRepository,
+    GoalDeliveryRepository,
     RECOMMENDATION_CATEGORIES,
     RECOMMENDATION_PRIORITIES,
 )
@@ -124,6 +131,7 @@ class ReviewParseResult:
     retry_strategy: Optional[str] = None
     retry_strategy_reason: Optional[str] = None
     recommendations: tuple[ReviewRecommendation, ...] = ()
+    delivery: Optional[DeliveryDetails] = None
 
     def __iter__(self) -> Iterator[Optional[str]]:
         yield self.decision
@@ -198,7 +206,14 @@ def parse_review_response(output: str, allowed_decisions: Optional[set[str]] = N
                                 evidence=evidence.strip(),
                             )
                         )
-            return ReviewParseResult(dec_val, find_val, strategy, reason, tuple(recommendations))
+            return ReviewParseResult(
+                dec_val,
+                find_val,
+                strategy,
+                reason,
+                tuple(recommendations),
+                parse_delivery_details(data.get("delivery")),
+            )
 
     decision_pattern = "|".join(re.escape(decision) for decision in sorted(allowed_decisions, key=len, reverse=True))
     labelled = re.search(
@@ -264,6 +279,7 @@ class Orchestrator:
         self.provider_repo = ProviderStateRepository(conn)
         self.review_repo = ReviewRepository(conn)
         self.recommendation_repo = RecommendationRepository(conn)
+        self.goal_delivery_repo = GoalDeliveryRepository(conn)
         self.notification_repo = NotificationRepository(conn)
         self.test_migration_repo = TestMigrationRepository(conn)
         self.test_run_repo = TestRunRepository(conn)
@@ -2585,6 +2601,22 @@ Only return the raw JSON object. Do not include markdown wrappers.
         run_goal_type = run.get("goal_type", "prototype") if run else "prototype"
         run_goal_type_rationale = run.get("goal_type_rationale") if run else None
         operating_policy = goal_review_policy(run_goal_type)
+        delivery_instructions = ""
+        if subject_type == "final":
+            delivery_instructions = """
+For the final review, add a "delivery" object to the same top-level JSON response:
+{
+  "kind": "web | software | investigation",
+  "summary": "Short account of what was built or learned.",
+  "launch_command": "Exact command or null",
+  "local_url": "Local URL or null",
+  "verification": ["Concrete checks performed"],
+  "known_limitations": ["Known limitation"],
+  "launch_evidence": "Evidence the web URL responded while running, or null",
+  "investigation_conclusion": "Conclusion for investigate goals, or null"
+}
+Inspect the integrated repository directly. For a web delivery, actually launch it and verify the local URL before approving.
+"""
         self.lifecycle.review_started(
             run_id=run_id,
             task_id=review_task_id,
@@ -2620,6 +2652,7 @@ Output a JSON response in the following format:
 The "decision" must be one of: "approved", "rejected", "follow_up", "assessment", "block".
 For rejected task reviews, include "retry_strategy" as one of: "continue_existing_branch", "restart_from_main", "restart_from_last_good_commit", "apply_patch_to_clean_branch", "block_for_human".
 Use recommendations for every non-blocking usability, security, architecture, reliability, testing, or maintenance finding. Return an empty recommendations array when there are none.
+{delivery_instructions}
 Only return the raw JSON object. Do not include markdown wrappers.
 """
             routed_result = self._model_router().run(
@@ -2655,6 +2688,25 @@ Only return the raw JSON object. Do not include markdown wrappers.
                     findings = f"Failed to parse review JSON output. Raw output: {result.output}"
             else:
                 findings = f"Review prompt failed: {result.error}"
+
+            confirmed_goal_type = bool(run and run.get("goal_type_rationale"))
+            if subject_type == "final" and confirmed_goal_type and result.success:
+                delivery_error = validate_delivery_details(parsed_review.delivery, run_goal_type)
+                if delivery_error:
+                    decision = "rejected"
+                    findings = delivery_error
+                else:
+                    delivery = parsed_review.delivery
+                    self.goal_delivery_repo.upsert(
+                        run_id=run_id,
+                        summary=delivery.summary,
+                        launch_command=delivery.launch_command,
+                        local_url=delivery.local_url,
+                        verification=list(delivery.verification),
+                        known_limitations=list(delivery.known_limitations),
+                        launch_evidence=delivery.launch_evidence,
+                        investigation_conclusion=delivery.investigation_conclusion,
+                    )
 
             reviewer_route = f"{provider}:{model}" if provider and model else None
             review_id = self.review_repo.create(
@@ -3475,8 +3527,16 @@ Reject only for blocking issues. If you recommend restart, explain why continuin
                                 self.run_repo.update_status(run_id, "complete_pending_test_review")
                                 self.notify(run_id, "pending_test_review", "Run is pending test migration reviews.")
                             else:
-                                self.run_repo.update_status(run_id, "complete")
-                                self.notify(run_id, "complete", "Run completed successfully.")
+                                completed_run = self.run_repo.get(run_id)
+                                delivery = self.goal_delivery_repo.get_by_run(run_id)
+                                if completed_run.get("goal_type_rationale") and not delivery:
+                                    self.run_repo.update_status(run_id, "blocked")
+                                    self.notify(run_id, "blocked", "Confirmed goal is missing its delivery record.")
+                                else:
+                                    self.run_repo.update_status(run_id, "complete")
+                                    if delivery:
+                                        render_delivery_report(self.conn, run_id, self.config.delivery_report_path)
+                                    self.notify(run_id, "complete", "Run completed successfully.")
                         else:
                             self.run_repo.update_status(run_id, "failed")
                             self.notify(run_id, "failed", "Regression test verification failed. Run is failed.")

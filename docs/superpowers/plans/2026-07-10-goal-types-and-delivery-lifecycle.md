@@ -79,12 +79,12 @@
 - Modify: `src/agent_loop/config.py`
 - Create: `tests/test_delivery_report.py`
 
-- [ ] Add failing tests for delivery-result parsing, persistence, recommendation grouping, investigation reports, and `.agent-loop/delivery-report.md` rendering.
-- [ ] Add failing web-delivery tests requiring launch command, local URL, and launch evidence before approval.
-- [ ] Implement structured final-delivery fields, web metadata validation, delivery persistence, and a renderer that only reads repositories.
-- [ ] Render the report after successful completion and expose the path in completion output/notifications.
-- [ ] Run focused tests plus config/orchestrator regressions.
-- [ ] Commit as `feat: render SQLite-backed delivery reports`.
+- [x] Add failing tests for delivery-result parsing, persistence, recommendation grouping, investigation reports, and `.agent-loop/delivery-report.md` rendering.
+- [x] Add failing web-delivery tests requiring launch command, local URL, and launch evidence before approval.
+- [x] Implement structured final-delivery fields, web metadata validation, delivery persistence, and a renderer that only reads repositories.
+- [x] Render the report after successful completion and expose the path in completion output/notifications.
+- [x] Run focused tests plus config/orchestrator regressions.
+- [x] Commit as `feat: render SQLite-backed delivery reports`.
 
 ### Task 6: Recommendation Adoption Across Goals
 

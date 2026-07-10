@@ -53,6 +53,7 @@ DEFAULT_CONFIG = {
     "worktrees_dir": "worktrees",
     "plan_path": None,
     "progress_path": None,
+    "delivery_report_path": None,
     "learning_path": None,
     "max_workers": 4,
     "webhook_env_var": "AGENT_LOOP_WEBHOOK_URL",
@@ -163,6 +164,11 @@ class Config:
         return Path(val).resolve() if val else (self.state_dir / "learning.md").resolve()
 
     @property
+    def delivery_report_path(self) -> Path:
+        val = self.data.get("delivery_report_path")
+        return Path(val).resolve() if val else (self.state_dir / "delivery-report.md").resolve()
+
+    @property
     def max_workers(self) -> int:
         val = int(self.data.get("max_workers", DEFAULT_CONFIG["max_workers"]))
         return min(val, 4)
@@ -252,6 +258,7 @@ class Config:
             "worktrees_dir = \"worktrees\"",
             "plan_path = \".agent-loop/plan.md\"",
             "progress_path = \".agent-loop/progress.md\"",
+            "delivery_report_path = \".agent-loop/delivery-report.md\"",
             "learning_path = \".agent-loop/learning.md\"",
             f"max_workers = {DEFAULT_CONFIG['max_workers']}",
             f"webhook_env_var = {_toml_value(DEFAULT_CONFIG['webhook_env_var'])}",

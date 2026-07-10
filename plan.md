@@ -6,7 +6,7 @@ Detailed plan: `docs/superpowers/plans/2026-07-10-goal-types-and-delivery-lifecy
 - [x] Goal type inference and intake confirmation
 - [x] Goal-type-aware reviewer standards
 - [x] Non-blocking recommendation handling
-- [ ] SQLite-backed delivery report
+- [x] SQLite-backed delivery report
 - [ ] Recommendation adoption by later goals
 - [ ] Documentation and full regression verification
 - [ ] Thirty-minute continuity experiment

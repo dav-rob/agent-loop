@@ -232,6 +232,7 @@ No further executor handoff is required for this request.
 - Goal type intake: first goals default to prototype, later goals use structured inference with a deterministic fallback, interactive users can confirm or correct the type before planning, and unattended starts persist the inference automatically. Intake/CLI/view coverage passes with 41 tests.
 - Goal-type review policy: a central policy formatter now supplies prototype, extend, refine, repair, harden, and investigate blocking standards to every reviewer. Policy/orchestrator/retry coverage passes with 63 tests.
 - Structured recommendations: reviewer JSON now carries validated recommendation records linked to its review and subject. Confirmed feature follow-ups complete without spawning tasks, prototype final follow-ups can deliver with known limits, and legacy unconfirmed goals retain prior behavior. Review/orchestrator/retry coverage passes with 64 tests.
+- Delivery reports: confirmed final reviews now persist structured delivery evidence; web goals require a launch command, local URL, and launch evidence, and successful goals render `.agent-loop/delivery-report.md` from SQLite with grouped recommendations. Delivery/config/orchestrator coverage passes with 58 tests.
 
 ## Blockers
 
