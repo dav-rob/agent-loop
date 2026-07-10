@@ -59,7 +59,14 @@ def test_agent_review_prompt_includes_confirmed_goal_type_policy(tmp_path):
         result=AttemptResult(
             success=True,
             exit_code=0,
-            output='{"decision":"approved","findings":"The hardening criteria are met."}',
+            output=(
+                '{"decision":"approved","findings":"The hardening criteria are met.",'
+                '"recommendations":[],"delivery":{"kind":"software",'
+                '"summary":"Hardened session handling.","launch_command":"python app.py",'
+                '"local_url":null,"verification":["Security tests passed"],'
+                '"known_limitations":[],"launch_evidence":null,'
+                '"investigation_conclusion":null}}'
+            ),
             error="",
         ),
     )

@@ -66,7 +66,7 @@ def confirm_goal_type(
     print(f"\nI inferred this as a '{inference.goal_type}' goal: {inference.rationale}")
     try:
         answer = input_func("Proceed with this goal type? [Y/change]: ")
-    except (EOFError, StopIteration):
+    except (EOFError, OSError, StopIteration):
         print("Input ended; accepting the inferred goal type.")
         return inference
     normalized = answer.strip().lower() if isinstance(answer, str) else ""

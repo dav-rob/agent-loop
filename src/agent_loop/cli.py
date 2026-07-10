@@ -354,10 +354,15 @@ def handle_start(args: argparse.Namespace, config: Config) -> None:
         cfg_snap = config.data.copy()
         cfg_snap["unattended_policy"] = args.unattended_policy
 
-        selected_recommendation_ids = choose_recommendation_ids(
-            available_recommendations,
-            supplied=getattr(args, "recommendations", None),
-        )
+        try:
+            selected_recommendation_ids = choose_recommendation_ids(
+                available_recommendations,
+                supplied=getattr(args, "recommendations", None),
+            )
+        except ValueError as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            conn.close()
+            raise SystemExit(2) from exc
         inference_goal = goal
         if selected_recommendation_ids:
             selected_titles = [
@@ -419,7 +424,12 @@ def handle_start(args: argparse.Namespace, config: Config) -> None:
                 sys.exit(1)
             goal = approved_spec
 
-        selected_recommendation_ids = choose_recommendation_ids(available_recommendations)
+        while True:
+            try:
+                selected_recommendation_ids = choose_recommendation_ids(available_recommendations)
+                break
+            except ValueError as exc:
+                print(f"Please choose from the displayed recommendations: {exc}")
         inference_goal = goal
         if selected_recommendation_ids:
             selected_titles = [
