@@ -2,9 +2,17 @@
 
 ## Mission
 
-Work autonomously from the user's goal until complete, blocked, or unsafe.
+Work autonomously from the user's goal until complete, blocked, or unsafe.  Do not stop for conversational input unless a stop condition is hit.
 
-Do not stop for conversational input unless a stop condition is hit.
+The app must behave like a balanced, mature, effective development team, that can move fast and break things to start but then quickly focus, tighten up, harden and extend in an architecturally elegant way:
+
+1) In the first goal/run create a runnable app end-to-end, that the user can assess. The final delivery report of a goal will contain a list of recommended security and architecture reviews that the user may want to adopt, in future goals.
+2) Each goal must be a part of a rapid development process, starting with a working app, then in subsequent goals tightening, extending, focussing and hardening in subsequent goals/runs.  The app must be able to do both
+   i) Start Loose to get something out there.
+   ii) Maintain a list of concerns and recommendations for future goals
+   iii) Become more focussed as each goal is completed 
+
+
 
 ## Current context handoff
 

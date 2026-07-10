@@ -2,6 +2,17 @@
 
 `agent-loop` is a local development orchestrator. A user gives it one goal; it turns that goal into a spec, plan, features, and tasks, then executes tasks in isolated Git worktrees. Runtime state for each target project is stored under that target project's `.agent-loop/` directory.
 
+The purpose of this monitoring is to assess whether `agent-loop` is meeting its primary purpose:
+
+1) In the first goal/run create a runnable app end-to-end, that the user can assess. The final delivery report of a goal will contain a list of recommended security and architecture reviews that the user may want to adopt, in future goals.
+2) Each goal must be a part of a rapid development process, starting with a working app, then in subsequent goals tightening, extending, focussing and hardening in subsequent goals/runs.  The app must be able to do both
+   i) Start Loose to get something out there.
+   ii) Maintain a list of concerns and recommendations for future goals
+   iii) Become more focussed as each goal is completed 
+
+The app must behave like a balanced, mature, effective development team, that can move fast and break things to start but then quickly focus, tighten up, harden and extend in an architecturally elegant way.
+
+
 ## Source of truth
 
 Use the SQLite-backed state first. Logs are evidence for attempts, not the current state.
