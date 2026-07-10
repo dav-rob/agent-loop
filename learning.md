@@ -78,3 +78,8 @@ Use this file to record learnings, so that agents do not have to repeat work alr
 
 - Cycle detection (DAG validation) is executed using three-color DFS marking.
 - All secrets from variables matching keywords (key, secret, token, password, auth, webhook, url) are automatically redacted in raw logs.
+## Goal lifecycle architecture
+
+- Goal types are flat operating modes (`prototype`, `extend`, `refine`, `repair`, `harden`, `investigate`), not maturity stages. New interactive and unattended intake persists a confirmed type and rationale before planning.
+- Non-blocking review findings belong in SQLite `recommendations` records. Only selected recommendations are planning inputs for a later goal, and they resolve only when that adopting goal completes.
+- `.agent-loop/delivery-report.md` is a rendered view of `goal_deliveries` plus recommendations; SQLite remains authoritative.

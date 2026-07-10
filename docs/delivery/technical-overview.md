@@ -6,8 +6,8 @@ repository.
 
 `agent-loop` turns one broad user goal into a plan, executes tasks through
 configured agent CLIs, records attempts in SQLite, writes human-readable
-`.agent-loop/plan.md` and `.agent-loop/progress.md` views, and can resume after
-interruption.
+`.agent-loop/plan.md`, `.agent-loop/progress.md`, and
+`.agent-loop/delivery-report.md` views, and can resume after interruption.
 
 The public term is `goal`. Internally, the code and database still call the
 tracked execution container a `run`, so `Goal ID` in the CLI maps to the
@@ -53,6 +53,7 @@ state_dir = ".agent-loop"
 db_path = ".agent-loop/agent-loop.db"
 logs_dir = ".agent-loop/logs"
 worktrees_dir = "worktrees"
+delivery_report_path = ".agent-loop/delivery-report.md"
 webhook_env_var = "AGENT_LOOP_WEBHOOK_URL"
 
 # Optional binary overrides.
@@ -121,6 +122,7 @@ Runtime files are written under the current repository:
 - `.agent-loop/agent-loop.db`: goal/run, task, attempt, decision, quota, and migration state
 - `.agent-loop/plan.md`: current objective, features, tasks, dependencies, and status
 - `.agent-loop/progress.md`: current goal state, blockers, tests, and next action
+- `.agent-loop/delivery-report.md`: completed delivery, launch instructions, verification, limitations, and recommendations
 - `.agent-loop/learning.md`: durable notes for this repository's goals
 - `.agent-loop/logs/`: provider prompts, stdout/stderr, patches, reviews, and test output
 - `worktrees/`: isolated task worktrees used during execution; kept visible so CLI agents can open them as workspaces
@@ -153,6 +155,11 @@ agent-loop start --goal "Fix flaky retry tests" --intake none
 `spec` engages in an adaptive conversation to draft a compact specification before planning.
 `none` is best for narrow, well-understood implementation tasks and skips right to planning.
 
+Before planning, intake infers an operating goal type and explains it. The user
+can accept or correct `prototype`, `extend`, `refine`, `repair`, `harden`, or
+`investigate`. Unattended starts accept and record the inference automatically.
+These are peer working modes, not a fixed maturity sequence.
+
 In non-interactive mode, plan approval is automatic by default:
 
 ```bash
@@ -170,6 +177,22 @@ agent-loop start \
   --goal "Refactor the billing adapter" \
   --unattended-policy reject
 ```
+
+Adopt open recommendations from the latest completed goal in an unattended
+start with explicit IDs:
+
+```bash
+agent-loop start \
+  --non-interactive \
+  --goal "Improve the delivered prototype" \
+  --recommendations 2,4
+```
+
+Feature and final reviews store non-blocking findings as recommendations.
+Confirmed prototype goals can complete with known limitations once the app is
+runnable and serves its central purpose. Successful completion resolves any
+recommendations adopted by that goal and renders the delivery report from the
+SQLite source of truth.
 
 Inspect the latest goal:
 
