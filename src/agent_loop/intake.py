@@ -7,9 +7,31 @@ from agent_loop.config import Config
 from agent_loop.database import get_connection, migrate
 from agent_loop.repositories import ProviderStateRepository
 from agent_loop.routing import ModelRouter
+from agent_loop.goal_intake import (
+    GoalTypeInference,
+    fallback_goal_type,
+    goal_type_inference_prompt,
+    parse_goal_type_inference,
+)
 
 BRAINSTORM_MIN_QUESTIONS = 3
 BRAINSTORM_MAX_QUESTIONS = 5
+
+
+def infer_goal_type(goal: str, config: Config, is_first_goal: bool) -> GoalTypeInference:
+    if is_first_goal:
+        return fallback_goal_type(True)
+
+    result = _call_intake_model(
+        goal_type_inference_prompt(goal),
+        config,
+        "goal-type",
+        "Goal type inference",
+        profile="intake",
+    )
+    if not result or not result.success:
+        return fallback_goal_type(False, "The intake model was unavailable")
+    return parse_goal_type_inference(result.output, is_first_goal=False)
 
 
 def _extract_json_object(text: str) -> Dict[str, Any]:

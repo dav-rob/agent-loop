@@ -828,6 +828,9 @@ You are the Agent Loop Planner.
 Input:
 {run['goal']}
 
+Operating goal type: {run.get('goal_type', 'prototype')}
+Why this type was chosen: {run.get('goal_type_rationale') or 'No rationale recorded.'}
+
 The input may be either:
 * a raw goal from none mode
 * an approved compact spec from spec mode

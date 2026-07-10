@@ -144,6 +144,10 @@ def render_plan_md(conn: sqlite3.Connection, run_id: int, dest_path: Path) -> No
     lines.append("")
     lines.append(run["goal"])
     lines.append("")
+    lines.append(f"- **Goal type:** {run.get('goal_type', 'prototype')}")
+    if run.get("goal_type_rationale"):
+        lines.append(f"- **Why:** {run['goal_type_rationale']}")
+    lines.append("")
     lines.append("> [!NOTE]")
     lines.append("> This file is a human-readable summary. Full task metadata, dependencies, attempts, and evidence are stored in the agent-loop SQLite database. Run `agent-loop plan --details` to inspect them.")
     lines.append("")
@@ -225,6 +229,10 @@ def render_progress_md(conn: sqlite3.Connection, run_id: int, dest_path: Path) -
     lines.append("## Goal")
     lines.append("")
     lines.append(run["goal"])
+    lines.append("")
+    lines.append(f"Goal Type: {run.get('goal_type', 'prototype')}")
+    if run.get("goal_type_rationale"):
+        lines.append(f"Goal Type Rationale: {run['goal_type_rationale']}")
     lines.append("")
     lines.append("## Current status")
     lines.append("")

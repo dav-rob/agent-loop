@@ -34,13 +34,13 @@
 - Modify: `src/agent_loop/views.py`
 - Create: `tests/test_goal_type_intake.py`
 
-- [ ] Add failing tests for first-goal `prototype`, structured model inference, invalid-output fallbacks, interactive approval/correction, unattended acceptance, and type/rationale rendering.
-- [ ] Run the new tests and confirm the expected failures.
-- [ ] Implement a structured `GoalTypeInference`, model prompt/parser, deterministic fallback, and confirmation prompt.
-- [ ] Infer before `RunRepository.create()`, persist the confirmed result, and automatically accept it for non-interactive starts.
-- [ ] Include goal type and rationale in planning context, CLI status, plan markdown, and progress markdown.
-- [ ] Run the new tests plus `tests/test_intake.py`, `tests/test_cli.py`, and `tests/test_views.py`.
-- [ ] Commit as `feat: infer and confirm goal operating type`.
+- [x] Add failing tests for first-goal `prototype`, structured model inference, invalid-output fallbacks, interactive approval/correction, unattended acceptance, and type/rationale rendering.
+- [x] Run the new tests and confirm the expected failures.
+- [x] Implement a structured `GoalTypeInference`, model prompt/parser, deterministic fallback, and confirmation prompt.
+- [x] Infer before `RunRepository.create()`, persist the confirmed result, and automatically accept it for non-interactive starts.
+- [x] Include goal type and rationale in planning context, CLI status, plan markdown, and progress markdown.
+- [x] Run the new tests plus `tests/test_intake.py`, `tests/test_cli.py`, and `tests/test_views.py`.
+- [x] Commit as `feat: infer and confirm goal operating type`.
 
 ### Task 3: Goal-Type-Aware Reviews
 

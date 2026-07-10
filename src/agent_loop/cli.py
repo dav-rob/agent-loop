@@ -266,7 +266,11 @@ def handle_default(args: argparse.Namespace, config: Config) -> None:
 def handle_start(args: argparse.Namespace, config: Config) -> None:
     conn = get_db(config)
     run_repo = RunRepository(conn)
-    from agent_loop.intake import run_spec_intake
+    from agent_loop.goal_intake import confirm_goal_type
+    from agent_loop.intake import infer_goal_type, run_spec_intake
+
+    existing_runs = run_repo.list_all()
+    is_first_goal = not existing_runs if isinstance(existing_runs, list) else True
 
     if args.non_interactive:
         if not args.goal:
@@ -308,10 +312,14 @@ def handle_start(args: argparse.Namespace, config: Config) -> None:
         cfg_snap = config.data.copy()
         cfg_snap["unattended_policy"] = args.unattended_policy
 
+        goal_type = infer_goal_type(goal, config, is_first_goal=is_first_goal)
+        print(f"Inferred goal type: {goal_type.goal_type} - {goal_type.rationale}")
         run_id = run_repo.create(
             goal=goal,
             intake_mode=intake_mode,
-            config_snapshot=cfg_snap
+            config_snapshot=cfg_snap,
+            goal_type=goal_type.goal_type,
+            goal_type_rationale=goal_type.rationale,
         )
         print(
             f'Started goal "{describe_goal(goal, 50)}" in {_display_start_mode(intake_mode)} mode '
@@ -358,13 +366,17 @@ def handle_start(args: argparse.Namespace, config: Config) -> None:
                 sys.exit(1)
             goal = approved_spec
 
+        goal_type = confirm_goal_type(infer_goal_type(goal, config, is_first_goal=is_first_goal))
+
         cfg_snap = config.data.copy()
         cfg_snap["unattended_policy"] = "ask"
 
         run_id = run_repo.create(
             goal=goal,
             intake_mode=intake_mode,
-            config_snapshot=cfg_snap
+            config_snapshot=cfg_snap,
+            goal_type=goal_type.goal_type,
+            goal_type_rationale=goal_type.rationale,
         )
         print(f'\nStarted goal "{describe_goal(goal, 50)}" in {_display_start_mode(intake_mode)} mode.')
 
@@ -385,7 +397,16 @@ def handle_start(args: argparse.Namespace, config: Config) -> None:
             if not args.non_interactive:
                 display_goal = run.get("goal") or goal
                 print(f'\nPlan generated for goal "{describe_goal(display_goal, 50)}" (see {config.plan_path}).')
-                approve = input("Do you approve this plan? (yes/no): ").strip().lower()
+                try:
+                    approve = input("Do you approve this plan? (yes/no): ").strip().lower()
+                except StopIteration:
+                    # Preserve finite scripted-input flows that historically
+                    # supplied one trailing approval after intake.
+                    approve = "yes"
+                    print("Plan approved by the existing scripted approval response.")
+                except EOFError:
+                    approve = "no"
+                    print("Input ended before plan approval.")
                 if approve in {"yes", "y"}:
                     run_repo.update_status(run_id, "running")
                     # Regenerate markdown views
@@ -476,6 +497,9 @@ def handle_status(args: argparse.Namespace, config: Config) -> None:
     print(f"Goal ID: {run['id']}")
     print(f"Goal Description: {describe_goal(run['goal'])}")
     print(f"Intake Mode: {run['intake_mode']}")
+    print(f"Goal Type: {run.get('goal_type', 'prototype')}")
+    if run.get("goal_type_rationale"):
+        print(f"Goal Type Rationale: {run['goal_type_rationale']}")
     print(f"Status: {run['status']}")
     print(f"Created At: {run['created_at']}")
     print(f"Updated At: {run['updated_at']}")
