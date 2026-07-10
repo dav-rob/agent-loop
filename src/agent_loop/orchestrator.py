@@ -34,7 +34,10 @@ from agent_loop.repositories import (
     HandoverRepository,
     NotificationRepository,
     TestMigrationRepository,
-    TestRunRepository
+    TestRunRepository,
+    RecommendationRepository,
+    RECOMMENDATION_CATEGORIES,
+    RECOMMENDATION_PRIORITIES,
 )
 from agent_loop.views import render_plan_md, render_progress_md, render_task_handover_md
 
@@ -106,11 +109,21 @@ RETRY_STRATEGIES = {
 
 
 @dataclass(frozen=True)
+class ReviewRecommendation:
+    category: str
+    priority: str
+    title: str
+    rationale: str
+    evidence: str
+
+
+@dataclass(frozen=True)
 class ReviewParseResult:
     decision: Optional[str]
     findings: Optional[str]
     retry_strategy: Optional[str] = None
     retry_strategy_reason: Optional[str] = None
+    recommendations: tuple[ReviewRecommendation, ...] = ()
 
     def __iter__(self) -> Iterator[Optional[str]]:
         yield self.decision
@@ -160,7 +173,32 @@ def parse_review_response(output: str, allowed_decisions: Optional[set[str]] = N
             reason = data.get("retry_strategy_reason")
             if not isinstance(reason, str):
                 reason = None
-            return ReviewParseResult(dec_val, find_val, strategy, reason)
+            recommendations = []
+            raw_recommendations = data.get("recommendations", [])
+            if isinstance(raw_recommendations, list):
+                for item in raw_recommendations:
+                    if not isinstance(item, dict):
+                        continue
+                    category = str(item.get("category", "")).strip().lower()
+                    priority = str(item.get("priority", "")).strip().lower()
+                    title = item.get("title")
+                    rationale = item.get("rationale")
+                    evidence = item.get("evidence")
+                    if (
+                        category in RECOMMENDATION_CATEGORIES
+                        and priority in RECOMMENDATION_PRIORITIES
+                        and all(isinstance(value, str) and value.strip() for value in (title, rationale, evidence))
+                    ):
+                        recommendations.append(
+                            ReviewRecommendation(
+                                category=category,
+                                priority=priority,
+                                title=title.strip(),
+                                rationale=rationale.strip(),
+                                evidence=evidence.strip(),
+                            )
+                        )
+            return ReviewParseResult(dec_val, find_val, strategy, reason, tuple(recommendations))
 
     decision_pattern = "|".join(re.escape(decision) for decision in sorted(allowed_decisions, key=len, reverse=True))
     labelled = re.search(
@@ -225,6 +263,7 @@ class Orchestrator:
         self.decision_repo = DecisionRepository(conn)
         self.provider_repo = ProviderStateRepository(conn)
         self.review_repo = ReviewRepository(conn)
+        self.recommendation_repo = RecommendationRepository(conn)
         self.notification_repo = NotificationRepository(conn)
         self.test_migration_repo = TestMigrationRepository(conn)
         self.test_run_repo = TestRunRepository(conn)
@@ -2567,10 +2606,20 @@ Output a JSON response in the following format:
   "decision": "approved",
   "findings": "Detail findings here...",
   "retry_strategy": "continue_existing_branch",
-  "retry_strategy_reason": "Only include when rejecting, blocking, or recommending a restart."
+  "retry_strategy_reason": "Only include when rejecting, blocking, or recommending a restart.",
+  "recommendations": [
+    {{
+      "category": "usability",
+      "priority": "medium",
+      "title": "Concise future improvement",
+      "rationale": "Why it is useful but not required now.",
+      "evidence": "Concrete evidence observed during this review."
+    }}
+  ]
 }}
 The "decision" must be one of: "approved", "rejected", "follow_up", "assessment", "block".
 For rejected task reviews, include "retry_strategy" as one of: "continue_existing_branch", "restart_from_main", "restart_from_last_good_commit", "apply_patch_to_clean_branch", "block_for_human".
+Use recommendations for every non-blocking usability, security, architecture, reliability, testing, or maintenance finding. Return an empty recommendations array when there are none.
 Only return the raw JSON object. Do not include markdown wrappers.
 """
             routed_result = self._model_router().run(
@@ -2586,6 +2635,7 @@ Only return the raw JSON object. Do not include markdown wrappers.
             
             decision = "rejected"
             findings = "Diff checked"
+            parsed_review = ReviewParseResult(None, None)
             
             if result.success:
                 parsed_review = parse_review_response(result.output)
@@ -2607,7 +2657,7 @@ Only return the raw JSON object. Do not include markdown wrappers.
                 findings = f"Review prompt failed: {result.error}"
 
             reviewer_route = f"{provider}:{model}" if provider and model else None
-            self.review_repo.create(
+            review_id = self.review_repo.create(
                 run_id=run_id,
                 subject_type=subject_type,
                 subject_id=subject_id,
@@ -2615,6 +2665,24 @@ Only return the raw JSON object. Do not include markdown wrappers.
                 reviewer_route=reviewer_route,
                 findings=findings,
                 evidence_paths=evidence_paths
+            )
+            recommendations = parsed_review.recommendations
+            if decision == "follow_up" and not recommendations and subject_type != "task_escalation":
+                recommendations = (
+                    ReviewRecommendation(
+                        category="maintenance",
+                        priority="medium",
+                        title=f"Follow up on {subject_type} review",
+                        rationale=findings,
+                        evidence=findings,
+                    ),
+                )
+            self._persist_review_recommendations(
+                run_id=run_id,
+                subject_type=subject_type,
+                subject_id=subject_id,
+                review_id=review_id,
+                recommendations=recommendations,
             )
             self.lifecycle.review_completed(
                 run_id=run_id,
@@ -2671,6 +2739,32 @@ Only return the raw JSON object. Do not include markdown wrappers.
                 )
                 self._render_progress(run_id)
             return "rejected"
+
+    def _persist_review_recommendations(
+        self,
+        run_id: int,
+        subject_type: str,
+        subject_id: int,
+        review_id: int,
+        recommendations: tuple[ReviewRecommendation, ...],
+    ) -> None:
+        feature_id = subject_id if subject_type == "feature" else None
+        task_id = subject_id if subject_type in {"task", "task_escalation"} else None
+        if task_id:
+            task = self.task_repo.get(task_id)
+            feature_id = task["feature_id"] if task else None
+        for recommendation in recommendations:
+            self.recommendation_repo.create(
+                run_id=run_id,
+                feature_id=feature_id,
+                task_id=task_id,
+                source_review_id=review_id,
+                category=recommendation.category,
+                priority=recommendation.priority,
+                title=recommendation.title,
+                rationale=recommendation.rationale,
+                evidence=recommendation.evidence,
+            )
 
     def run_task_review(self, run_id: int, task_id: int, start_sha: Optional[str], end_sha: Optional[str], attempt_id: Optional[int] = None) -> str:
         task_worktree = self._task_worktree_dir(run_id, task_id)
@@ -2734,12 +2828,55 @@ Reject only for blocking issues. If you recommend restart, explain why continuin
         decision = self.run_agent_review(run_id, "feature", feature_id, prompt)
         return decision
 
+    def apply_feature_review_decision(self, run_id: int, feature_id: int, decision: str) -> None:
+        feature = self.feature_repo.get(feature_id)
+        run = self.run_repo.get(run_id)
+        confirmed_goal_type = bool(run and run.get("goal_type_rationale"))
+        if decision == "approved" or (decision == "follow_up" and confirmed_goal_type):
+            self.feature_repo.update_review_status(feature_id, "approved")
+            if decision == "follow_up":
+                self.notify(
+                    run_id,
+                    "feature_recommendations",
+                    f"Feature '{feature['name']}' completed with recommendations recorded for later.",
+                )
+            return
+
+        if decision in {"follow_up", "rejected"}:
+            self.feature_repo.update_review_status(feature_id, "pending")
+            feature_tasks = [task for task in self.task_repo.get_by_run(run_id) if task["feature_id"] == feature_id]
+            verification = next(
+                (task["required_verification"] for task in reversed(feature_tasks) if task.get("required_verification")),
+                "npm test",
+            )
+            self.task_repo.create(
+                run_id=run_id,
+                feature_id=feature_id,
+                name=f"Address feature review feedback for {feature['name']}",
+                role="implementation",
+                risk="medium",
+                scope={"files": []},
+                dependencies=[],
+                required_verification=verification,
+            )
+            self.notify(
+                run_id,
+                "feature_follow_up",
+                f"Feature '{feature['name']}' review feedback needs addressing. Spawned follow-up task.",
+            )
+            return
+
+        self.feature_repo.update_review_status(feature_id, "rejected")
+        self.run_repo.update_status(run_id, "blocked")
+        self.notify(run_id, "blocked", f"Feature '{feature['name']}' review was rejected. Run is blocked.")
+
     def run_final_review(self, run_id: int) -> bool:
         with self.db_lock:
             run = self.run_repo.get(run_id)
         prompt = f"Please perform the final review for run goal: {run['goal']}. Verify all features are complete and correct."
         decision = self.run_agent_review(run_id, "final", run_id, prompt)
-        return decision == "approved"
+        confirmed_prototype = run.get("goal_type") == "prototype" and bool(run.get("goal_type_rationale"))
+        return decision == "approved" or (decision == "follow_up" and confirmed_prototype)
 
     def create_integration_task(self, run_id: int, task: Dict[str, Any], branch_name: str, source_commit: Optional[str] = None, target_baseline: Optional[str] = None, conflicting_files: Optional[list] = None) -> None:
         task_scope = self._task_scope_data(task)
@@ -3304,28 +3441,7 @@ Reject only for blocking issues. If you recommend restart, explain why continuin
                     feat_tasks = [t for t in tasks if t["feature_id"] == feature["id"]]
                     if feat_tasks and all(t["status"] == "complete" for t in feat_tasks):
                         decision = self.run_feature_review(run_id, feature["id"])
-                        if decision == "approved":
-                            self.feature_repo.update_review_status(feature["id"], "approved")
-                        elif decision in ("follow_up", "rejected"):
-                            # On follow_up or rejected, we create a new task to fix the acceptance criteria
-                            # and revert the feature to pending, so it tries again after the fix is implemented.
-                            self.feature_repo.update_review_status(feature["id"], "pending")
-                            with self.db_lock:
-                                self.task_repo.create(
-                                    run_id=run_id,
-                                    feature_id=feature["id"],
-                                    name=f"Address feature review feedback for {feature['name']}",
-                                    role="implementation",
-                                    risk="medium",
-                                    scope={"files": []},  # Let the agent figure out what to edit
-                                    dependencies=[],
-                                    required_verification="npm test"
-                                )
-                            self.notify(run_id, "feature_follow_up", f"Feature '{feature['name']}' review feedback needs addressing. Spawned follow-up task.")
-                        else:
-                            self.feature_repo.update_review_status(feature["id"], "rejected")
-                            self.run_repo.update_status(run_id, "blocked")
-                            self.notify(run_id, "blocked", f"Feature '{feature['name']}' review was rejected. Run is blocked.")
+                        self.apply_feature_review_decision(run_id, feature["id"], decision)
 
             tasks = self.task_repo.get_by_run(run_id)
             ready_tasks = [t for t in tasks if t["status"] == "ready"]

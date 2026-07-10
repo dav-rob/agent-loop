@@ -63,13 +63,13 @@
 - Modify: `src/agent_loop/repositories.py`
 - Create: `tests/test_review_recommendations.py`
 
-- [ ] Add failing parser tests for valid/invalid structured recommendations and orchestration tests proving source links are persisted.
-- [ ] Add a failing prototype feature-review regression proving non-blocking `follow_up` completes the feature and creates no task.
-- [ ] Extend `ReviewParseResult` with validated recommendations and retain the parsed result for feature/final policy handling.
-- [ ] Persist recommendations after the source review row exists, linking goal/feature/task/review.
-- [ ] Treat recommendation-only prototype feature and final findings as completion; retain required functional repair behavior for `rejected`.
-- [ ] Run focused tests plus all review/retry/orchestrator tests.
-- [ ] Commit as `feat: separate recommendations from required work`.
+- [x] Add failing parser tests for valid/invalid structured recommendations and orchestration tests proving source links are persisted.
+- [x] Add a failing prototype feature-review regression proving non-blocking `follow_up` completes the feature and creates no task.
+- [x] Extend `ReviewParseResult` with validated recommendations and retain the parsed result for feature/final policy handling.
+- [x] Persist recommendations after the source review row exists, linking goal/feature/task/review.
+- [x] Treat recommendation-only prototype feature and final findings as completion; retain required functional repair behavior for `rejected`.
+- [x] Run focused tests plus all review/retry/orchestrator tests.
+- [x] Commit as `feat: separate recommendations from required work`.
 
 ### Task 5: SQLite-Backed Delivery Reports
 
