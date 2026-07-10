@@ -115,7 +115,8 @@ def test_router_escalated_executor_uses_strong_profile_first(tmp_path):
 
     assert result.success is True
     assert result.provider == "codex"
-    assert result.model == "gpt-5.5"
+    assert result.model == "gpt-5.6-sol"
+    assert result.reasoning_level == "xhigh"
 
 
 def test_router_does_not_fail_over_after_execution_timeout(tmp_path):

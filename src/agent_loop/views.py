@@ -83,6 +83,17 @@ def render_task_handover_md(conn: sqlite3.Connection, run_id: int, task_id: int,
             attempt_number = attempt_order.get(attempt_id, attempt_id or "unknown")
             lines.append(f"## Attempt {attempt_number}")
             lines.append("")
+            attempt_meta = next((attempt for attempt in attempts if attempt["id"] == attempt_id), None)
+            if attempt_meta:
+                _append_field(lines, "Retry strategy", attempt_meta.get("retry_strategy"))
+                _append_field(lines, "Retry strategy reason", attempt_meta.get("retry_strategy_reason"))
+                _append_field(lines, "Start SHA", attempt_meta.get("start_sha"))
+                _append_field(lines, "Base SHA", attempt_meta.get("base_sha"))
+                if any(
+                    attempt_meta.get(key)
+                    for key in ("retry_strategy", "retry_strategy_reason", "start_sha", "base_sha")
+                ):
+                    lines.append("")
             for phase in ("executor", "reviewer"):
                 phase_entries = [entry for entry in entries_by_attempt[attempt_id] if entry["phase"] == phase]
                 if not phase_entries:
@@ -242,7 +253,13 @@ def render_progress_md(conn: sqlite3.Connection, run_id: int, dest_path: Path) -
             provider = attempt["provider"] or "pending"
             model = attempt["model"] or "pending"
             logs_path = attempt["logs_path"] or "pending"
-            lines.append(f"- Task: **{task_name}** (Route: {route}, Provider: {provider}, Model: {model}, Logs: `{logs_path}`)")
+            details = f"Route: {route}, Provider: {provider}, Model: {model}"
+            if attempt.get("retry_strategy"):
+                details += f", Strategy: {attempt['retry_strategy']}"
+                if attempt.get("retry_strategy_reason"):
+                    details += f" ({_compact_text(attempt['retry_strategy_reason'], max_chars=90)})"
+            details += f", Logs: `{logs_path}`"
+            lines.append(f"- Task: **{task_name}** ({details})")
     lines.append("")
 
     lines.append("### Recent Lifecycle Events")

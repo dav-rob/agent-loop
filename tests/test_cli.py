@@ -67,8 +67,9 @@ def test_cli_start_non_interactive(clean_workspace):
     config_path = Path("agent-loop.toml")
     assert config_path.exists()
     config_data = tomllib.loads(config_path.read_text())
-    assert config_data["routes"]["executor"]
-    assert config_data["routes"]["executor_escalated"][0]["model"] == "gpt-5.5"
+    assert config_data["routes"]["intake"][0]["model"] == "gpt-5.6-sol"
+    assert config_data["routes"]["executor"][-1]["model"] == "gpt-5.6-terra"
+    assert config_data["routes"]["executor_escalated"][0]["model"] == "gpt-5.6-sol"
 
     conn = get_connection(db_path)
     run_repo = RunRepository(conn)

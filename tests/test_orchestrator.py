@@ -1189,8 +1189,120 @@ def test_execute_task_uses_visible_worktrees_by_default(db_conn, tmp_path, monke
     assert orch._execute_task_impl(run_id, task) is True
 
     assert created_worktrees == [
-        tmp_path / "worktrees" / f"run-{run_id}-task-{task_id}-attempt-1"
+        tmp_path / "worktrees" / f"run-{run_id}-task-{task_id}"
     ]
+
+
+def test_rejected_retry_continues_same_task_worktree(db_conn, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    config = Config({
+        "db_path": ":memory:",
+        "worktrees_dir": str(tmp_path / "worktrees"),
+        "logs_dir": str(tmp_path / ".agent-loop" / "logs"),
+        "retry_policy": {"max_attempts": 3, "escalation_threshold": 2},
+        "routes": {
+            "implementation": [{"provider": "codex", "model": "gpt-5.4-mini"}],
+            "planning": [{"provider": "codex", "model": "gpt-5.5"}],
+        },
+        "commands": {
+            "narrow_test": "",
+            "regression_test": "",
+        },
+    })
+    orch = Orchestrator(db_conn, config, plan_path=tmp_path / "plan.md", progress_path=tmp_path / "progress.md")
+
+    run_repo = RunRepository(db_conn)
+    feat_repo = FeatureRepository(db_conn)
+    task_repo = TaskRepository(db_conn)
+    attempt_repo = AttemptRepository(db_conn)
+
+    run_id = run_repo.create("Continue rejected work", "autonomous")
+    run_repo.update_status(run_id, "planning")
+    run_repo.update_status(run_id, "running")
+    feat_id = feat_repo.create(run_id, "Feature 1", "low")
+    task_id = task_repo.create(run_id, feat_id, "Task 1", "implementation", "low")
+    task_repo.update_status(task_id, "ready")
+
+    expected_worktree = tmp_path / "worktrees" / f"run-{run_id}-task-{task_id}"
+    expected_branch = f"agent-loop-run-{run_id}-task-{task_id}"
+    created_worktrees = []
+    removed_worktrees = []
+    prompts = []
+
+    def fake_create_worktree(repo_path, worktree_path, branch_name):
+        created_worktrees.append((Path(worktree_path), branch_name))
+        Path(worktree_path).mkdir(parents=True, exist_ok=True)
+
+    def fake_remove_worktree(repo_path, worktree_path):
+        removed_worktrees.append(Path(worktree_path))
+
+    class FakeRouter:
+        provider = "codex"
+        model = "gpt-5.4-mini"
+        reasoning_level = "high"
+
+        def run(self, profile, prompt, workspace_path, logs_root):
+            prompts.append(prompt)
+            return type("RoutedResult", (), {
+                "provider": self.provider,
+                "model": self.model,
+                "reasoning_level": self.reasoning_level,
+                "result": AttemptResult(success=True, exit_code=0, output="implemented", error=""),
+            })()
+
+    monkeypatch.setattr("agent_loop.orchestrator.create_worktree", fake_create_worktree)
+    monkeypatch.setattr("agent_loop.orchestrator.commit_changes", lambda worktree_dir, message: f"sha-{len(attempt_repo.get_by_run(run_id))}")
+    monkeypatch.setattr("agent_loop.orchestrator.remove_worktree", fake_remove_worktree)
+    monkeypatch.setattr(orch, "_model_router", lambda: FakeRouter())
+    monkeypatch.setattr(orch, "_worktree_matches_branch", lambda worktree_path, branch_name: Path(worktree_path) == expected_worktree and branch_name == expected_branch)
+    monkeypatch.setattr(orch, "run_task_review", MagicMock(side_effect=["rejected", "approved"]))
+    monkeypatch.setattr("agent_loop.orchestrator.merge_branch", lambda repo_path, source_branch, target_branch: (True, []))
+
+    assert orch._execute_task_impl(run_id, task_repo.get(task_id)) is True
+    assert task_repo.get(task_id)["status"] == "ready"
+    assert created_worktrees == [(expected_worktree, expected_branch)]
+    assert removed_worktrees == []
+
+    assert orch._execute_task_impl(run_id, task_repo.get(task_id)) is True
+    assert task_repo.get(task_id)["status"] == "complete"
+    assert created_worktrees == [(expected_worktree, expected_branch)]
+    assert removed_worktrees == [expected_worktree]
+    assert [Path(attempt["worktree_path"]) for attempt in attempt_repo.get_by_run(run_id)] == [
+        expected_worktree,
+        expected_worktree,
+    ]
+    assert "continuation attempt on the existing task branch" in prompts[1]
+
+
+def test_task_review_prompt_guides_continuation_feedback(db_conn, tmp_path, monkeypatch):
+    config = Config({
+        "db_path": ":memory:",
+        "logs_dir": str(tmp_path / ".agent-loop" / "logs"),
+    })
+    orch = Orchestrator(db_conn, config, plan_path=tmp_path / "plan.md", progress_path=tmp_path / "progress.md")
+
+    run_repo = RunRepository(db_conn)
+    feat_repo = FeatureRepository(db_conn)
+    task_repo = TaskRepository(db_conn)
+
+    run_id = run_repo.create("Review continuation guidance", "autonomous")
+    feat_id = feat_repo.create(run_id, "Feature 1", "low")
+    task_id = task_repo.create(run_id, feat_id, "Task 1", "implementation", "low")
+
+    captured = {}
+
+    def fake_run_agent_review(run_id_arg, subject_type, subject_id, prompt, attempt_id=None, workspace_path=None):
+        captured["prompt"] = prompt
+        captured["workspace_path"] = workspace_path
+        return "approved"
+
+    monkeypatch.setattr(orch, "run_agent_review", fake_run_agent_review)
+
+    assert orch.run_task_review(run_id, task_id, None, None, attempt_id=1) == "approved"
+    assert "task branch that will normally be continued" in captured["prompt"]
+    assert "Prefer precise repair instructions" in captured["prompt"]
+    assert "Reject only for blocking issues" in captured["prompt"]
+    assert captured["workspace_path"] == orch._task_worktree_dir(run_id, task_id)
 
 
 def test_implementation_route_failover_reaches_codex_after_agy_routes_unavailable(db_conn, tmp_path, monkeypatch):
@@ -1370,6 +1482,117 @@ def test_merge_conflict_integration_lifecycle(db_conn, tmp_path, monkeypatch):
     # Both integration and original task must now be complete
     assert task_repo.get(integration_task["id"])["status"] == "complete"
     assert task_repo.get(task_id)["status"] == "complete"
+
+
+def test_merge_conflict_recovery_follow_up_closes_original_task(db_conn, tmp_path, monkeypatch):
+    mock_create_wt = MagicMock()
+    mock_commit = MagicMock(side_effect=["sha-original", "sha-integration", "sha-followup"])
+    mock_remove_wt = MagicMock()
+
+    monkeypatch.setattr("agent_loop.orchestrator.create_worktree", mock_create_wt)
+    monkeypatch.setattr("agent_loop.orchestrator.commit_changes", mock_commit)
+    monkeypatch.setattr("agent_loop.orchestrator.remove_worktree", mock_remove_wt)
+
+    run_repo = RunRepository(db_conn)
+    feat_repo = FeatureRepository(db_conn)
+    task_repo = TaskRepository(db_conn)
+
+    run_id = run_repo.create("Merge conflict recovery follow-up run", "autonomous")
+    run_repo.update_status(run_id, "planning")
+    run_repo.update_status(run_id, "running")
+    feat_id = feat_repo.create(run_id, "Feature 1", "low")
+    task_id = task_repo.create(
+        run_id,
+        feat_id,
+        "Task 1",
+        "implementation",
+        "low",
+        scope={"writes": ["package-lock.json"]},
+        required_verification="",
+    )
+    task_repo.update_status(task_id, "ready")
+
+    config = Config({
+        "db_path": ":memory:",
+        "logs_dir": str(tmp_path / "logs"),
+        "max_workers": 1,
+        "retry_policy": {"max_attempts": 3, "escalation_threshold": 2},
+        "routes": {
+            "implementation": [{"provider": "codex", "model": "gpt-5.4-mini"}],
+            "planning": [{"provider": "codex", "model": "gpt-5.5"}],
+        },
+    })
+    orch = Orchestrator(db_conn, config, plan_path=tmp_path / "plan.md", progress_path=tmp_path / "progress.md")
+
+    merge_results = [
+        (False, ["package-lock.json"]),
+        (True, []),
+        (True, []),
+    ]
+    monkeypatch.setattr("agent_loop.orchestrator.merge_branch", MagicMock(side_effect=merge_results))
+
+    with patch("agent_loop.routing.get_adapter") as mock_get_adapter:
+        mock_adapter = MagicMock()
+        mock_adapter.run_attempt.side_effect = [
+            AttemptResult(success=True, exit_code=0, output="original done", error=""),
+            AttemptResult(success=True, exit_code=0, output='{"decision": "approved", "findings": "LGTM"}', error=""),
+            AttemptResult(success=True, exit_code=0, output="conflict resolved", error=""),
+            AttemptResult(success=True, exit_code=0, output='{"decision": "follow_up", "findings": "Remove obsolete test shim"}', error=""),
+            AttemptResult(success=True, exit_code=0, output="follow-up done", error=""),
+            AttemptResult(success=True, exit_code=0, output='{"decision": "approved", "findings": "Clean"}', error=""),
+        ]
+        mock_get_adapter.return_value = mock_adapter
+
+        assert orch.execute_task(run_id, task_repo.get(task_id)) is True
+        assert task_repo.get(task_id)["status"] == "blocked"
+
+        integration_task = next(t for t in task_repo.get_by_run(run_id) if t["name"] == "Resolve merge conflict on Task 1")
+        task_repo.update_status(integration_task["id"], "ready")
+        assert orch.execute_task(run_id, integration_task) is True
+        assert task_repo.get(task_id)["status"] == "blocked"
+
+        recovery_follow_up = next(t for t in task_repo.get_by_run(run_id) if t["name"] == "Follow-up: Resolve merge conflict on Task 1")
+        assert recovery_follow_up["scope"]["origin_task_id"] == task_id
+        task_repo.update_status(recovery_follow_up["id"], "ready")
+        assert orch.execute_task(run_id, recovery_follow_up) is True
+
+    assert task_repo.get(recovery_follow_up["id"])["status"] == "complete"
+    assert task_repo.get(integration_task["id"])["status"] == "complete"
+    assert task_repo.get(task_id)["status"] == "complete"
+
+
+def test_merge_conflict_recovery_tasks_route_as_executor_work(db_conn, tmp_path):
+    run_repo = RunRepository(db_conn)
+    feat_repo = FeatureRepository(db_conn)
+    task_repo = TaskRepository(db_conn)
+
+    run_id = run_repo.create("Recovery routing run", "autonomous")
+    feat_id = feat_repo.create(run_id, "Feature 1", "low")
+    task_id = task_repo.create(run_id, feat_id, "Task 1", "implementation", "low")
+
+    config = Config({
+        "db_path": ":memory:",
+        "logs_dir": str(tmp_path / "logs"),
+        "routes": {
+            "implementation": [{"provider": "codex", "model": "gpt-5.4-mini"}],
+            "planning": [{"provider": "codex", "model": "gpt-5.5"}],
+        },
+    })
+    orch = Orchestrator(db_conn, config, plan_path=tmp_path / "plan.md", progress_path=tmp_path / "progress.md")
+
+    orch.create_integration_task(
+        run_id=run_id,
+        task=task_repo.get(task_id),
+        branch_name="agent-loop-run-1-task-1",
+        source_commit="abc123",
+        target_baseline="main",
+        conflicting_files=["package-lock.json"],
+    )
+
+    integration_task = next(t for t in task_repo.get_by_run(run_id) if t["name"] == "Resolve merge conflict on Task 1")
+    assert integration_task["role"] == "implementation"
+    assert integration_task["scope"]["writes"] == ["package-lock.json"]
+    assert orch.execution_profile_for_task(integration_task, attempts=[]) == "executor"
 
 
 def test_review_decision_states(db_conn, tmp_path, monkeypatch):
@@ -1637,7 +1860,7 @@ def test_preserve_partial_work_on_recovery(db_conn, tmp_path, monkeypatch):
         mock_status = MagicMock(returncode=0, stdout="")
         return mock_status
 
-    # We also mock remove_worktree to verify it got called
+    # Preserved interrupted work should keep the worktree available for retry.
     mock_remove_wt = MagicMock()
     monkeypatch.setattr("agent_loop.orchestrator.remove_worktree", mock_remove_wt)
 
@@ -1645,14 +1868,15 @@ def test_preserve_partial_work_on_recovery(db_conn, tmp_path, monkeypatch):
         # Trigger recovery
         orch.reconcile_interrupted_run(run_id)
 
-    # Verify remove_worktree was called
-    mock_remove_wt.assert_called_once()
+    mock_remove_wt.assert_not_called()
 
     # Verify that patch file was written and is inspectable
     # Patch path is stored in the database for the attempt
     attempt = attempt_repo.get(attempt_id)
     assert attempt["outcome"] == "abandoned"
     assert attempt["patch_path"] is not None
+    assert attempt["worktree_path"] == str(wt_dir)
+    assert attempt["retry_strategy"] == "apply_patch_to_clean_branch"
 
     patch_file = Path(attempt["patch_path"])
     assert patch_file.exists()

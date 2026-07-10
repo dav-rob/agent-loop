@@ -279,17 +279,163 @@ Add or update focused tests:
 - Record start/end SHAs in lifecycle metadata if DB migration is deferred.
 - Update prompts to say continuation vs restart.
 
-### Phase 2: Retry Strategy Metadata
+### Phase 1.5: Typed Follow-Ups And Recovery Closure
+
+Live continuity testing showed the durable branch behavior working, but exposed
+a bug in merge-conflict recovery: an approved task can hit merge conflicts,
+spawn a conflict-resolution task, and then remain blocked even after the
+conflict-resolution chain completes successfully.
+
+Fix this before the larger retry-strategy phase by making follow-up semantics
+explicit:
+
+- `non_blocking_follow_up`: the original task is complete enough to proceed.
+  Mark the original task complete, create the follow-up as separate dependent
+  work, and allow downstream tasks to run.
+- `blocking_recovery_follow_up`: the original task is still blocked until the
+  recovery chain completes. Preserve `origin_task_id` across all recovery
+  follow-ups, not just the immediate parent task.
+- `retry_extension_follow_up`: the original task needs another guided attempt
+  rather than a separate downstream task. Keep this as retry/escalation
+  behavior, not a normal task dependency.
+
+Merge-conflict tasks should use `blocking_recovery_follow_up` semantics:
+
+1. When an approved task fails to merge, mark the original task blocked with a
+   merge-conflict reason and create a recovery task with `origin_task_id`.
+2. Create recovery and recovery-follow-up tasks with implementation-style
+   routing when they are expected to edit files, resolve conflicts, regenerate
+   lockfiles, or run verification. Do not route file-changing recovery work as
+   pure planning just because it was spawned by an integration path.
+3. If the recovery task itself creates follow-up work, copy the same
+   `origin_task_id` into the follow-up scope.
+4. When the recovery chain reaches an approved terminal state, mark the
+   original task complete, unblock dependents, and continue scheduling.
+5. If recovery fails or is explicitly blocked, keep the original task blocked
+   with the latest recovery findings.
+
+Add focused regressions:
+
+- Approved task with merge conflict creates a blocking recovery task linked to
+  the original task.
+- Successful recovery task marks the original task complete.
+- Recovery task with non-blocking follow-up keeps `origin_task_id` through the
+  follow-up chain.
+- Successful recovery follow-up closes the original blocked task and allows
+  dependent tasks to become ready.
+- Normal non-blocking reviewer follow-up still marks the original task complete
+  immediately and creates a separate dependent follow-up task.
+- Merge-conflict and recovery-follow-up tasks that edit files are classified
+  and routed as implementation/executor work, not planner-only work.
+
+### Phase 2: Retry Strategy And Recovery Review
+
+Retry strategy metadata and patch/resume recovery are one mechanism, not two
+separate systems. The orchestrator gathers evidence, a reviewer or recovery
+reviewer chooses a strategy, and the orchestrator records and executes that
+strategy.
+
+Implemented baseline:
+
+- Attempts persist `start_sha`, `base_sha`, `retry_strategy`, and
+  `retry_strategy_reason`.
+- Task and timeout reviews can return `retry_strategy`; older rejected reviews
+  default to `continue_existing_branch`.
+- Interrupted resume recovery preserves useful worktree/patch evidence and
+  records the selected retry strategy instead of blindly deleting worktrees.
+- Attempt start uses the latest recorded retry strategy:
+  `continue_existing_branch`, `restart_from_main`,
+  `restart_from_last_good_commit`, `apply_patch_to_clean_branch`, or
+  `block_for_human`.
+- Generated progress and task handover markdown display retry strategy
+  metadata for operator monitoring.
 
 - Add DB support for retry strategy/start SHA/base SHA.
-- Parse optional `retry_strategy` from reviews.
-- Display strategy in status/progress/handoffs.
+- Gather recovery evidence for rejected, timed-out, interrupted, or dirty
+  worktree states:
+  - current branch and HEAD
+  - committed changes since attempt start
+  - uncommitted patch
+  - merge/rebase state
+  - changed files
+  - provider logs and synthesized handover
+- Parse optional `retry_strategy` from task reviews and timeout/recovery
+  reviews.
+- Default missing `retry_strategy` to `continue_existing_branch` for ordinary
+  rejected reviews.
+- Execute the selected strategy:
+  - `continue_existing_branch`: keep the task branch/worktree.
+  - `restart_from_main`: archive/remove current branch/worktree and recreate
+    from `main`.
+  - `restart_from_last_good_commit`: restart from a selected useful attempt
+    commit.
+  - `apply_patch_to_clean_branch`: recreate clean and apply the preserved
+    patch.
+  - `block_for_human`: block with evidence.
+- Display strategy and evidence in status/progress/handoffs.
+- Improve `resume` to keep useful durable task worktrees and route ambiguous
+  or unsafe states through the same strategy decision.
 
-### Phase 3: Patch And Resume Recovery
+### Phase 2.5: Task Review Workspace Fix
 
-- Apply preserved patches when selected.
-- Improve `resume` to keep useful durable task worktrees.
-- Add explicit archive/restart paths.
+Live continuity monitoring showed that task reviewers can be launched from the
+target repository root on `main` even when they are meant to review a durable
+task branch/worktree. In the observed run the reviewer noticed the mismatch and
+recovered by inspecting the task branch/commit directly, but that is too
+fragile: task review should not depend on the model realizing it is in the
+wrong checkout.
+
+Fix task reviews so the reviewer is both placed in and explicitly told about
+the work it is assessing:
+
+- For task and task-escalation reviews, run the reviewer with
+  `workspace_path` set to the durable task worktree, not `Path.cwd()`.
+- Include task review metadata in the prompt:
+  - task worktree path
+  - task branch name
+  - attempt id
+  - start SHA and end SHA / reviewed commit
+  - instruction that the task worktree is the authoritative checkout for file
+    inspection and verification commands
+- Generate the attempt diff from the reviewed worktree/commit range, but make
+  the reviewer prompt clear that the diff is evidence and the task worktree is
+  the workspace to inspect.
+- Keep feature/final reviews on the repository root unless they are reviewing a
+  specific task branch.
+- Add regressions proving task review model calls receive the task worktree as
+  `workspace_path` and the prompt includes the task branch/worktree/commit
+  metadata.
+
+### Phase 2.6: Nested Process Cleanup Fix
+
+Live continuity monitoring showed a cleanup gap when an executor process
+spawns its own child process tree. In the observed run, the executor launched a
+Node probe that in turn spawned `agy`; after the parent attempt timed out, the
+nested `agy` process outlived the timed-out attempt. This is a hardening issue
+because model/tool subprocesses can continue consuming resources after the
+orchestrator has marked the attempt failed or started a retry.
+
+Fix process cleanup so timeout and cancellation reliably terminate the full
+process group/tree, including child processes spawned by executor-created
+scripts:
+
+- Launch provider commands in an isolated process group/session where the
+  platform supports it.
+- On timeout, terminate the process group first, then escalate to kill after a
+  short grace period.
+- Detect and record suspected orphaned descendants in lifecycle events and
+  handover evidence.
+- Add regressions with a nested child process that outlives its immediate
+  parent unless process-tree cleanup is correct.
+- Keep timeout handover behavior intact: preserve commits, patches, logs, and
+  verification evidence before or during cleanup.
+
+### Phase 3: Operator Restart/Archive Commands
+
+- Add CLI commands only as thin wrappers over the same retry strategy executor.
+- Support forcing restart/archive of a task branch when continuation is clearly
+  wrong.
+- Defer broader UX if it starts introducing a second orchestration path.
 
 ### Phase 4: Review Tuning
 

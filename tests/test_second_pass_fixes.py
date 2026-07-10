@@ -617,7 +617,7 @@ def test_recovery_idempotency(db_conn, tmp_path, monkeypatch):
         logs_path=str(logs_dir)
     )
 
-    # 1. First recovery run: should clean up worktree and save patch
+    # 1. First recovery run: should preserve useful worktree and save patch
     dummy_diff = "diff --git a/file.py b/file.py\n+new line"
     mock_run = MagicMock()
     mock_run.returncode = 0
@@ -633,15 +633,12 @@ def test_recovery_idempotency(db_conn, tmp_path, monkeypatch):
     with patch("subprocess.run", side_effect=run_side_effect):
         orch.reconcile_interrupted_run(run_id)
 
-    mock_remove_wt.assert_called_once()
+    mock_remove_wt.assert_not_called()
     attempt = attempt_repo.get(attempt_id)
     assert attempt["outcome"] == "abandoned"
     assert attempt["patch_path"] is not None
-    assert attempt["worktree_path"] is None
-
-    # Clean up directory as remove_worktree mock doesn't do it
-    if wt_dir.exists():
-        wt_dir.rmdir()
+    assert attempt["worktree_path"] == str(wt_dir)
+    assert attempt["retry_strategy"] == "apply_patch_to_clean_branch"
 
     # 2. Second recovery run: should be idempotent and not fail, not call remove_worktree again, not change path or outcome
     mock_remove_wt.reset_mock()
@@ -651,7 +648,7 @@ def test_recovery_idempotency(db_conn, tmp_path, monkeypatch):
     mock_remove_wt.assert_not_called()
     attempt = attempt_repo.get(attempt_id)
     assert attempt["outcome"] == "abandoned"
-    assert attempt["worktree_path"] is None
+    assert attempt["worktree_path"] == str(wt_dir)
 
 
 def test_ui_lab_brief_workflow_paths(tmp_path, monkeypatch):
@@ -951,9 +948,10 @@ def test_safe_preservation_change_types(db_conn, tmp_path, monkeypatch):
     assert Path(attempt["patch_path"]).exists()
     assert Path(attempt["patch_path"]).read_bytes() == b"fake binary patch data"
 
-    # Verify cleanup occurred
-    mock_remove_wt.assert_called_once()
-    assert attempt_repo.get(attempt_id)["worktree_path"] is None
+    # Verify useful interrupted work is retained for retry strategy handling.
+    mock_remove_wt.assert_not_called()
+    assert attempt_repo.get(attempt_id)["worktree_path"] == str(wt_dir)
+    assert attempt_repo.get(attempt_id)["retry_strategy"] == "apply_patch_to_clean_branch"
 
 
 def test_repeated_recovery_behavior(db_conn, tmp_path, monkeypatch):

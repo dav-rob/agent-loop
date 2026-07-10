@@ -65,10 +65,11 @@ feel less like a form while keeping deterministic fallback behavior.
 Startup guidance now makes the runtime SQLite database the explicit source of
 truth for current goal state, so fresh-context agents should inspect
 database-backed status/plan details before scanning `.agent-loop/logs/`.
-Default routing now removes Gemini 3.5 Flash from configured defaults. Normal
-executor tasks prefer `agy` Gemini 3.1 Pro High, then Claude Sonnet 4.6
-Thinking, then Codex gpt-5.4-mini; planning/review remains Codex gpt-5.5 high,
-then Claude Opus 4.6 Thinking, then Gemini 3.1 Pro High.
+Default routing now uses current Codex 5.6 models by personality. Intake is
+Codex Sol medium, then `agy` Claude Opus 4.6 Thinking, then Gemini 3.5 Flash
+High. Normal execution remains cross-binary and `agy`-first, falling back from
+Gemini 3.1 Pro High to Claude Sonnet 4.6 Thinking and then Codex Terra high.
+Planning and escalation use Codex Sol xhigh; normal review uses Sol high.
 Recent fine-grained-commit handoff changes were adjusted to tolerate mocked or
 non-Git worktree directories when collecting review diff SHAs, to use the final
 task SHA when creating integration tasks, and to refresh task state after
@@ -89,9 +90,9 @@ Recovery now resets such stale running tasks to `ready` or `blocked` based on
 the retry limit. Resume now preserves `auth_required` provider states so known
 dead `agy` routes are not revived before Codex fallback can be selected.
 Spec intake model calls now use provider-neutral route fallback with useful
-diagnostics. Intake preserves the old preference for configured `agy` routes,
-falls back to later configured routes such as Codex, and writes model-call logs
-under `.agent-loop/logs/intake/` instead of disposable temp directories.
+diagnostics. Intake follows its configured personality order and writes
+model-call logs under `.agent-loop/logs/intake/` instead of disposable temp
+directories.
 Task worktrees now default back to visible root-level `worktrees/` so `agy` can
 open them as workspaces; `.agent-loop/` remains the home for the database,
 logs, generated plan/progress/learning views, and specs. Bootstrap `.gitignore`
@@ -155,6 +156,26 @@ in a `lifecycle_events` table through `TaskLifecycleRecorder`, and generated
 `.agent-loop/progress.md` includes a recent event timeline covering task start,
 attempt start, executor start/completion/failure, review start/completion,
 retry, completion, and blocking callouts.
+Task execution now uses one durable task branch/worktree per task by default
+(`agent-loop-run-{goal_id}-task-{task_id}` and
+`worktrees/run-{goal_id}-task-{task_id}`), while keeping logs attempt-scoped.
+Normal reviewer rejection keeps the task worktree in place so the next attempt
+continues from the existing branch instead of recreating work from prose.
+Executor retry prompts now say when an attempt is continuing an existing task
+branch, and task reviewer prompts ask for precise continuation-oriented repair
+guidance with restart/block only when justified.
+Merge-conflict recovery follow-ups now preserve the original blocked task link
+through the whole recovery chain. If conflict resolution needs follow-up work,
+that follow-up can complete the original task once approved instead of leaving
+the goal blocked after successful recovery. Merge-conflict recovery tasks are
+also routed as implementation work when they edit files.
+Phase 2 retry strategy/recovery metadata is now implemented. Attempts persist
+attempt boundary and strategy fields, task and timeout reviewers can return
+retry strategies, interrupted resume recovery preserves useful patch/worktree
+evidence instead of deleting it by default, and attempt startup executes the
+recorded strategy (`continue_existing_branch`, restart variants,
+`apply_patch_to_clean_branch`, or `block_for_human`). Generated progress and
+task handover markdown now expose strategy metadata for monitoring.
 
 ## Next step
 
@@ -194,6 +215,9 @@ No further executor handoff is required for this request.
 - Codex timeout/fallback cleanup: new regressions first failed because timed-out execution still fell through to the Opus route, Codex lacked a provider-specific log file, and labelled `Decision: Approved` reviewer output was stored as rejected. After the fix, focused regressions passed with 4 tests in 0.58s, the affected adapter/router/orchestrator slice passed with 56 tests in 6.92s, and the local full suite passed with 155 tests in 14.19s with the explicit real Codex smoke test deselected.
 - Timeout handover/review lifecycle: new regressions first failed because no timeout review hook existed and retry prompts omitted previous timeout handovers. After the fix, focused task-handover/review/router regressions passed with 7 tests in 0.33s, and final full-suite verification passed with 161 tests in 29.13s.
 - Lifecycle event recorder: new regressions first failed because `LifecycleEventRepository` did not exist and orchestrator execution emitted no lifecycle events. After adding schema version 6, `TaskLifecycleRecorder`, progress timeline rendering, and orchestrator callouts, focused lifecycle regressions passed with 5 tests in 0.65s and full-suite verification passed with 163 tests in 28.20s.
+- Durable task branch retry: new regression first failed because rejected retry attempts used attempt-scoped branches/worktrees and removed the worktree after rejection; after the fix, focused durable retry/reviewer prompt tests passed and `tests/test_orchestrator.py` plus related handover/view/git regression slices passed.
+- Typed recovery follow-up closure: new regressions first failed because merge-conflict recovery follow-ups lost the original task link and recovery tasks were routed as planning work. After the fix, focused recovery tests passed with 2 tests, the merge/review interaction slice passed with 5 tests, and full-suite verification passed with 167 tests in 27.48s.
+- Retry strategy/recovery review Phase 2: new regressions first failed for missing attempt strategy/SHA metadata, missing review strategy persistence, destructive interrupted-work cleanup, missing strategy-aware worktree preparation, `block_for_human` requeueing instead of blocking, and missing strategy display in progress/handover views. After the fix, `tests/test_retry_strategy.py` passed with 11 tests, the affected database/view/handover/orchestrator/recovery slice passed with 94 tests, and full-suite verification passed with 180 tests in 28.98s.
 - Planner schema/recovery fix: `tests/test_adapters.py::test_plan_schema_is_strict_for_codex_structured_output` passed in 0.02s; `tests/test_cli.py::test_cli_resume tests/test_cli.py::test_cli_resume_replans_blocked_goal_without_features` passed in 0.26s; live `codex exec --output-schema` smoke accepted the schema and returned valid plan JSON; `agent-loop resume 1` in `test-loop` regenerated a plan and moved Goal ID 1 to `awaiting_plan_approval`; full suite passed with 87 tests in 5.83s.
 - Interactive multiline intake fix: `tests/test_cli.py::test_cli_start_captures_pasted_multiline_goal` passed in 0.27s; `tests/test_cli.py` passed with 8 tests in 0.38s; full suite passed with 85 tests in 5.84s.
 - Goal terminology update: `tests/test_cli.py` passed in 0.30s; CLI help verified for goal wording.
@@ -203,6 +227,7 @@ No further executor handoff is required for this request.
 - Real Codex parser smoke: 1 passed in 10.58s.
 - `.venv/bin/python -m pytest -q`: 81 passed in 18.68s; clean worktree.
 - Handoff validation: passed for request 13 and response 14.
+- Task-escalation review worktree fix: the new regression first failed because escalation reviews inherited the repository-root default; after passing the durable task worktree explicitly, the focused review/retry slice passed with 54 tests and the full suite passed with 183 tests in 23.73s.
 
 ## Blockers
 

@@ -156,6 +156,37 @@ def test_progress_md_shows_running_attempt_with_pending_model_metadata(db_conn, 
     assert "Logs: `/tmp/agent-loop/logs/1/1/1`" in progress_content
 
 
+def test_progress_md_shows_active_attempt_retry_strategy(db_conn, tmp_path):
+    run_repo = RunRepository(db_conn)
+    feat_repo = FeatureRepository(db_conn)
+    task_repo = TaskRepository(db_conn)
+    attempt_repo = AttemptRepository(db_conn)
+
+    run_id = run_repo.create("Build dashboard", "none")
+    run_repo.update_status(run_id, "planning")
+    run_repo.update_status(run_id, "running")
+    feat_id = feat_repo.create(run_id, "Foundation", "medium")
+    task_id = task_repo.create(run_id, feat_id, "Scaffold full-stack app", "implementation", "medium")
+    task_repo.update_status(task_id, "ready")
+    task_repo.update_status(task_id, "running")
+    attempt_repo.create(
+        run_id=run_id,
+        task_id=task_id,
+        route="executor",
+        logs_path="/tmp/agent-loop/logs/1/1/1",
+        worktree_path="/tmp/agent-loop/worktrees/run-1-task-1",
+        retry_strategy="apply_patch_to_clean_branch",
+        retry_strategy_reason="Preserved interrupted work as a patch.",
+    )
+
+    progress_file = tmp_path / "progress.md"
+    render_progress_md(db_conn, run_id, progress_file)
+
+    progress_content = progress_file.read_text()
+    assert "Strategy: apply_patch_to_clean_branch" in progress_content
+    assert "Preserved interrupted work as a patch." in progress_content
+
+
 def test_progress_md_renders_recent_lifecycle_events(db_conn, tmp_path):
     run_repo = RunRepository(db_conn)
     feat_repo = FeatureRepository(db_conn)

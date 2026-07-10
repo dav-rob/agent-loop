@@ -4,8 +4,9 @@ import json
 import signal
 import subprocess
 import shutil
+import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 
 def resolve_binary(binary_name: str, config: Optional[Any] = None) -> str:
     # 1. Config override
@@ -68,6 +69,89 @@ def redact_secrets(text: str) -> str:
     return redacted
 
 
+def _live_pid(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+
+
+def _child_pids(pid: int) -> Set[int]:
+    try:
+        res = subprocess.run(
+            ["pgrep", "-P", str(pid)],
+            capture_output=True,
+            text=True,
+            stdin=subprocess.DEVNULL,
+            timeout=2.0,
+        )
+    except Exception:
+        return set()
+    if res.returncode != 0:
+        return set()
+    return {int(line.strip()) for line in res.stdout.splitlines() if line.strip().isdigit()}
+
+
+def _descendant_pids(pid: int) -> Set[int]:
+    descendants: Set[int] = set()
+    stack = list(_child_pids(pid))
+    while stack:
+        child = stack.pop()
+        if child in descendants:
+            continue
+        descendants.add(child)
+        stack.extend(_child_pids(child))
+    return descendants
+
+
+def _workspace_pids(workspace_path: Path, exclude: Optional[Set[int]] = None) -> Set[int]:
+    exclude = exclude or set()
+    try:
+        res = subprocess.run(
+            ["lsof", "-t", "-a", "-d", "cwd", "+D", str(workspace_path)],
+            capture_output=True,
+            text=True,
+            stdin=subprocess.DEVNULL,
+            timeout=5.0,
+        )
+    except Exception:
+        return set()
+    if res.returncode not in {0, 1}:
+        return set()
+    return {
+        int(line.strip())
+        for line in res.stdout.splitlines()
+        if line.strip().isdigit() and int(line.strip()) not in exclude
+    }
+
+
+def _terminate_pids(pids: Set[int], sig: int) -> None:
+    for pid in sorted(pids):
+        if pid == os.getpid():
+            continue
+        try:
+            os.kill(pid, sig)
+        except ProcessLookupError:
+            pass
+        except PermissionError:
+            pass
+
+
+def _wait_for_exit(pids: Set[int], timeout: float) -> Set[int]:
+    deadline = timeout
+    while deadline > 0:
+        alive = {pid for pid in pids if _live_pid(pid)}
+        if not alive:
+            return set()
+        sleep_for = min(0.1, deadline)
+        time.sleep(sleep_for)
+        deadline -= sleep_for
+    return {pid for pid in pids if _live_pid(pid)}
+
+
 def _run_provider_process(
     cmd: List[str],
     *,
@@ -93,6 +177,7 @@ def _run_provider_process(
         else:
             process.wait(timeout=timeout)
     except subprocess.TimeoutExpired:
+        suspected_orphan_pids = _descendant_pids(process.pid)
         try:
             os.killpg(process.pid, signal.SIGTERM)
         except ProcessLookupError:
@@ -105,7 +190,19 @@ def _run_provider_process(
             except ProcessLookupError:
                 pass
             process.wait()
-        raise
+
+        escaped_workspace_pids = _workspace_pids(Path(cwd).resolve(), exclude={os.getpid()})
+        suspected_orphan_pids.update(escaped_workspace_pids)
+        if suspected_orphan_pids:
+            _terminate_pids(suspected_orphan_pids, signal.SIGTERM)
+            still_alive = _wait_for_exit(suspected_orphan_pids, timeout=2.0)
+            if still_alive:
+                _terminate_pids(still_alive, signal.SIGKILL)
+                _wait_for_exit(still_alive, timeout=2.0)
+
+        timeout_exc = subprocess.TimeoutExpired(cmd, timeout)
+        timeout_exc.suspected_orphan_pids = sorted(suspected_orphan_pids)
+        raise timeout_exc
     return subprocess.CompletedProcess(cmd, process.returncode)
 
 
@@ -146,8 +243,16 @@ class CodexAdapter(BaseAdapter):
                 return {
                     "installed": True,
                     "version": version,
-                    # Codex doesn't have list-models command, return typical config models
-                    "models": ["gpt-5.5", "gpt-5.4-mini"]
+                    # Codex has no non-interactive list-models command.
+                    "models": [
+                        "gpt-5.5",
+                        "gpt-5.6-sol",
+                        "gpt-5.6-terra",
+                        "gpt-5.6-luna",
+                        "gpt-5.4",
+                        "gpt-5.4-mini",
+                        "gpt-5.3-codex-spark",
+                    ]
                 }
         except Exception:
             pass
@@ -328,15 +433,21 @@ class CodexAdapter(BaseAdapter):
             )
 
         except subprocess.TimeoutExpired as te:
+            suspected_pids = getattr(te, "suspected_orphan_pids", [])
             with codex_log_file.open("a") as log_f:
                 log_f.write(f"timed_out=true\n")
                 log_f.write(f"timeout_seconds={timeout_seconds}\n")
                 log_f.write("process_group_terminated=true\n")
+                if suspected_pids:
+                    log_f.write("suspected_orphan_pids_terminated=" + json.dumps(suspected_pids) + "\n")
+            error = f"Timeout expired after {timeout_seconds} seconds."
+            if suspected_pids:
+                error += f" Terminated suspected orphan workspace processes: {suspected_pids}."
             return AttemptResult(
                 success=False,
                 exit_code=-1,
                 output="",
-                error=f"Timeout expired after {timeout_seconds} seconds.",
+                error=error,
                 quota_exhausted=False,
                 timed_out=True,
             )
@@ -503,11 +614,21 @@ class AgyAdapter(BaseAdapter):
             )
 
         except subprocess.TimeoutExpired as te:
+            suspected_pids = getattr(te, "suspected_orphan_pids", [])
+            with agy_log_file.open("a") as log_f:
+                log_f.write(f"timed_out=true\n")
+                log_f.write(f"timeout_seconds={timeout_seconds}\n")
+                log_f.write("process_group_terminated=true\n")
+                if suspected_pids:
+                    log_f.write("suspected_orphan_pids_terminated=" + json.dumps(suspected_pids) + "\n")
+            error = f"Timeout expired after {timeout_seconds} seconds."
+            if suspected_pids:
+                error += f" Terminated suspected orphan workspace processes: {suspected_pids}."
             return AttemptResult(
                 success=False,
                 exit_code=-1,
                 output="",
-                error=f"Timeout expired after {timeout_seconds} seconds.",
+                error=error,
                 quota_exhausted=False,
                 timed_out=True,
             )

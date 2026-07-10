@@ -217,6 +217,13 @@ MIGRATIONS: List[str] = [
         FOREIGN KEY(task_id) REFERENCES tasks(id) ON DELETE SET NULL,
         FOREIGN KEY(attempt_id) REFERENCES attempts(id) ON DELETE SET NULL
     );
+    """,
+    # Version 7 migration: retry strategy and attempt boundary metadata
+    """
+    ALTER TABLE attempts ADD COLUMN start_sha TEXT;
+    ALTER TABLE attempts ADD COLUMN base_sha TEXT;
+    ALTER TABLE attempts ADD COLUMN retry_strategy TEXT;
+    ALTER TABLE attempts ADD COLUMN retry_strategy_reason TEXT;
     """
 ]
 

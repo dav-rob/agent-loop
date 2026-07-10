@@ -146,19 +146,33 @@ escalation hint.
 
 Routes are ordered configuration, not hard-coded provider preference.
 
-Default planner, reviewer, spec-reviewer, escalation-reviewer, and escalated-executor route:
+Default planner, escalation-reviewer, and escalated-executor route:
 
-1. Codex `gpt-5.5` with high reasoning.
+1. Codex `gpt-5.6-sol` with xhigh reasoning.
 2. `agy` Claude Opus 4.6 Thinking.
 3. `agy` Gemini 3.1 Pro High.
 
-Default executor and intake route:
+Default reviewer and spec-reviewer route:
+
+1. Codex `gpt-5.6-sol` with high reasoning.
+2. `agy` Claude Opus 4.6 Thinking.
+3. `agy` Gemini 3.1 Pro High.
+
+Default executor route:
 
 1. `agy` Gemini 3.1 Pro High.
 2. `agy` Claude Sonnet 4.6 Thinking.
-3. Codex `gpt-5.4-mini` with high reasoning.
+3. Codex `gpt-5.6-terra` with high reasoning.
 
-The installed Codex catalog currently provides `gpt-5.4-mini`, not `gpt-5.5-mini`. All model names remain configurable so catalog changes do not require code changes.
+Default intake route:
+
+1. Codex `gpt-5.6-sol` with medium reasoning.
+2. `agy` Claude Opus 4.6 Thinking.
+3. `agy` Gemini 3.5 Flash High.
+
+These defaults reflect the locally verified Codex CLI 0.144.1 and agy 1.1.0
+catalogues. All model names remain configurable so existing projects retain
+their selected routes when catalogues change.
 
 A provider or model can be temporarily removed from consideration after quota exhaustion, authentication failure, unsupported capability detection, or repeated infrastructure failure.
 

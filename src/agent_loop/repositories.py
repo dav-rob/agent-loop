@@ -263,14 +263,51 @@ class AttemptRepository:
     def __init__(self, conn: sqlite3.Connection):
         self.conn = conn
 
-    def create(self, run_id: int, task_id: int, route: Optional[str] = None, provider: Optional[str] = None, model: Optional[str] = None, reasoning_level: Optional[str] = None, worktree_path: Optional[str] = None, commit_sha: Optional[str] = None, logs_path: Optional[str] = None, patch_path: Optional[str] = None) -> int:
+    def create(
+        self,
+        run_id: int,
+        task_id: int,
+        route: Optional[str] = None,
+        provider: Optional[str] = None,
+        model: Optional[str] = None,
+        reasoning_level: Optional[str] = None,
+        worktree_path: Optional[str] = None,
+        commit_sha: Optional[str] = None,
+        logs_path: Optional[str] = None,
+        patch_path: Optional[str] = None,
+        start_sha: Optional[str] = None,
+        base_sha: Optional[str] = None,
+        retry_strategy: Optional[str] = None,
+        retry_strategy_reason: Optional[str] = None,
+    ) -> int:
         cursor = self.conn.cursor()
         cursor.execute(
             """
-            INSERT INTO attempts (run_id, task_id, route, provider, model, reasoning_level, worktree_path, commit_sha, logs_path, patch_path, outcome)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+            INSERT INTO attempts (
+                run_id, task_id, route, provider, model, reasoning_level,
+                worktree_path, commit_sha, logs_path, patch_path,
+                start_sha, base_sha, retry_strategy, retry_strategy_reason,
+                outcome
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
             """,
-            (run_id, task_id, route, provider, model, reasoning_level, worktree_path, commit_sha, logs_path, patch_path, "running")
+            (
+                run_id,
+                task_id,
+                route,
+                provider,
+                model,
+                reasoning_level,
+                worktree_path,
+                commit_sha,
+                logs_path,
+                patch_path,
+                start_sha,
+                base_sha,
+                retry_strategy,
+                retry_strategy_reason,
+                "running",
+            )
         )
         self.conn.commit()
         return cursor.lastrowid
@@ -279,7 +316,10 @@ class AttemptRepository:
         cursor = self.conn.cursor()
         cursor.execute(
             """
-            SELECT id, run_id, task_id, route, provider, model, reasoning_level, worktree_path, commit_sha, logs_path, outcome, created_at, updated_at, patch_path
+            SELECT id, run_id, task_id, route, provider, model, reasoning_level,
+                   worktree_path, commit_sha, logs_path, outcome, created_at,
+                   updated_at, patch_path, start_sha, base_sha, retry_strategy,
+                   retry_strategy_reason
             FROM attempts WHERE id = ?;
             """,
             (attempt_id,)
@@ -301,14 +341,21 @@ class AttemptRepository:
             "outcome": row[10],
             "created_at": row[11],
             "updated_at": row[12],
-            "patch_path": row[13]
+            "patch_path": row[13],
+            "start_sha": row[14],
+            "base_sha": row[15],
+            "retry_strategy": row[16],
+            "retry_strategy_reason": row[17],
         }
 
     def get_by_run(self, run_id: int) -> List[Dict[str, Any]]:
         cursor = self.conn.cursor()
         cursor.execute(
             """
-            SELECT id, run_id, task_id, route, provider, model, reasoning_level, worktree_path, commit_sha, logs_path, outcome, created_at, updated_at, patch_path
+            SELECT id, run_id, task_id, route, provider, model, reasoning_level,
+                   worktree_path, commit_sha, logs_path, outcome, created_at,
+                   updated_at, patch_path, start_sha, base_sha, retry_strategy,
+                   retry_strategy_reason
             FROM attempts WHERE run_id = ?;
             """,
             (run_id,)
@@ -328,7 +375,11 @@ class AttemptRepository:
                 "outcome": row[10],
                 "created_at": row[11],
                 "updated_at": row[12],
-                "patch_path": row[13]
+                "patch_path": row[13],
+                "start_sha": row[14],
+                "base_sha": row[15],
+                "retry_strategy": row[16],
+                "retry_strategy_reason": row[17],
             }
             for row in cursor.fetchall()
         ]
@@ -391,6 +442,43 @@ class AttemptRepository:
             WHERE id = ?;
             """,
             (route, provider, model, reasoning_level, attempt_id),
+        )
+        self.conn.commit()
+
+    def update_start_metadata(
+        self,
+        attempt_id: int,
+        start_sha: Optional[str],
+        base_sha: Optional[str],
+        retry_strategy: Optional[str],
+        retry_strategy_reason: Optional[str] = None,
+    ) -> None:
+        cursor = self.conn.cursor()
+        cursor.execute(
+            """
+            UPDATE attempts
+            SET start_sha = ?, base_sha = ?, retry_strategy = ?,
+                retry_strategy_reason = ?, updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?;
+            """,
+            (start_sha, base_sha, retry_strategy, retry_strategy_reason, attempt_id),
+        )
+        self.conn.commit()
+
+    def update_retry_strategy(
+        self,
+        attempt_id: int,
+        retry_strategy: str,
+        retry_strategy_reason: Optional[str] = None,
+    ) -> None:
+        cursor = self.conn.cursor()
+        cursor.execute(
+            """
+            UPDATE attempts
+            SET retry_strategy = ?, retry_strategy_reason = ?, updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?;
+            """,
+            (retry_strategy, retry_strategy_reason, attempt_id),
         )
         self.conn.commit()
 

@@ -2,6 +2,17 @@
 
 `agent-loop` is a local development orchestrator. A user gives it one goal; it turns that goal into a spec, plan, features, and tasks, then executes tasks in isolated Git worktrees. Runtime state for each target project is stored under that target project's `.agent-loop/` directory.
 
+The purpose of this monitoring is to assess whether `agent-loop` is meeting its primary purpose:
+
+1) In the first goal/run create a runnable app end-to-end, that the user can assess. The final delivery report of a goal will contain a list of recommended security and architecture reviews that the user may want to adopt, in future goals.
+2) Each goal must be a part of a rapid development process, starting with a working app, then in subsequent goals tightening, extending, focussing and hardening in subsequent goals/runs.  The app must be able to do both
+   i) Start Loose to get something out there.
+   ii) Maintain a list of concerns and recommendations for future goals
+   iii) Become more focussed as each goal is completed 
+
+The app must behave like a balanced, mature, effective development team, that can move fast and break things to start but then quickly focus, tighten up, harden and extend in an architecturally elegant way.
+
+
 ## Source of truth
 
 Use the SQLite-backed state first. Logs are evidence for attempts, not the current state.
@@ -65,22 +76,48 @@ find .agent-loop/handoffs -maxdepth 1 -type f -name '*.md' -print -exec sed -n '
 
 ## Rolling Concerns File
 
-For active monitoring, keep a rolling concerns file in this repository's local `./tmp/` directory. Use the target directory name in the filename, for example:
+For active monitoring, create a new rolling concerns file in this repository's
+local `./tmp/` directory for each monitoring request/session. Do not reuse the
+previous session's concerns file except for explicit comparison. Use the target
+directory name plus a timestamp or sequence number in the filename, for
+example:
 
 ```sh
 mkdir -p ./tmp
-$EDITOR ./tmp/TARGET_DIRECTORY_NAME-monitor-concerns.md
+$EDITOR ./tmp/TARGET_DIRECTORY_NAME-monitor-20260710-1430-concerns.md
+# or
+$EDITOR ./tmp/TARGET_DIRECTORY_NAME-monitor-1-concerns.md
 ```
 
 This file is monitoring scratch state, not a permanent report. Update it on every monitoring pass:
 
 - Rewrite the current judgement with the latest common-sense assessment.
-- Add new concerns when there is evidence of real risk: hangs, repeated rejected attempts, model/quota failover, stale DB/process mismatch, missing verification, bad retry behavior, merge conflicts, or orphaned child processes.
+- Add new concerns when there is evidence of a real concern: hangs, repeated rejected attempts, model/quota failover, stale DB/process mismatch, missing verification, bad retry behavior, merge conflicts, or orphaned child processes.
+- Sort active concerns using `High Concern`, `Medium Concern`, and `Low Concern` sections. Put likely correctness failures, hangs, leaked/orphaned processes, unsafe command execution, data loss, and blocked progress in `High Concern`; architectural smells and likely future cleanup in `Medium Concern`; noisy but non-blocking observations in `Low Concern`.
 - Amend existing concerns with new evidence rather than duplicating them.
 - Delete or move concerns to a cleared section when later evidence resolves them.
 - Keep a short `Watch next` section for the next practical checks.
 
 The concerns file should help the next monitor understand what matters without rereading every log. It should not become an append-only event stream; the database and logs already provide that evidence.
+
+## Live User Updates
+
+When the user asks for periodic monitoring, update the rolling concerns file and
+also report a short summary back in the current CLI/chat after every monitoring
+pass. Do not silently write only to the concerns file.
+
+Keep the live update concise:
+
+- one or two paragraphs, not raw command output
+- the concerns file name/path being updated
+- current judgement first
+- what changed since the last pass
+- the main concern, if any
+- what the next pass will watch
+
+If the state is unchanged, say that plainly. If a new blocker or likely bug is
+found, call it out in the live update and make sure the concerns file is updated
+with the same judgement.
 
 ## Monitoring Report
 
