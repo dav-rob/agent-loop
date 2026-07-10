@@ -13,6 +13,7 @@ from agent_loop.repositories import (
     HandoverRepository,
     LifecycleEventRepository,
     RecommendationRepository,
+    VerificationEvidenceRepository,
 )
 
 
@@ -57,8 +58,9 @@ def render_task_handover_md(conn: sqlite3.Connection, run_id: int, task_id: int,
     ]
     if task.get("scope"):
         lines.append(f"- **Scope:** `{task['scope']}`")
-    if task.get("required_verification"):
-        lines.append(f"- **Required verification:** `{task['required_verification']}`")
+    if task.get("verification_requirements"):
+        lines.append("- **Verification outcomes:**")
+        lines.extend(f"  - {requirement}" for requirement in task["verification_requirements"])
     lines.extend(
         [
             "",
@@ -191,8 +193,9 @@ def render_plan_md(conn: sqlite3.Connection, run_id: int, dest_path: Path) -> No
                     dep_str = f" (depends on {', '.join(task['dependencies'])})" if task["dependencies"] else ""
                     lines.append(f"- [{checked}] {task['name']}{dep_str}")
                     lines.append(f"  - **Role:** {task['role']} | **Status:** {task['status']} | **Risk:** {task['risk']}")
-                    if task["required_verification"]:
-                        lines.append(f"  - **Verification:** `{task['required_verification']}`")
+                    if task.get("verification_requirements"):
+                        lines.append("  - **Verification outcomes:**")
+                        lines.extend(f"    - {requirement}" for requirement in task["verification_requirements"])
             lines.append("")
 
     dest_path.parent.mkdir(parents=True, exist_ok=True)
@@ -208,6 +211,7 @@ def render_progress_md(conn: sqlite3.Connection, run_id: int, dest_path: Path) -
     tasks = TaskRepository(conn).get_by_run(run_id)
     attempts = AttemptRepository(conn).get_by_run(run_id)
     test_runs = TestRunRepository(conn).get_by_run(run_id)
+    verification_evidence = VerificationEvidenceRepository(conn).get_by_run(run_id)
     lifecycle_events = LifecycleEventRepository(conn).get_by_run(run_id)
 
     # Provider states
@@ -319,16 +323,23 @@ def render_progress_md(conn: sqlite3.Connection, run_id: int, dest_path: Path) -
             lines.append(f"- {t['name']} (Blocked)")
     lines.append("")
 
-    # Test runs
-    lines.append("### Test Results")
-    if not test_runs:
-        lines.append("No test runs recorded.")
+    lines.append("### Verification Evidence")
+    if not verification_evidence:
+        lines.append("No agent verification evidence recorded.")
     else:
-        # Show last 5 test runs
+        for item in verification_evidence[-8:]:
+            lines.append(
+                f"- **{item['phase']} / {item['status'].upper()}**: "
+                f"{item['requirement']} — {item['summary']}"
+            )
+    lines.append("")
+
+    if test_runs:
+        lines.append("### Legacy Orchestrator Verification")
         for tr in test_runs[-5:]:
             status_str = "PASSED" if tr["exit_status"] == 0 else f"FAILED (exit: {tr['exit_status']})"
             lines.append(f"- `{tr['command']}` -> {status_str} ({tr['duration_seconds'] or 0.0:.2f}s)")
-    lines.append("")
+        lines.append("")
 
     # Provider states
     lines.append("### Provider State")

@@ -803,7 +803,7 @@ def test_architectural_assessment_resolution(db_conn, tmp_path, monkeypatch):
             role="implementation",
             risk="low",
             scope={"files": ["src/main.py"]},
-            required_verification="pytest tests/test_main.py"
+            verification_requirements=["The main behavior tests pass"],
         )
         task_repo.update_status(task_id, "ready")
         task = task_repo.get(task_id)
@@ -829,7 +829,7 @@ def test_architectural_assessment_resolution(db_conn, tmp_path, monkeypatch):
         assert assess_task[0]["role"] == "planning"
         assert assess_task[0]["risk"] == "high"
         assert assess_task[0]["status"] == "pending" # Newly created tasks are pending until loop schedules
-        assert assess_task[0]["required_verification"] == "pytest tests/test_main.py"
+        assert assess_task[0]["verification_requirements"] == ["The main behavior tests pass"]
         
         scope_data = json.loads(assess_task[0]["scope"]) if isinstance(assess_task[0]["scope"], str) else assess_task[0]["scope"]
         assert scope_data["original_task_id"] == task_id
@@ -843,7 +843,15 @@ def test_architectural_assessment_resolution(db_conn, tmp_path, monkeypatch):
         # Execute the assessment task: should succeed and reviewer approves it
         mock_adapter.run_attempt.side_effect = [
             AttemptResult(success=True, exit_code=0, output="assessment done", error=""),
-            AttemptResult(success=True, exit_code=0, output='{"decision": "approved", "findings": "Approved assessment"}', error="")
+            AttemptResult(
+                success=True,
+                exit_code=0,
+                output='{"decision":"approved","findings":"Approved assessment",'
+                '"verification_evidence":[{"requirement":"The main behavior tests pass",'
+                '"status":"passed","command":null,"exit_status":null,'
+                '"summary":"Assessment resolved the requirement.","evidence_paths":[]}]}',
+                error="",
+            )
         ]
 
         success2 = orch._execute_task_impl(run_id, task_repo.get(assess_task[0]["id"]))

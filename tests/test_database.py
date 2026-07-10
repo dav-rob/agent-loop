@@ -141,12 +141,13 @@ def test_feature_and_task_repository(db_conn):
         risk="low",
         scope={"files": ["pyproject.toml"]},
         dependencies=[],
-        required_verification="pip list"
+        verification_requirements=["The package can be installed and inspected"]
     )
     assert task_id > 0
     
     task = task_repo.get(task_id)
     assert task["name"] == "Install Package"
+    assert task["verification_requirements"] == ["The package can be installed and inspected"]
     assert task["status"] == "pending"
     
     # Valid transition: pending -> ready -> running -> reviewing -> complete

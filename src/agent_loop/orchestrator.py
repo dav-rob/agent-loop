@@ -1865,7 +1865,7 @@ Scope: {json.dumps(task['scope'])}
                                 role="planning",
                                 risk="high",
                                 scope=assessment_scope,
-                                required_verification=task.get("required_verification")
+                                verification_requirements=task.get("verification_requirements", [])
                             )
                         self.notify(run_id, "blocked", f"Task '{task['name']}' requires operator assessment. Created Architectural Assessment task.")
 
@@ -1886,7 +1886,7 @@ Scope: {json.dumps(task['scope'])}
                                     risk=task["risk"],
                                     scope=followup_scope,
                                     dependencies=[task["name"]],
-                                    required_verification=task.get("required_verification")
+                                    verification_requirements=task.get("verification_requirements", [])
                                 )
                             self.notify(run_id, "running", f"Task '{task['name']}' completed with follow-up work.")
                         else:
@@ -1922,7 +1922,7 @@ Scope: {json.dumps(task['scope'])}
                                     risk=task["risk"],
                                     scope=followup_scope,
                                     dependencies=[task["name"]],
-                                    required_verification=task.get("required_verification")
+                                    verification_requirements=task.get("verification_requirements", [])
                                 )
                             self.notify(run_id, "blocked", f"Task '{task['name']}' merge conflict. Created integration and follow-up tasks.")
 
@@ -1955,7 +1955,7 @@ Scope: {json.dumps(task['scope'])}
                                         risk=task["risk"],
                                         scope=followup_scope,
                                         dependencies=task.get("dependencies", []),
-                                        required_verification=task.get("required_verification")
+                                        verification_requirements=task.get("verification_requirements", [])
                                     )
                                 self.notify(run_id, "task_follow_up", f"Task '{task['name']}' reached attempt limit but escalation review granted extension.")
                             else:
@@ -2518,6 +2518,18 @@ You own independent verification for this review. Inspect the authoritative work
 If setup fails, make one bounded safe attempt to diagnose or repair the local environment. If it remains unresolved, return decision "block" with blocker_kind "environment" and exact evidence. Use "rejected" only for an implementation or behavioral failure that an executor can repair.
 Report one verification_evidence item per requirement. Commands are audit evidence only; the orchestrator will store them but never execute them.
 """
+        elif subject_type in {"feature", "final"}:
+            legacy_suggestion = ""
+            if subject_type == "final":
+                configured = self.config.data.get("commands", {})
+                if isinstance(configured, dict) and configured.get("regression_test"):
+                    legacy_suggestion = (
+                        "\nLegacy operator verification suggestion (inert context, not executed by the orchestrator): "
+                        + str(configured["regression_test"])
+                    )
+            verification_instructions = f"""
+Own independent verification for this {subject_type} review. Inspect the integrated repository, discover or establish its local environment, and run appropriate focused or regression checks yourself. Report commands and results in verification_evidence. If the environment remains unavailable after one bounded safe diagnosis, block with exact evidence instead of returning implementation work.{legacy_suggestion}
+"""
         delivery_instructions = ""
         if subject_type == "final":
             delivery_instructions = """
@@ -2809,6 +2821,13 @@ Only return the raw JSON object. Do not include markdown wrappers.
         
         with self.db_lock:
             task_name = self.task_repo.get(task_id)['name']
+            executor_entries = [
+                entry
+                for entry in self.handover_repo.get_by_task(run_id, task_id)
+                if entry["phase"] == "executor"
+                and (attempt_id is None or entry["attempt_id"] == attempt_id)
+            ]
+            executor_context = executor_entries[-1]["summary"] if executor_entries else "No executor handover was recorded."
         prompt = f"""
 Please review task '{task_name}' diff:
 
@@ -2818,6 +2837,9 @@ Task review metadata:
 - Attempt ID: {attempt_id if attempt_id is not None else 'unknown'}
 - Start SHA: {start_sha or 'unknown'}
 - End SHA: {end_sha or 'unknown'}
+
+Executor handover (context only; verify independently):
+{executor_context}
 
 The task worktree is the authoritative checkout for file inspection and verification commands.
 The diff below is evidence for this attempt; inspect the task worktree directly if you need more context.
@@ -2876,10 +2898,11 @@ Reject only for blocking issues. If you recommend restart, explain why continuin
         if decision in {"follow_up", "rejected"}:
             self.feature_repo.update_review_status(feature_id, "pending")
             feature_tasks = [task for task in self.task_repo.get_by_run(run_id) if task["feature_id"] == feature_id]
-            verification = next(
-                (task["required_verification"] for task in reversed(feature_tasks) if task.get("required_verification")),
-                "npm test",
-            )
+            verification_requirements = [f"Feature review feedback for {feature['name']} is addressed"]
+            for task in feature_tasks:
+                for requirement in task.get("verification_requirements", []):
+                    if requirement not in verification_requirements:
+                        verification_requirements.append(requirement)
             self.task_repo.create(
                 run_id=run_id,
                 feature_id=feature_id,
@@ -2888,7 +2911,7 @@ Reject only for blocking issues. If you recommend restart, explain why continuin
                 risk="medium",
                 scope={"files": []},
                 dependencies=[],
-                required_verification=verification,
+                verification_requirements=verification_requirements,
             )
             self.notify(
                 run_id,
@@ -2935,7 +2958,7 @@ Reject only for blocking issues. If you recommend restart, explain why continuin
             "source_commit": source_commit,
             "target_baseline": target_baseline,
             "conflicting_files": files,
-            "required_verification": task.get("required_verification"),
+            "verification_requirements": task.get("verification_requirements", []),
             "origin_task_id": origin_task_id,
             "original_task_id": origin_task_id,
             "original_task_name": origin_task["name"] if origin_task else task["name"],
@@ -2961,7 +2984,7 @@ Reject only for blocking issues. If you recommend restart, explain why continuin
                 risk="high",
                 scope=integration_scope,
                 dependencies=[],
-                required_verification=task["required_verification"]
+                verification_requirements=task.get("verification_requirements", [])
             )
 
     def refresh_provider_quotas(self, provider: str, force_refresh: bool = False) -> None:

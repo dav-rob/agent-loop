@@ -42,7 +42,7 @@ def test_task_handover_markdown_renders_executor_and_reviewer_entries(db_conn, t
         "implementation",
         "medium",
         scope={"writes": ["package.json", "src/app/page.tsx"]},
-        required_verification="npm test",
+        verification_requirements=["The dashboard test suite passes"],
     )
     attempt_id = attempt_repo.create(run_id, task_id, route="executor")
     attempt_repo.update_route_metadata(attempt_id, "executor", "agy", "Gemini 3.1 Pro", "high")
@@ -121,7 +121,7 @@ def test_task_handover_markdown_renders_attempt_retry_strategy(db_conn, tmp_path
     assert "- **Retry strategy reason:** Reviewer found the branch was solving the wrong task." in content
 
 
-def test_task_execution_writes_handover_and_refreshes_progress_after_verification(db_conn, tmp_path, monkeypatch):
+def test_task_execution_writes_handover_and_refreshes_progress_after_reviewer_evidence(db_conn, tmp_path, monkeypatch):
     monkeypatch.setattr(
         "agent_loop.orchestrator.create_worktree",
         lambda repo, worktree, branch: Path(worktree).mkdir(parents=True, exist_ok=True),
@@ -145,7 +145,7 @@ def test_task_execution_writes_handover_and_refreshes_progress_after_verificatio
         "implementation",
         "medium",
         scope={"writes": ["package.json"]},
-        required_verification="pytest -q",
+        verification_requirements=["The focused scaffold tests pass"],
     )
     task_repo.update_status(task_id, "ready")
 
@@ -158,19 +158,6 @@ def test_task_execution_writes_handover_and_refreshes_progress_after_verificatio
     )
     progress_path = tmp_path / ".agent-loop" / "progress.md"
     orch = Orchestrator(db_conn, config, plan_path=tmp_path / "plan.md", progress_path=progress_path)
-
-    def fake_verification(run_id, task_id, attempt_id, command, worktree_dir, logs_dir):
-        orch.test_run_repo.create(
-            run_id,
-            task_id,
-            attempt_id,
-            command,
-            "task",
-            0,
-            0.12,
-            str(Path(logs_dir) / "verification.log"),
-        )
-        return True
 
     executor_result = MagicMock()
     executor_result.provider = "agy"
@@ -185,7 +172,10 @@ def test_task_execution_writes_handover_and_refreshes_progress_after_verificatio
     review_result.result = AttemptResult(
         True,
         0,
-        '{"decision": "approved", "findings": "Task meets scope; non-blocking polish can wait."}',
+        '{"decision":"approved","findings":"Task meets scope; non-blocking polish can wait.",'
+        '"verification_evidence":[{"requirement":"The focused scaffold tests pass",'
+        '"status":"passed","command":"venv/bin/python -m pytest -q","exit_status":0,'
+        '"summary":"Focused scaffold tests passed.","evidence_paths":["review.log"]}]}',
         "",
     )
 
@@ -197,7 +187,8 @@ def test_task_execution_writes_handover_and_refreshes_progress_after_verificatio
         assert orch._execute_task_impl(run_id, task_repo.get(task_id)) is True
 
     progress = progress_path.read_text()
-    assert "`pytest -q` -> PASSED" in progress
+    assert "The focused scaffold tests pass" in progress
+    assert "Focused scaffold tests passed" in progress
     assert "### Recent Lifecycle Events" in progress
     assert "`task_started`" in progress
     assert "`attempt_started`" in progress

@@ -14,6 +14,7 @@ from agent_loop.repositories import (
     TaskRepository,
     VerificationEvidenceRepository,
     ReviewRepository,
+    HandoverRepository,
 )
 
 
@@ -190,3 +191,39 @@ def test_reviewer_runtime_failure_blocks_instead_of_rejecting_implementation(
     review = ReviewRepository(db_conn).get_by_run(run_id)[0]
     assert review["decision"] == "block"
     assert expected_finding in review["findings"]
+
+
+def test_task_review_receives_executor_handover_as_context(db_conn, tmp_path, monkeypatch):
+    run_id = RunRepository(db_conn).create("Build dashboard", "none")
+    feature_id = FeatureRepository(db_conn).create(run_id, "Dashboard", "low")
+    task_id = TaskRepository(db_conn).create(
+        run_id,
+        feature_id,
+        "Build dashboard",
+        "implementation",
+        "low",
+        verification_requirements=["The dashboard tests pass"],
+    )
+    HandoverRepository(db_conn).create(
+        run_id=run_id,
+        task_id=task_id,
+        attempt_id=None,
+        phase="executor",
+        summary="Created venv and passed seven dashboard tests.",
+        verification_status="executor-reported",
+    )
+    orch = Orchestrator(
+        db_conn,
+        Config({"db_path": ":memory:", "logs_dir": str(tmp_path / "logs")}),
+        plan_path=tmp_path / "plan.md",
+        progress_path=tmp_path / "progress.md",
+    )
+    captured = {}
+
+    def fake_review(run_id, subject_type, subject_id, prompt, **kwargs):
+        captured["prompt"] = prompt
+        return "approved"
+
+    monkeypatch.setattr(orch, "run_agent_review", fake_review)
+    assert orch.run_task_review(run_id, task_id, None, None, attempt_id=None) == "approved"
+    assert "Created venv and passed seven dashboard tests" in captured["prompt"]

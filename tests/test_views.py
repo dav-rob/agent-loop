@@ -40,7 +40,7 @@ def test_markdown_rendering(db_conn, tmp_path):
         risk="low",
         scope=None,
         dependencies=[],
-        required_verification="pytest tests"
+        verification_requirements=["The package tests pass"]
     )
 
     plan_file = tmp_path / "plan.md"
@@ -103,7 +103,7 @@ def test_progress_md_shows_running_task_before_attempt_exists(db_conn, tmp_path)
         risk="medium",
         scope={"writes": ["package.json"]},
         dependencies=[],
-        required_verification="npm run typecheck",
+        verification_requirements=["The application type-checks"],
     )
     task_repo.update_status(task_id, "ready")
     task_repo.update_status(task_id, "running")
@@ -134,7 +134,7 @@ def test_progress_md_shows_running_attempt_with_pending_model_metadata(db_conn, 
         risk="medium",
         scope={"writes": ["package.json"]},
         dependencies=[],
-        required_verification="npm run typecheck",
+        verification_requirements=["The application type-checks"],
     )
     task_repo.update_status(task_id, "ready")
     task_repo.update_status(task_id, "running")
