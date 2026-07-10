@@ -4,20 +4,28 @@ from pathlib import Path
 import tomllib
 from typing import Any, Dict, List
 
-PLANNING_ROUTES = [
-    {"provider": "codex", "model": "gpt-5.5", "reasoning_level": "high"},
+INTAKE_ROUTES = [
+    {"provider": "codex", "model": "gpt-5.6-sol", "reasoning_level": "medium"},
+    {"provider": "agy", "model": "Claude Opus 4.6 (Thinking)", "reasoning_level": "high"},
+    {"provider": "agy", "model": "Gemini 3.5 Flash (High)", "reasoning_level": "high"},
+]
+
+DEEP_ROUTES = [
+    {"provider": "codex", "model": "gpt-5.6-sol", "reasoning_level": "xhigh"},
     {"provider": "agy", "model": "Claude Opus 4.6 (Thinking)", "reasoning_level": "high"},
     {"provider": "agy", "model": "Gemini 3.1 Pro (High)", "reasoning_level": "high"},
 ]
 
+PLANNING_ROUTES = DEEP_ROUTES
+
 EXECUTOR_ROUTES = [
     {"provider": "agy", "model": "Gemini 3.1 Pro (High)", "reasoning_level": "high"},
     {"provider": "agy", "model": "Claude Sonnet 4.6 (Thinking)", "reasoning_level": "high"},
-    {"provider": "codex", "model": "gpt-5.4-mini", "reasoning_level": "high"},
+    {"provider": "codex", "model": "gpt-5.6-terra", "reasoning_level": "high"},
 ]
 
-STRONG_ROUTES = [
-    {"provider": "codex", "model": "gpt-5.5", "reasoning_level": "high"},
+REVIEW_ROUTES = [
+    {"provider": "codex", "model": "gpt-5.6-sol", "reasoning_level": "high"},
     {"provider": "agy", "model": "Claude Opus 4.6 (Thinking)", "reasoning_level": "high"},
     {"provider": "agy", "model": "Gemini 3.1 Pro (High)", "reasoning_level": "high"},
 ]
@@ -50,13 +58,13 @@ DEFAULT_CONFIG = {
     "webhook_env_var": "AGENT_LOOP_WEBHOOK_URL",
     "execution_mode": "trusted-host",
     "routes": {
-        "intake": EXECUTOR_ROUTES,
-        "spec_reviewer": STRONG_ROUTES,
-        "planner": STRONG_ROUTES,
+        "intake": INTAKE_ROUTES,
+        "spec_reviewer": REVIEW_ROUTES,
+        "planner": DEEP_ROUTES,
         "executor": EXECUTOR_ROUTES,
-        "executor_escalated": STRONG_ROUTES,
-        "reviewer": STRONG_ROUTES,
-        "escalation_reviewer": STRONG_ROUTES,
+        "executor_escalated": DEEP_ROUTES,
+        "reviewer": REVIEW_ROUTES,
+        "escalation_reviewer": DEEP_ROUTES,
         # Backwards-compatible aliases for existing configs and call sites.
         "planning": PLANNING_ROUTES,
         "implementation": EXECUTOR_ROUTES,

@@ -243,8 +243,16 @@ class CodexAdapter(BaseAdapter):
                 return {
                     "installed": True,
                     "version": version,
-                    # Codex doesn't have list-models command, return typical config models
-                    "models": ["gpt-5.5", "gpt-5.4-mini"]
+                    # Codex has no non-interactive list-models command.
+                    "models": [
+                        "gpt-5.5",
+                        "gpt-5.6-sol",
+                        "gpt-5.6-terra",
+                        "gpt-5.6-luna",
+                        "gpt-5.4",
+                        "gpt-5.4-mini",
+                        "gpt-5.3-codex-spark",
+                    ]
                 }
         except Exception:
             pass

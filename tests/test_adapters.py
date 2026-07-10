@@ -53,7 +53,8 @@ def test_codex_discover_capabilities():
         caps = adapter.discover_capabilities()
         assert caps["installed"] is True
         assert "0.139.0" in caps["version"]
-        assert "gpt-5.5" in caps["models"]
+        assert "gpt-5.6-sol" in caps["models"]
+        assert "gpt-5.6-terra" in caps["models"]
         mock_subprocess.assert_called_once()
 
 def test_agy_discover_capabilities():
