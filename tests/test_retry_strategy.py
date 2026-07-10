@@ -385,7 +385,6 @@ def test_execute_task_uses_previous_retry_strategy_for_worktree_preparation(db_c
         }
     )
     orch = Orchestrator(db_conn, config, plan_path=tmp_path / "plan.md", progress_path=tmp_path / "progress.md")
-    monkeypatch.setattr(orch, "_ensure_workspace_deps", MagicMock())
     monkeypatch.setattr("agent_loop.orchestrator.create_worktree", MagicMock(side_effect=RuntimeError("old path reached")))
     prepare_mock = MagicMock(side_effect=RuntimeError("stop after strategy check"))
     monkeypatch.setattr(orch, "_prepare_task_worktree", prepare_mock)

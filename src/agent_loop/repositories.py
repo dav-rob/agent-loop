@@ -445,16 +445,36 @@ class TaskRepository:
     def __init__(self, conn: sqlite3.Connection):
         self.conn = conn
 
-    def create(self, run_id: int, feature_id: int, name: str, role: str, risk: str, scope: Optional[Dict[str, Any]] = None, dependencies: Optional[List[str]] = None, required_verification: Optional[str] = None) -> int:
+    def create(
+        self,
+        run_id: int,
+        feature_id: int,
+        name: str,
+        role: str,
+        risk: str,
+        scope: Optional[Dict[str, Any]] = None,
+        dependencies: Optional[List[str]] = None,
+        required_verification: Optional[str] = None,
+        verification_requirements: Optional[List[str]] = None,
+    ) -> int:
         deps_str = json.dumps(dependencies) if dependencies else None
         scope_str = json.dumps(scope) if scope else None
+        requirements = [str(item).strip() for item in (verification_requirements or []) if str(item).strip()]
+        if not requirements:
+            requirements = [f"Verify {name} against its task and feature acceptance criteria."]
         cursor = self.conn.cursor()
         cursor.execute(
             """
-            INSERT INTO tasks (run_id, feature_id, name, role, risk, scope, dependencies, required_verification, status)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
+            INSERT INTO tasks (
+                run_id, feature_id, name, role, risk, scope, dependencies,
+                required_verification, verification_requirements, status
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
             """,
-            (run_id, feature_id, name, role, risk, scope_str, deps_str, required_verification, "pending")
+            (
+                run_id, feature_id, name, role, risk, scope_str, deps_str,
+                required_verification, json.dumps(requirements), "pending",
+            )
         )
         self.conn.commit()
         return cursor.lastrowid
@@ -462,7 +482,11 @@ class TaskRepository:
     def get(self, task_id: int) -> Optional[Dict[str, Any]]:
         cursor = self.conn.cursor()
         cursor.execute(
-            "SELECT id, run_id, feature_id, name, role, dependencies, scope, risk, required_verification, status FROM tasks WHERE id = ?;",
+            """
+            SELECT id, run_id, feature_id, name, role, dependencies, scope, risk,
+                   required_verification, verification_requirements, status
+            FROM tasks WHERE id = ?;
+            """,
             (task_id,)
         )
         row = cursor.fetchone()
@@ -478,13 +502,18 @@ class TaskRepository:
             "scope": json.loads(row[6]) if row[6] else None,
             "risk": row[7],
             "required_verification": row[8],
-            "status": row[9]
+            "verification_requirements": json.loads(row[9]) if row[9] else [],
+            "status": row[10]
         }
 
     def get_by_run(self, run_id: int) -> List[Dict[str, Any]]:
         cursor = self.conn.cursor()
         cursor.execute(
-            "SELECT id, run_id, feature_id, name, role, dependencies, scope, risk, required_verification, status FROM tasks WHERE run_id = ?;",
+            """
+            SELECT id, run_id, feature_id, name, role, dependencies, scope, risk,
+                   required_verification, verification_requirements, status
+            FROM tasks WHERE run_id = ?;
+            """,
             (run_id,)
         )
         return [
@@ -498,7 +527,8 @@ class TaskRepository:
                 "scope": json.loads(row[6]) if row[6] else None,
                 "risk": row[7],
                 "required_verification": row[8],
-                "status": row[9]
+                "verification_requirements": json.loads(row[9]) if row[9] else [],
+                "status": row[10]
             }
             for row in cursor.fetchall()
         ]

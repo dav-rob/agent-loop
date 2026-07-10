@@ -189,9 +189,7 @@ def test_task_execution_writes_handover_and_refreshes_progress_after_verificatio
         "",
     )
 
-    with patch("agent_loop.orchestrator.ModelRouter") as mock_router_cls, patch.object(
-        orch, "_ensure_workspace_deps"
-    ), patch.object(orch, "run_verification", side_effect=fake_verification):
+    with patch("agent_loop.orchestrator.ModelRouter") as mock_router_cls:
         mock_router = MagicMock()
         mock_router.run.side_effect = [executor_result, review_result]
         mock_router_cls.return_value = mock_router
@@ -278,8 +276,7 @@ def test_timed_out_execution_records_synthesized_handover_and_timeout_review(db_
         return routed
 
     with patch("agent_loop.orchestrator.ModelRouter") as mock_router_cls, patch.object(
-        orch, "_ensure_workspace_deps"
-    ), patch.object(orch, "_preserve_uncommitted_changes", return_value=str(tmp_path / "patch.diff")), patch.object(
+        orch, "_preserve_uncommitted_changes", return_value=str(tmp_path / "patch.diff")), patch.object(
         orch, "run_timeout_review", return_value="retry_with_handoff"
     ) as mock_timeout_review:
         mock_router = MagicMock()
@@ -363,8 +360,7 @@ def test_retry_prompt_includes_previous_timeout_handover_context(db_conn, tmp_pa
         return routed
 
     with patch("agent_loop.orchestrator.ModelRouter") as mock_router_cls, patch.object(
-        orch, "_ensure_workspace_deps"
-    ), patch.object(orch, "_preserve_uncommitted_changes", return_value="CLEAN"):
+        orch, "_preserve_uncommitted_changes", return_value="CLEAN"):
         mock_router = MagicMock()
         mock_router.run.side_effect = fake_router_run
         mock_router_cls.return_value = mock_router

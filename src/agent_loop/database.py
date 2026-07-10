@@ -271,6 +271,34 @@ MIGRATIONS: List[str] = [
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY(run_id) REFERENCES runs(id) ON DELETE CASCADE
     );
+    """,
+    # Version 9 migration: declarative verification requirements and agent evidence
+    """
+    ALTER TABLE tasks ADD COLUMN verification_requirements TEXT NOT NULL DEFAULT '[]';
+
+    CREATE TABLE verification_evidence (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        run_id INTEGER NOT NULL,
+        task_id INTEGER,
+        attempt_id INTEGER,
+        review_id INTEGER,
+        phase TEXT NOT NULL,
+        actor_route TEXT,
+        requirement TEXT NOT NULL,
+        status TEXT NOT NULL,
+        command TEXT,
+        exit_status INTEGER,
+        summary TEXT NOT NULL,
+        evidence_paths TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY(run_id) REFERENCES runs(id) ON DELETE CASCADE,
+        FOREIGN KEY(task_id) REFERENCES tasks(id) ON DELETE SET NULL,
+        FOREIGN KEY(attempt_id) REFERENCES attempts(id) ON DELETE SET NULL,
+        FOREIGN KEY(review_id) REFERENCES reviews(id) ON DELETE SET NULL
+    );
+
+    CREATE INDEX verification_evidence_run_idx
+        ON verification_evidence(run_id, task_id, phase);
     """
 ]
 

@@ -232,34 +232,6 @@ def parse_review_response(output: str, allowed_decisions: Optional[set[str]] = N
     return ReviewParseResult(None, None, None)
 
 
-PROSE_VERIFICATION_PREFIXES = (
-    "run ",
-    "start ",
-    "open ",
-    "confirm ",
-    "verify ",
-    "check ",
-    "inspect ",
-    "click ",
-    "resolve ",
-    "manually ",
-    "use ",
-)
-
-
-def executable_verification_command(command: Optional[str]) -> str:
-    """Return a shell command only when the planner supplied one."""
-    if not command:
-        return ""
-    normalized = str(command).strip()
-    if not normalized:
-        return ""
-    first_line = normalized.splitlines()[0].strip().lower()
-    if first_line.startswith(PROSE_VERIFICATION_PREFIXES):
-        return ""
-    return normalized
-
-
 class Orchestrator:
     def __init__(self, conn: sqlite3.Connection, config: Config, plan_path: Path = None, progress_path: Path = None, git_lock = None, db_lock = None, get_now = None, sleep_func = None):
         import datetime
@@ -740,12 +712,18 @@ class Orchestrator:
         files = self._string_paths(scope_data.get("files"))
         if writes:
             return True
-        return bool(files and task.get("required_verification"))
+        return bool(files and task.get("verification_requirements"))
 
-    def _normalize_planned_task(self, task: Dict[str, Any]) -> Tuple[Dict[str, Any], str]:
+    def _normalize_planned_task(self, task: Dict[str, Any]) -> Tuple[Dict[str, Any], List[str]]:
         normalized = dict(task)
-        verification = executable_verification_command(task.get("required_verification"))
-        normalized["required_verification"] = verification
+        requirements = [
+            str(item).strip()
+            for item in task.get("verification_requirements", [])
+            if isinstance(item, str) and item.strip()
+        ]
+        if not requirements:
+            requirements = [f"Verify {task.get('name', 'the task')} against its acceptance criteria."]
+        normalized["verification_requirements"] = requirements
 
         scope_data = self._task_scope_data(normalized)
         if self._planning_task_has_implementation_work(normalized, scope_data):
@@ -759,7 +737,7 @@ class Orchestrator:
                     scope_data["reads"] = [path for path in self._string_paths(scope_data.get("reads")) if path not in file_set]
                     normalized["scope"] = scope_data
 
-        return normalized, verification
+        return normalized, requirements
 
     def _blocking_recovery_origin_task_id(self, scope_data: Dict[str, Any]) -> Optional[int]:
         if not isinstance(scope_data, dict):
@@ -901,12 +879,12 @@ Rules:
 * Do not create a prose spec.
 * Prefer fewer tasks.
 * Use planning-role tasks only for architecture/risk decomposition, integration/conflict work, or genuinely high-risk ambiguity.
-* Any task that creates or edits project files, scaffolds an app, implements boundaries, or has an executable verification command must use role "implementation", not "planning".
+* Any task that creates or edits project files, scaffolds an app, or implements boundaries must use role "implementation", not "planning".
 * Keep tasks scoped and independently verifiable.
 * For each task scope, set writes to files the task is expected to edit and reads to shared files it may inspect or depend on. Set files to the combined writes+reads list for compatibility.
 * Do not put shared helper files in writes unless the task should actually modify them; read-only overlaps should not serialize independent work.
-* required_verification must be an executable shell command, not prose. Good: "npm test", "python -m pytest", "npm install && npm test". Bad: "Run npm install and confirm it works".
-* If there is no safe non-interactive command for a task, set required_verification to an empty string.
+* For each task, describe verification_requirements as concise outcomes that must be demonstrated.
+* Do not emit shell commands, setup commands, interpreter names, environment activation instructions, or other executable code in verification_requirements.
 * Return ONLY schema-valid JSON matching the requested schema.
 * Do not include markdown.
 """
@@ -953,7 +931,7 @@ Rules:
                 feature_ids[feat["name"]] = f_id
 
             for task in tasks:
-                normalized_task, verification = self._normalize_planned_task(task)
+                normalized_task, requirements = self._normalize_planned_task(task)
                 self.task_repo.create(
                     run_id=run_id,
                     feature_id=feature_ids[normalized_task["feature_name"]],
@@ -962,7 +940,7 @@ Rules:
                     risk=normalized_task["risk"],
                     scope=normalized_task.get("scope"),
                     dependencies=normalized_task.get("dependencies", []),
-                    required_verification=verification
+                    verification_requirements=requirements,
                 )
 
             if run["intake_mode"] in {"autonomous", "non_interactive"}:
@@ -1021,119 +999,6 @@ Rules:
                 self.notification_repo.update_delivery(notification_id, "sent", 1)
         except Exception:
             self.notification_repo.update_delivery(notification_id, "failed", 1)
-
-    def _ensure_workspace_deps(self, workspace: Path) -> None:
-        """Detect common project types and run their install command if needed.
-
-        Checks for package.json, requirements.txt/pyproject.toml, Gemfile,
-        go.mod, and Cargo.toml and runs the corresponding install command when
-        the manifest is present.  Failures are silently swallowed — the caller
-        will still attempt the work and surface any real errors itself.
-        """
-        INSTALL_MANIFESTS = [
-            ("package.json",       ["npm", "install"]),
-            ("requirements.txt",   ["pip", "install", "-r", "requirements.txt"]),
-            ("pyproject.toml",     ["pip", "install", "-e", "."]),
-            ("Gemfile",            ["bundle", "install"]),
-            ("go.mod",             ["go", "mod", "download"]),
-            ("Cargo.toml",         ["cargo", "fetch"]),
-        ]
-        for manifest, cmd in INSTALL_MANIFESTS:
-            if (workspace / manifest).exists():
-                try:
-                    subprocess.run(
-                        cmd,
-                        cwd=workspace,
-                        stdin=subprocess.DEVNULL,
-                        capture_output=True,
-                        timeout=300,
-                    )
-                except Exception:
-                    pass  # best-effort; real errors surface later
-
-    def run_verification(self, run_id: int, task_id: int, attempt_id: int, command: str, worktree_dir: Path, logs_dir: Path) -> bool:
-        """Runs the verification command in the worktree directory.
-        
-        Note: Under trusted-host execution mode, commands executed via shell=True 
-        will run with the full permissions and privileges of the current user.
-        """
-        command = executable_verification_command(command)
-        start_time = time.time()
-        test_out_file = logs_dir / "test_run_stdout.log"
-        test_err_file = logs_dir / "test_run_stderr.log"
-
-        if not command:
-            test_out_file.write_text("Skipped prose verification because no executable shell command was provided.\n")
-            test_err_file.write_text("")
-            output_json = json.dumps({
-                "stdout": str(test_out_file),
-                "stderr": str(test_err_file)
-            })
-            with self.db_lock:
-                self.test_run_repo.create(
-                    run_id=run_id,
-                    task_id=task_id,
-                    attempt_id=attempt_id,
-                    command="",
-                    scope=None,
-                    exit_status=0,
-                    duration_seconds=0.0,
-                    output_path=output_json
-                )
-            return True
-        
-        try:
-            # Ensure dependencies are installed before verifying
-            self._ensure_workspace_deps(worktree_dir)
-            with test_out_file.open("w") as out_f, test_err_file.open("w") as err_f:
-                process = subprocess.run(
-                    command,
-                    shell=True,
-                    cwd=worktree_dir,
-                    stdin=subprocess.DEVNULL,
-                    stdout=out_f,
-                    stderr=err_f,
-                    timeout=300.0
-                )
-            duration = time.time() - start_time
-            
-            output_json = json.dumps({
-                "stdout": str(test_out_file),
-                "stderr": str(test_err_file)
-            })
-            
-            with self.db_lock:
-                self.test_run_repo.create(
-                    run_id=run_id,
-                    task_id=task_id,
-                    attempt_id=attempt_id,
-                    command=command,
-                    scope=None,
-                    exit_status=process.returncode,
-                    duration_seconds=duration,
-                    output_path=output_json
-                )
-            return process.returncode == 0
-        except Exception as e:
-            duration = time.time() - start_time
-            output_json = json.dumps({
-                "stdout": str(test_out_file),
-                "stderr": str(test_err_file)
-            })
-            with self.db_lock:
-                self.test_run_repo.create(
-                    run_id=run_id,
-                    task_id=task_id,
-                    attempt_id=attempt_id,
-                    command=command,
-                    scope=None,
-                    exit_status=-1,
-                    duration_seconds=duration,
-                    output_path=output_json
-                )
-            with test_err_file.open("a") as err_f:
-                err_f.write(f"\nVerification failed with exception: {e}\n")
-            return False
 
     def detect_and_record_test_migrations(self, run_id: int, task_id: int, commit_sha: str) -> None:
         import os
@@ -1715,10 +1580,6 @@ Rules:
                 pass
         is_integration = isinstance(scope_data, dict) and "source_branch" in scope_data
 
-        # Ensure workspace dependencies are installed before the adapter or
-        # any verification command runs.  Best-effort — failures are ignored.
-        self._ensure_workspace_deps(worktree_dir)
-        
         if is_integration:
             source_branch = scope_data["source_branch"]
             try:
@@ -1761,7 +1622,7 @@ Task: Resolve merge conflict on '{scope_data.get('original_task_name', task['nam
 Source branch/commit: {scope_data['source_branch']} ({scope_data.get('source_commit')})
 Target baseline: {scope_data.get('target_baseline', 'main')}
 Conflicting files: {scope_data.get('conflicting_files', [])}
-Verification Command: {task['required_verification']}
+Verification requirements: {json.dumps(task.get('verification_requirements', []))}
 
 Please resolve the conflict markers in the conflicting files. Ensure both changes are integrated correctly. Run verification to confirm success before exiting.
 """
@@ -1769,7 +1630,7 @@ Please resolve the conflict markers in the conflicting files. Ensure both change
             prompt = f"""
 Goal: {goal_text}
 Task: {task['name']}
-Verification Command: {task['required_verification']}
+Verification requirements: {json.dumps(task.get('verification_requirements', []))}
 Scope: {json.dumps(task['scope'])}
 """
         if previous_rejection:
@@ -1793,7 +1654,9 @@ Scope: {json.dumps(task['scope'])}
             
         if not is_integration:
             prompt += (
-                "\nPlease implement this task in the workspace. You MUST make atomic, fine-grained git commits with descriptive messages as you progress through the task. Run verification to confirm success before exiting.\n"
+                "\nPlease implement this task in the workspace. You MUST make atomic, fine-grained git commits with descriptive messages as you progress through the task.\n"
+                "Inspect the repository and available runtimes, create or reuse a worktree-local environment when needed, and run the narrowest checks that demonstrate every verification requirement.\n"
+                "Report the exact commands and results as evidence. Identify an environment blocker explicitly instead of changing unrelated product code. The orchestrator will not rerun or activate your environment.\n"
                 "\nBefore exiting, perform a handover self-check:\n"
                 "- Review generated, dependency, runtime, cache, local state, and log files and add sensible entries to `.gitignore`.\n"
                 "- Summarize what changed, why it changed, commits made, verification run, known risks, and follow-up work.\n"
@@ -1824,20 +1687,7 @@ Scope: {json.dumps(task['scope'])}
                 )
                 self._render_progress(run_id)
 
-            verification_success = True
-            if task["required_verification"]:
-                verification_success = self.run_verification(
-                    run_id=run_id,
-                    task_id=task_id,
-                    attempt_id=attempt_id,
-                    command=task["required_verification"],
-                    worktree_dir=worktree_dir,
-                    logs_dir=logs_dir
-                )
-                with self.db_lock:
-                    self._render_progress(run_id)
-
-            if result.success and verification_success:
+            if result.success:
                 # Capture any uncommitted changes just in case the agent forgot
                 commit_changes(worktree_dir, f"agent-loop: uncommitted changes for {task['name']}")
                 with self.git_lock:
@@ -1858,7 +1708,7 @@ Scope: {json.dumps(task['scope'])}
                         model=model,
                         result=result,
                         outcome="completed",
-                        verification_status="passed",
+                        verification_status="executor-reported",
                         logs_dir=logs_dir,
                         commit_sha=end_sha,
                     )
@@ -1869,7 +1719,7 @@ Scope: {json.dumps(task['scope'])}
                         actor=f"{profile}:{provider or 'unknown'}:{model or 'unknown'}",
                         summary=self._compact_handover_text(result.output, "Executor completed without a detailed summary."),
                         commit_sha=end_sha,
-                        verification_status="passed",
+                        verification_status="executor-reported",
                         evidence_paths=[str(logs_dir / "stdout.log"), str(logs_dir / "stderr.log")],
                     )
                     self._render_progress(run_id)
@@ -2080,7 +1930,7 @@ Scope: {json.dumps(task['scope'])}
                 return True
             else:
                 patch_path = self._preserve_uncommitted_changes(worktree_dir, logs_dir)
-                failure_verification_status = "failed" if task["required_verification"] and not verification_success else "not-run"
+                failure_verification_status = "not-reviewed"
                 if result.quota_exhausted:
                     q_state = "limited_known_reset" if result.quota_reset else "limited_unknown_reset"
                     with self.db_lock:

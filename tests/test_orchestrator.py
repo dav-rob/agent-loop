@@ -77,7 +77,7 @@ def test_orchestrator_planning_success(db_conn, tmp_path):
                 "role": "implementation",
                 "risk": "low",
                 "dependencies": [],
-                "required_verification": "pytest tests"
+                "verification_requirements": ["Authentication schema tests pass"]
             }
         ]
     }
@@ -138,7 +138,7 @@ def test_planning_uses_router_planner_profile(db_conn, tmp_path):
                 "risk": "low",
                 "scope": {"files": []},
                 "dependencies": [],
-                "required_verification": "pytest",
+                "verification_requirements": ["Authentication behavior passes focused tests"],
             }
         ],
     }
@@ -159,6 +159,7 @@ def test_planning_uses_router_planner_profile(db_conn, tmp_path):
     assert mock_router.run.call_args.kwargs["profile"] == "planner"
 
 
+@pytest.mark.skip(reason="Obsolete: planner shell commands are removed; replacement is in test_verification_boundary.py")
 def test_plan_run_drops_prose_required_verification(db_conn, tmp_path):
     run_repo = RunRepository(db_conn)
     run_id = run_repo.create("Build a local dashboard", "none")
@@ -224,7 +225,7 @@ def test_plan_run_normalizes_file_scoped_planning_task_to_implementation(db_conn
                     "reads": ["package.json", "src/**", "server/**", "app/**", "README.md"],
                 },
                 "dependencies": [],
-                "required_verification": "test -f package.json",
+                "verification_requirements": ["The package manifest exists"],
             }
         ],
     }
@@ -377,7 +378,7 @@ def test_execution_profile_routes_file_scoped_planning_tasks_to_executor(db_conn
     task = {
         "role": "planning",
         "risk": "medium",
-        "required_verification": "test -f package.json",
+        "verification_requirements": ["The package manifest exists"],
         "scope": {
             "files": ["package.json", "src/**", "server/**", "app/**", "README.md"],
             "writes": [],
@@ -416,7 +417,6 @@ def test_task_execution_uses_router_executor_profile_and_records_selected_route(
     routed.reasoning_level = "medium"
 
     with patch("agent_loop.orchestrator.ModelRouter") as mock_router_cls, \
-         patch.object(orch, "_ensure_workspace_deps"), \
          patch.object(orch, "run_task_review", return_value="approved"):
         mock_router = MagicMock()
         mock_router.run.return_value = routed
@@ -476,7 +476,6 @@ def test_task_execution_escalates_route_after_two_rejected_reviews(db_conn, tmp_
     routed.reasoning_level = "high"
 
     with patch("agent_loop.orchestrator.ModelRouter") as mock_router_cls, \
-         patch.object(orch, "_ensure_workspace_deps"), \
          patch.object(orch, "run_task_review", return_value="approved"):
         mock_router = MagicMock()
         mock_router.run.return_value = routed
@@ -512,7 +511,7 @@ def test_orchestrator_planning_route_failover(db_conn, tmp_path):
         "objective": "Implement login page",
         "decisions": [],
         "features": [{"name": "Auth", "risk": "low", "acceptance_criteria": "Done", "dependencies": []}],
-        "tasks": [{"name": "T1", "feature_name": "Auth", "role": "implementation", "risk": "low", "dependencies": [], "required_verification": "pytest"}]
+        "tasks": [{"name": "T1", "feature_name": "Auth", "role": "implementation", "risk": "low", "dependencies": [], "verification_requirements": ["Authentication tests pass"]}]
     }
     mock_success = AttemptResult(success=True, exit_code=0, output=json.dumps(plan_json), error="")
 
@@ -606,6 +605,7 @@ def test_orchestrator_task_execution_loop(db_conn, tmp_path, monkeypatch):
         mock_merge.assert_called()
         mock_remove_wt.assert_called()
 
+@pytest.mark.skip(reason="Obsolete: deterministic project-command verification has been removed")
 def test_run_verification_success_and_failure(db_conn, tmp_path):
     config = Config()
     orch = Orchestrator(db_conn, config, plan_path=tmp_path / "plan.md", progress_path=tmp_path / "progress.md")
@@ -662,6 +662,7 @@ def test_run_verification_success_and_failure(db_conn, tmp_path):
     assert test_runs[1]["exit_status"] == 1
 
 
+@pytest.mark.skip(reason="Obsolete: planner text is never executed, regardless of whether it resembles prose")
 def test_run_verification_skips_prose_instead_of_executing_shell(db_conn, tmp_path):
     config = Config()
     orch = Orchestrator(db_conn, config, plan_path=tmp_path / "plan.md", progress_path=tmp_path / "progress.md")
@@ -1769,6 +1770,7 @@ def test_reset_task_for_retry_is_idempotent_when_already_ready(db_conn, tmp_path
     assert task_repo.get(task_id)["status"] == "ready"
 
 
+@pytest.mark.skip(reason="Obsolete: deterministic verification failure no longer counts as an executor attempt failure")
 def test_execution_failure_follow_up_escalates_attempts(db_conn, tmp_path, monkeypatch):
     config = Config()
     config.data["retry_policy"] = {"max_attempts": 1, "escalation_threshold": 1}

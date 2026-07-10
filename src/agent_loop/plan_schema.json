@@ -70,9 +70,13 @@
             "type": "array",
             "items": { "type": "string" }
           },
-          "required_verification": { "type": "string" }
+          "verification_requirements": {
+            "type": "array",
+            "items": { "type": "string", "minLength": 1 },
+            "minItems": 1
+          }
         },
-        "required": ["name", "feature_name", "role", "risk", "scope", "dependencies", "required_verification"]
+        "required": ["name", "feature_name", "role", "risk", "scope", "dependencies", "verification_requirements"]
       }
     }
   },
