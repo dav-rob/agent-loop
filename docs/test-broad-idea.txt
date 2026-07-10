@@ -1,0 +1,16 @@
+Create a website that runs in the background and every hour checks for the following things:
+
+1) Headlines like this: https://www.google.com/search?q=news+headlines+today
+2) The comming weather by the hour for the next 24 hours, showing five hours, scrollable
+3) Subscribe to Youtube sites, starting with
+  https://www.youtube.com/@NatureVideoChannel, https://www.youtube.com/@DrBenMiles, https://www.youtube.com/@WesRoth, https://www.youtube.com/@veritasium, https://www.youtube.com/@TLDRnewsGLOBAL
+
+  - if there is a new videos, the most recent channel goest to the top of the list, a summary should be done using gemini 3.5 flash high, using agy CLI(there is a skill for this) and this should be cached for the user to access with one click
+  - the four most recent videos should be available on a folded menu below the most recent video, to be clicked on, this can be summarised in real time once the click is done
+  - new video channels can be added to the existing list to be monitored
+
+  The headlines should be top-left, the weather top right, the video subscription below these two.  That's when space allows the app should be responsive to mobile devices etc in terms of layout.
+
+
+
+  more subscriptions, like google.com/search?q=england+football+team+gossip+and+news, can be added to the dashboard and laid out according to the user's preference
