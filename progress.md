@@ -65,10 +65,11 @@ feel less like a form while keeping deterministic fallback behavior.
 Startup guidance now makes the runtime SQLite database the explicit source of
 truth for current goal state, so fresh-context agents should inspect
 database-backed status/plan details before scanning `.agent-loop/logs/`.
-Default routing now removes Gemini 3.5 Flash from configured defaults. Normal
-executor tasks prefer `agy` Gemini 3.1 Pro High, then Claude Sonnet 4.6
-Thinking, then Codex gpt-5.4-mini; planning/review remains Codex gpt-5.5 high,
-then Claude Opus 4.6 Thinking, then Gemini 3.1 Pro High.
+Default routing now uses current Codex 5.6 models by personality. Intake is
+Codex Sol medium, then `agy` Claude Opus 4.6 Thinking, then Gemini 3.5 Flash
+High. Normal execution remains cross-binary and `agy`-first, falling back from
+Gemini 3.1 Pro High to Claude Sonnet 4.6 Thinking and then Codex Terra high.
+Planning and escalation use Codex Sol xhigh; normal review uses Sol high.
 Recent fine-grained-commit handoff changes were adjusted to tolerate mocked or
 non-Git worktree directories when collecting review diff SHAs, to use the final
 task SHA when creating integration tasks, and to refresh task state after
@@ -89,9 +90,9 @@ Recovery now resets such stale running tasks to `ready` or `blocked` based on
 the retry limit. Resume now preserves `auth_required` provider states so known
 dead `agy` routes are not revived before Codex fallback can be selected.
 Spec intake model calls now use provider-neutral route fallback with useful
-diagnostics. Intake preserves the old preference for configured `agy` routes,
-falls back to later configured routes such as Codex, and writes model-call logs
-under `.agent-loop/logs/intake/` instead of disposable temp directories.
+diagnostics. Intake follows its configured personality order and writes
+model-call logs under `.agent-loop/logs/intake/` instead of disposable temp
+directories.
 Task worktrees now default back to visible root-level `worktrees/` so `agy` can
 open them as workspaces; `.agent-loop/` remains the home for the database,
 logs, generated plan/progress/learning views, and specs. Bootstrap `.gitignore`

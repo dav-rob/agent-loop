@@ -76,27 +76,37 @@ worktrees_dir = "worktrees"
 
 [routes]
 intake = [
-    { provider = "agy", model = "Gemini 3.1 Pro (High)", reasoning_level = "high" },
-    { provider = "agy", model = "Claude Sonnet 4.6 (Thinking)", reasoning_level = "high" },
-    { provider = "codex", model = "gpt-5.4-mini", reasoning_level = "high" }
+    { provider = "codex", model = "gpt-5.6-sol", reasoning_level = "medium" },
+    { provider = "agy", model = "Claude Opus 4.6 (Thinking)", reasoning_level = "high" },
+    { provider = "agy", model = "Gemini 3.5 Flash (High)", reasoning_level = "high" }
 ]
 planner = [
-    { provider = "codex", model = "gpt-5.5", reasoning_level = "high" },
+    { provider = "codex", model = "gpt-5.6-sol", reasoning_level = "xhigh" },
     { provider = "agy", model = "Claude Opus 4.6 (Thinking)", reasoning_level = "high" },
     { provider = "agy", model = "Gemini 3.1 Pro (High)", reasoning_level = "high" }
 ]
 executor = [
     { provider = "agy", model = "Gemini 3.1 Pro (High)", reasoning_level = "high" },
     { provider = "agy", model = "Claude Sonnet 4.6 (Thinking)", reasoning_level = "high" },
-    { provider = "codex", model = "gpt-5.4-mini", reasoning_level = "high" }
+    { provider = "codex", model = "gpt-5.6-terra", reasoning_level = "high" }
 ]
 executor_escalated = [
-    { provider = "codex", model = "gpt-5.5", reasoning_level = "high" },
+    { provider = "codex", model = "gpt-5.6-sol", reasoning_level = "xhigh" },
     { provider = "agy", model = "Claude Opus 4.6 (Thinking)", reasoning_level = "high" },
     { provider = "agy", model = "Gemini 3.1 Pro (High)", reasoning_level = "high" }
 ]
 reviewer = [
-    { provider = "codex", model = "gpt-5.5", reasoning_level = "high" },
+    { provider = "codex", model = "gpt-5.6-sol", reasoning_level = "high" },
+    { provider = "agy", model = "Claude Opus 4.6 (Thinking)", reasoning_level = "high" },
+    { provider = "agy", model = "Gemini 3.1 Pro (High)", reasoning_level = "high" }
+]
+spec_reviewer = [
+    { provider = "codex", model = "gpt-5.6-sol", reasoning_level = "high" },
+    { provider = "agy", model = "Claude Opus 4.6 (Thinking)", reasoning_level = "high" },
+    { provider = "agy", model = "Gemini 3.1 Pro (High)", reasoning_level = "high" }
+]
+escalation_reviewer = [
+    { provider = "codex", model = "gpt-5.6-sol", reasoning_level = "xhigh" },
     { provider = "agy", model = "Claude Opus 4.6 (Thinking)", reasoning_level = "high" },
     { provider = "agy", model = "Gemini 3.1 Pro (High)", reasoning_level = "high" }
 ]
