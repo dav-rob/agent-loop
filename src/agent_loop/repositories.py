@@ -460,8 +460,6 @@ class TaskRepository:
         deps_str = json.dumps(dependencies) if dependencies else None
         scope_str = json.dumps(scope) if scope else None
         requirements = [str(item).strip() for item in (verification_requirements or []) if str(item).strip()]
-        if not requirements:
-            requirements = [f"Verify {name} against its task and feature acceptance criteria."]
         cursor = self.conn.cursor()
         cursor.execute(
             """
@@ -830,6 +828,95 @@ class TestRunRepository:
                 "duration_seconds": row[7],
                 "output_path": row[8],
                 "created_at": row[9]
+            }
+            for row in cursor.fetchall()
+        ]
+
+
+class VerificationEvidenceRepository:
+    PHASES = {"executor", "task_review", "feature_review", "final_review"}
+    STATUSES = {"passed", "failed", "blocked", "not_applicable"}
+
+    def __init__(self, conn: sqlite3.Connection):
+        self.conn = conn
+
+    def create(
+        self,
+        run_id: int,
+        requirement: str,
+        status: str,
+        summary: str,
+        phase: str,
+        task_id: Optional[int] = None,
+        attempt_id: Optional[int] = None,
+        review_id: Optional[int] = None,
+        actor_route: Optional[str] = None,
+        command: Optional[str] = None,
+        exit_status: Optional[int] = None,
+        evidence_paths: Optional[List[str]] = None,
+    ) -> int:
+        if phase not in self.PHASES:
+            raise ValueError(f"Invalid verification evidence phase: {phase}")
+        if status not in self.STATUSES:
+            raise ValueError(f"Invalid verification evidence status: {status}")
+        if not requirement.strip() or not summary.strip():
+            raise ValueError("Verification evidence requires a requirement and summary.")
+        cursor = self.conn.cursor()
+        cursor.execute(
+            """
+            INSERT INTO verification_evidence (
+                run_id, task_id, attempt_id, review_id, phase, actor_route,
+                requirement, status, command, exit_status, summary, evidence_paths
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+            """,
+            (
+                run_id,
+                task_id,
+                attempt_id,
+                review_id,
+                phase,
+                actor_route,
+                requirement.strip(),
+                status,
+                command,
+                exit_status,
+                summary.strip(),
+                json.dumps(evidence_paths or []),
+            ),
+        )
+        self.conn.commit()
+        return cursor.lastrowid
+
+    def get_by_run(self, run_id: int) -> List[Dict[str, Any]]:
+        cursor = self.conn.cursor()
+        cursor.execute(
+            """
+            SELECT id, run_id, task_id, attempt_id, review_id, phase, actor_route,
+                   requirement, status, command, exit_status, summary,
+                   evidence_paths, created_at
+            FROM verification_evidence
+            WHERE run_id = ?
+            ORDER BY id;
+            """,
+            (run_id,),
+        )
+        return [
+            {
+                "id": row[0],
+                "run_id": row[1],
+                "task_id": row[2],
+                "attempt_id": row[3],
+                "review_id": row[4],
+                "phase": row[5],
+                "actor_route": row[6],
+                "requirement": row[7],
+                "status": row[8],
+                "command": row[9],
+                "exit_status": row[10],
+                "summary": row[11],
+                "evidence_paths": json.loads(row[12]) if row[12] else [],
+                "created_at": row[13],
             }
             for row in cursor.fetchall()
         ]

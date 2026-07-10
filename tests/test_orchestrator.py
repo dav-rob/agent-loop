@@ -714,21 +714,21 @@ def test_reviews_fail_closed(db_conn, tmp_path):
         # Scenario 1: result.success = False
         mock_adapter.run_attempt.return_value = AttemptResult(success=False, exit_code=1, output="", error="API Timeout")
         decision = orch.run_agent_review(run_id, "task", 1, "Verify change")
-        assert decision == "rejected"
+        assert decision == "block"
         
         reviews = orch.review_repo.get_by_run(run_id)
         assert len(reviews) == 1
-        assert reviews[0]["decision"] == "rejected"
+        assert reviews[0]["decision"] == "block"
         assert "timeout" in reviews[0]["findings"].lower() or "failed" in reviews[0]["findings"].lower()
         
         # Scenario 2: malformed JSON output
         mock_adapter.run_attempt.return_value = AttemptResult(success=True, exit_code=0, output="This is not JSON", error="")
         decision = orch.run_agent_review(run_id, "task", 2, "Verify change")
-        assert decision == "rejected"
+        assert decision == "block"
         
         reviews = orch.review_repo.get_by_run(run_id)
         assert len(reviews) == 2
-        assert reviews[1]["decision"] == "rejected"
+        assert reviews[1]["decision"] == "block"
         assert "parse" in reviews[1]["findings"].lower() or "malformed" in reviews[1]["findings"].lower()
         
         # Scenario 3: valid rejection

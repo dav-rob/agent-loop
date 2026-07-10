@@ -41,6 +41,7 @@ from agent_loop.repositories import (
     NotificationRepository,
     TestMigrationRepository,
     TestRunRepository,
+    VerificationEvidenceRepository,
     RecommendationRepository,
     GoalDeliveryRepository,
     RECOMMENDATION_CATEGORIES,
@@ -125,6 +126,16 @@ class ReviewRecommendation:
 
 
 @dataclass(frozen=True)
+class ReviewVerificationEvidence:
+    requirement: str
+    status: str
+    command: Optional[str]
+    exit_status: Optional[int]
+    summary: str
+    evidence_paths: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class ReviewParseResult:
     decision: Optional[str]
     findings: Optional[str]
@@ -132,6 +143,8 @@ class ReviewParseResult:
     retry_strategy_reason: Optional[str] = None
     recommendations: tuple[ReviewRecommendation, ...] = ()
     delivery: Optional[DeliveryDetails] = None
+    blocker_kind: Optional[str] = None
+    verification_evidence: tuple[ReviewVerificationEvidence, ...] = ()
 
     def __iter__(self) -> Iterator[Optional[str]]:
         yield self.decision
@@ -206,6 +219,43 @@ def parse_review_response(output: str, allowed_decisions: Optional[set[str]] = N
                                 evidence=evidence.strip(),
                             )
                         )
+            blocker_kind = data.get("blocker_kind")
+            if blocker_kind not in {"environment", "credentials", "provider", "unsafe", "implementation"}:
+                blocker_kind = None
+            verification_evidence = []
+            raw_evidence = data.get("verification_evidence", [])
+            if isinstance(raw_evidence, list):
+                for item in raw_evidence:
+                    if not isinstance(item, dict):
+                        continue
+                    requirement = item.get("requirement")
+                    status = item.get("status")
+                    summary = item.get("summary")
+                    if not (
+                        isinstance(requirement, str)
+                        and requirement.strip()
+                        and status in VerificationEvidenceRepository.STATUSES
+                        and isinstance(summary, str)
+                        and summary.strip()
+                    ):
+                        continue
+                    command = item.get("command")
+                    if not isinstance(command, str):
+                        command = None
+                    exit_status = item.get("exit_status")
+                    if not isinstance(exit_status, int):
+                        exit_status = None
+                    paths = item.get("evidence_paths", [])
+                    verification_evidence.append(
+                        ReviewVerificationEvidence(
+                            requirement=requirement.strip(),
+                            status=status,
+                            command=command,
+                            exit_status=exit_status,
+                            summary=summary.strip(),
+                            evidence_paths=tuple(str(path) for path in paths if isinstance(path, str)),
+                        )
+                    )
             return ReviewParseResult(
                 dec_val,
                 find_val,
@@ -213,6 +263,8 @@ def parse_review_response(output: str, allowed_decisions: Optional[set[str]] = N
                 reason,
                 tuple(recommendations),
                 parse_delivery_details(data.get("delivery")),
+                blocker_kind,
+                tuple(verification_evidence),
             )
 
     decision_pattern = "|".join(re.escape(decision) for decision in sorted(allowed_decisions, key=len, reverse=True))
@@ -255,6 +307,7 @@ class Orchestrator:
         self.notification_repo = NotificationRepository(conn)
         self.test_migration_repo = TestMigrationRepository(conn)
         self.test_run_repo = TestRunRepository(conn)
+        self.verification_evidence_repo = VerificationEvidenceRepository(conn)
         self.handover_repo = HandoverRepository(conn)
         self.lifecycle = TaskLifecycleRecorder(conn, self.progress_path)
 
@@ -2454,6 +2507,19 @@ Only return the raw JSON object. Do not include markdown wrappers.
         run_goal_type = run.get("goal_type", "prototype") if run else "prototype"
         run_goal_type_rationale = run.get("goal_type_rationale") if run else None
         operating_policy = goal_review_policy(run_goal_type)
+        verification_instructions = ""
+        task_requirements: List[str] = []
+        if subject_type in {"task", "task_escalation"} and review_task_id:
+            review_task = self.task_repo.get(review_task_id)
+            task_requirements = review_task.get("verification_requirements", []) if review_task else []
+            verification_instructions = f"""
+Independent verification requirements:
+{json.dumps(task_requirements)}
+
+You own independent verification for this review. Inspect the authoritative worktree and available runtimes. Create or reuse an ignored worktree-local environment when needed, install declared dependencies, and run the narrowest appropriate checks yourself. Do not delegate basic environment setup back to the executor.
+If setup fails, make one bounded safe attempt to diagnose or repair the local environment. If it remains unresolved, return decision "block" with blocker_kind "environment" and exact evidence. Use "rejected" only for an implementation or behavioral failure that an executor can repair.
+Report one verification_evidence item per requirement. Commands are audit evidence only; the orchestrator will store them but never execute them.
+"""
         delivery_instructions = ""
         if subject_type == "final":
             delivery_instructions = """
@@ -2485,6 +2551,8 @@ Confirmed operating mode rationale: {run_goal_type_rationale or 'No rationale re
 
 {operating_policy}
 
+{verification_instructions}
+
 Analyze the work against this operating mode. Reject only when its policy says the finding blocks the current scope. Explain why any rejection blocks now; otherwise identify the finding as non-blocking.
 Output a JSON response in the following format:
 {{
@@ -2492,6 +2560,17 @@ Output a JSON response in the following format:
   "findings": "Detail findings here...",
   "retry_strategy": "continue_existing_branch",
   "retry_strategy_reason": "Only include when rejecting, blocking, or recommending a restart.",
+  "blocker_kind": null,
+  "verification_evidence": [
+    {{
+      "requirement": "Exact requirement assessed",
+      "status": "passed",
+      "command": "Exact command run or null",
+      "exit_status": 0,
+      "summary": "Concise result",
+      "evidence_paths": ["Relevant provider log path"]
+    }}
+  ],
   "recommendations": [
     {{
       "category": "usability",
@@ -2538,9 +2617,26 @@ Only return the raw JSON object. Do not include markdown wrappers.
                                 retry_strategy_reason=parsed_review.retry_strategy_reason or parsed_findings,
                             )
                 else:
+                    decision = "block"
                     findings = f"Failed to parse review JSON output. Raw output: {result.output}"
             else:
+                decision = "block"
                 findings = f"Review prompt failed: {result.error}"
+
+            blocker_kind = parsed_review.blocker_kind
+            if blocker_kind in {"environment", "credentials", "provider", "unsafe"}:
+                decision = "block"
+            if subject_type == "task" and task_requirements and decision == "approved":
+                evidenced = {
+                    item.requirement
+                    for item in parsed_review.verification_evidence
+                    if item.status in {"passed", "not_applicable"}
+                }
+                missing = [requirement for requirement in task_requirements if requirement not in evidenced]
+                if missing:
+                    decision = "block"
+                    findings = "Reviewer did not provide independent evidence for: " + "; ".join(missing)
+                    blocker_kind = "provider"
 
             confirmed_goal_type = bool(run and run.get("goal_type_rationale"))
             if subject_type == "final" and confirmed_goal_type and result.success:
@@ -2571,6 +2667,28 @@ Only return the raw JSON object. Do not include markdown wrappers.
                 findings=findings,
                 evidence_paths=evidence_paths
             )
+            evidence_phase = {
+                "task": "task_review",
+                "task_escalation": "task_review",
+                "feature": "feature_review",
+                "final": "final_review",
+            }.get(subject_type)
+            if evidence_phase:
+                for item in parsed_review.verification_evidence:
+                    self.verification_evidence_repo.create(
+                        run_id=run_id,
+                        task_id=review_task_id,
+                        attempt_id=attempt_id,
+                        review_id=review_id,
+                        phase=evidence_phase,
+                        actor_route=reviewer_route,
+                        requirement=item.requirement,
+                        status=item.status,
+                        command=item.command,
+                        exit_status=item.exit_status,
+                        summary=item.summary,
+                        evidence_paths=list(item.evidence_paths),
+                    )
             recommendations = parsed_review.recommendations
             if decision == "follow_up" and not recommendations and subject_type != "task_escalation":
                 recommendations = (
@@ -2617,7 +2735,7 @@ Only return the raw JSON object. Do not include markdown wrappers.
                 run_id=run_id,
                 subject_type=subject_type,
                 subject_id=subject_id,
-                decision="rejected",
+                decision="block",
                 reviewer_route=reviewer_route,
                 findings=f"Review crashed with exception: {e}",
                 evidence_paths=evidence_paths
@@ -2627,7 +2745,7 @@ Only return the raw JSON object. Do not include markdown wrappers.
                 task_id=review_task_id,
                 attempt_id=attempt_id,
                 actor=reviewer_route,
-                decision="rejected",
+                decision="block",
                 findings=f"Review crashed with exception: {e}",
                 review_type=subject_type,
                 evidence_paths=evidence_paths,
@@ -2638,12 +2756,12 @@ Only return the raw JSON object. Do not include markdown wrappers.
                     task_id=subject_id,
                     attempt_id=attempt_id,
                     reviewer_route=reviewer_route,
-                    decision="rejected",
+                    decision="block",
                     findings=f"Review crashed with exception: {e}",
                     evidence_paths=evidence_paths,
                 )
                 self._render_progress(run_id)
-            return "rejected"
+            return "block"
 
     def _persist_review_recommendations(
         self,
