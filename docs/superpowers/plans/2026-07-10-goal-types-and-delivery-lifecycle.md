@@ -18,12 +18,12 @@
 - Modify: `src/agent_loop/repositories.py`
 - Create: `tests/test_goal_lifecycle_storage.py`
 
-- [ ] Add failing tests for allowed goal types, run creation/update, recommendation validation/transitions, latest-completed-goal lookup, and one delivery record per goal.
-- [ ] Run `uv run pytest -q tests/test_goal_lifecycle_storage.py` and confirm failures are caused by missing schema/APIs.
-- [ ] Add `GOAL_TYPES`, validation helpers, migration 8, `RecommendationRepository`, and `GoalDeliveryRepository`.
-- [ ] Extend `RunRepository` without breaking existing callers: default new goals to `prototype`, expose type/rationale, allow confirmation, and query the latest completed goal.
-- [ ] Run the focused tests and `tests/test_database.py`.
-- [ ] Commit as `feat: persist goal types and recommendations`.
+- [x] Add failing tests for allowed goal types, run creation/update, recommendation validation/transitions, latest-completed-goal lookup, and one delivery record per goal.
+- [x] Run `uv run pytest -q tests/test_goal_lifecycle_storage.py` and confirm failures are caused by missing schema/APIs.
+- [x] Add `GOAL_TYPES`, validation helpers, migration 8, `RecommendationRepository`, and `GoalDeliveryRepository`.
+- [x] Extend `RunRepository` without breaking existing callers: default new goals to `prototype`, expose type/rationale, allow confirmation, and query the latest completed goal.
+- [x] Run the focused tests and `tests/test_database.py`.
+- [x] Commit as `feat: persist goal types and recommendations`.
 
 ### Task 2: Goal Type Inference And Confirmation
 
@@ -130,4 +130,3 @@
 - [ ] Terminate agent-loop and all attributable descendants at the deadline.
 - [ ] Write a framework-focused comparison covering time to runnable app, reviewer behavior, recommendations, and handover/delivery quality.
 - [ ] Commit only durable source/docs changes; leave timestamped experiment artifacts under ignored `tmp/`.
-

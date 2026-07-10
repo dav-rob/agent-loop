@@ -224,6 +224,53 @@ MIGRATIONS: List[str] = [
     ALTER TABLE attempts ADD COLUMN base_sha TEXT;
     ALTER TABLE attempts ADD COLUMN retry_strategy TEXT;
     ALTER TABLE attempts ADD COLUMN retry_strategy_reason TEXT;
+    """,
+    # Version 8 migration: goal operating types, recommendations, and delivery records
+    """
+    ALTER TABLE runs ADD COLUMN goal_type TEXT NOT NULL DEFAULT 'prototype';
+    ALTER TABLE runs ADD COLUMN goal_type_rationale TEXT;
+
+    CREATE TABLE recommendations (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        run_id INTEGER NOT NULL,
+        feature_id INTEGER,
+        task_id INTEGER,
+        source_review_id INTEGER,
+        category TEXT NOT NULL,
+        priority TEXT NOT NULL,
+        title TEXT NOT NULL,
+        rationale TEXT NOT NULL,
+        evidence TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'open',
+        adopting_run_id INTEGER,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY(run_id) REFERENCES runs(id) ON DELETE CASCADE,
+        FOREIGN KEY(feature_id) REFERENCES features(id) ON DELETE SET NULL,
+        FOREIGN KEY(task_id) REFERENCES tasks(id) ON DELETE SET NULL,
+        FOREIGN KEY(source_review_id) REFERENCES reviews(id) ON DELETE SET NULL,
+        FOREIGN KEY(adopting_run_id) REFERENCES runs(id) ON DELETE SET NULL
+    );
+
+    CREATE INDEX recommendations_run_status_idx
+        ON recommendations(run_id, status, priority);
+    CREATE INDEX recommendations_adopting_run_idx
+        ON recommendations(adopting_run_id, status);
+
+    CREATE TABLE goal_deliveries (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        run_id INTEGER NOT NULL UNIQUE,
+        summary TEXT NOT NULL,
+        launch_command TEXT,
+        local_url TEXT,
+        verification TEXT NOT NULL,
+        known_limitations TEXT NOT NULL,
+        launch_evidence TEXT,
+        investigation_conclusion TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY(run_id) REFERENCES runs(id) ON DELETE CASCADE
+    );
     """
 ]
 

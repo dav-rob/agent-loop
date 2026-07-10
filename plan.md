@@ -2,7 +2,7 @@
 
 Detailed plan: `docs/superpowers/plans/2026-07-10-goal-types-and-delivery-lifecycle.md`
 
-- [ ] Goal type, recommendation, and delivery persistence
+- [x] Goal type, recommendation, and delivery persistence
 - [ ] Goal type inference and intake confirmation
 - [ ] Goal-type-aware reviewer standards
 - [ ] Non-blocking recommendation handling

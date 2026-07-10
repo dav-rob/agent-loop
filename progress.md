@@ -228,6 +228,7 @@ No further executor handoff is required for this request.
 - `.venv/bin/python -m pytest -q`: 81 passed in 18.68s; clean worktree.
 - Handoff validation: passed for request 13 and response 14.
 - Task-escalation review worktree fix: the new regression first failed because escalation reviews inherited the repository-root default; after passing the durable task worktree explicitly, the focused review/retry slice passed with 54 tests and the full suite passed with 183 tests in 23.73s.
+- Goal lifecycle storage: migration 8 adds validated goal types, structured recommendations, and one delivery record per goal. New storage regressions and the existing database suite pass with 14 tests.
 
 ## Blockers
 

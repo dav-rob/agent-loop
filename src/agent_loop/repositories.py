@@ -2,6 +2,8 @@ import json
 import sqlite3
 from typing import Any, Dict, List, Optional
 
+from agent_loop.goal_types import validate_goal_type
+
 VALID_RUN_TRANSITIONS = {
     "draft": {"planning", "cancelled"},
     "planning": {"awaiting_plan_approval", "running", "cancelled", "blocked", "failed"},
@@ -31,15 +33,26 @@ class RunRepository:
     def __init__(self, conn: sqlite3.Connection):
         self.conn = conn
 
-    def create(self, goal: str, intake_mode: str, config_snapshot: Optional[Dict[str, Any]] = None) -> int:
+    def create(
+        self,
+        goal: str,
+        intake_mode: str,
+        config_snapshot: Optional[Dict[str, Any]] = None,
+        goal_type: str = "prototype",
+        goal_type_rationale: Optional[str] = None,
+    ) -> int:
+        goal_type = validate_goal_type(goal_type)
         config_str = json.dumps(config_snapshot) if config_snapshot else None
         cursor = self.conn.cursor()
         cursor.execute(
             """
-            INSERT INTO runs (goal, intake_mode, status, config_snapshot)
-            VALUES (?, ?, ?, ?);
+            INSERT INTO runs (
+                goal, intake_mode, status, config_snapshot,
+                goal_type, goal_type_rationale
+            )
+            VALUES (?, ?, ?, ?, ?, ?);
             """,
-            (goal, intake_mode, "draft", config_str)
+            (goal, intake_mode, "draft", config_str, goal_type, goal_type_rationale)
         )
         self.conn.commit()
         return cursor.lastrowid
@@ -47,7 +60,11 @@ class RunRepository:
     def get(self, run_id: int) -> Optional[Dict[str, Any]]:
         cursor = self.conn.cursor()
         cursor.execute(
-            "SELECT id, goal, intake_mode, status, config_snapshot, created_at, updated_at FROM runs WHERE id = ?;",
+            """
+            SELECT id, goal, intake_mode, status, config_snapshot,
+                   goal_type, goal_type_rationale, created_at, updated_at
+            FROM runs WHERE id = ?;
+            """,
             (run_id,)
         )
         row = cursor.fetchone()
@@ -59,14 +76,20 @@ class RunRepository:
             "intake_mode": row[2],
             "status": row[3],
             "config_snapshot": json.loads(row[4]) if row[4] else None,
-            "created_at": row[5],
-            "updated_at": row[6]
+            "goal_type": row[5],
+            "goal_type_rationale": row[6],
+            "created_at": row[7],
+            "updated_at": row[8]
         }
 
     def list_all(self) -> List[Dict[str, Any]]:
         cursor = self.conn.cursor()
         cursor.execute(
-            "SELECT id, goal, intake_mode, status, config_snapshot, created_at, updated_at FROM runs ORDER BY id DESC;"
+            """
+            SELECT id, goal, intake_mode, status, config_snapshot,
+                   goal_type, goal_type_rationale, created_at, updated_at
+            FROM runs ORDER BY id DESC;
+            """
         )
         return [
             {
@@ -75,8 +98,10 @@ class RunRepository:
                 "intake_mode": row[2],
                 "status": row[3],
                 "config_snapshot": json.loads(row[4]) if row[4] else None,
-                "created_at": row[5],
-                "updated_at": row[6]
+                "goal_type": row[5],
+                "goal_type_rationale": row[6],
+                "created_at": row[7],
+                "updated_at": row[8]
             }
             for row in cursor.fetchall()
         ]
@@ -101,6 +126,249 @@ class RunRepository:
             (new_status, run_id)
         )
         self.conn.commit()
+
+    def update_goal_type(self, run_id: int, goal_type: str, rationale: Optional[str]) -> None:
+        if not self.get(run_id):
+            raise ValueError(f"Run {run_id} not found.")
+        normalized = validate_goal_type(goal_type)
+        self.conn.execute(
+            """
+            UPDATE runs
+            SET goal_type = ?, goal_type_rationale = ?, updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?;
+            """,
+            (normalized, rationale, run_id),
+        )
+        self.conn.commit()
+
+    def get_latest_completed(self) -> Optional[Dict[str, Any]]:
+        row = self.conn.execute(
+            "SELECT id FROM runs WHERE status = 'complete' ORDER BY id DESC LIMIT 1;"
+        ).fetchone()
+        return self.get(row[0]) if row else None
+
+
+RECOMMENDATION_CATEGORIES = {
+    "usability",
+    "security",
+    "architecture",
+    "reliability",
+    "testing",
+    "maintenance",
+}
+RECOMMENDATION_PRIORITIES = {"high", "medium", "low"}
+RECOMMENDATION_STATUSES = {"open", "selected", "deferred", "declined", "resolved"}
+
+
+class RecommendationRepository:
+    def __init__(self, conn: sqlite3.Connection):
+        self.conn = conn
+
+    def create(
+        self,
+        run_id: int,
+        category: str,
+        priority: str,
+        title: str,
+        rationale: str,
+        evidence: str,
+        feature_id: Optional[int] = None,
+        task_id: Optional[int] = None,
+        source_review_id: Optional[int] = None,
+    ) -> int:
+        category = (category or "").strip().lower()
+        priority = (priority or "").strip().lower()
+        if category not in RECOMMENDATION_CATEGORIES:
+            raise ValueError(f"Invalid recommendation category: {category}")
+        if priority not in RECOMMENDATION_PRIORITIES:
+            raise ValueError(f"Invalid recommendation priority: {priority}")
+        if not all((title.strip(), rationale.strip(), evidence.strip())):
+            raise ValueError("Recommendation title, rationale, and evidence are required.")
+        cursor = self.conn.cursor()
+        cursor.execute(
+            """
+            INSERT INTO recommendations (
+                run_id, feature_id, task_id, source_review_id,
+                category, priority, title, rationale, evidence, status
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'open');
+            """,
+            (
+                run_id,
+                feature_id,
+                task_id,
+                source_review_id,
+                category,
+                priority,
+                title.strip(),
+                rationale.strip(),
+                evidence.strip(),
+            ),
+        )
+        self.conn.commit()
+        return cursor.lastrowid
+
+    @staticmethod
+    def _row(row: sqlite3.Row | tuple) -> Dict[str, Any]:
+        return {
+            "id": row[0],
+            "run_id": row[1],
+            "feature_id": row[2],
+            "task_id": row[3],
+            "source_review_id": row[4],
+            "category": row[5],
+            "priority": row[6],
+            "title": row[7],
+            "rationale": row[8],
+            "evidence": row[9],
+            "status": row[10],
+            "adopting_run_id": row[11],
+            "created_at": row[12],
+            "updated_at": row[13],
+        }
+
+    def get(self, recommendation_id: int) -> Optional[Dict[str, Any]]:
+        row = self.conn.execute(
+            """
+            SELECT id, run_id, feature_id, task_id, source_review_id,
+                   category, priority, title, rationale, evidence, status,
+                   adopting_run_id, created_at, updated_at
+            FROM recommendations WHERE id = ?;
+            """,
+            (recommendation_id,),
+        ).fetchone()
+        return self._row(row) if row else None
+
+    def get_by_run(self, run_id: int) -> List[Dict[str, Any]]:
+        rows = self.conn.execute(
+            """
+            SELECT id, run_id, feature_id, task_id, source_review_id,
+                   category, priority, title, rationale, evidence, status,
+                   adopting_run_id, created_at, updated_at
+            FROM recommendations WHERE run_id = ? ORDER BY id;
+            """,
+            (run_id,),
+        ).fetchall()
+        return [self._row(row) for row in rows]
+
+    def get_open_by_run(self, run_id: int) -> List[Dict[str, Any]]:
+        return [item for item in self.get_by_run(run_id) if item["status"] == "open"]
+
+    def get_selected_for_run(self, run_id: int) -> List[Dict[str, Any]]:
+        rows = self.conn.execute(
+            """
+            SELECT id, run_id, feature_id, task_id, source_review_id,
+                   category, priority, title, rationale, evidence, status,
+                   adopting_run_id, created_at, updated_at
+            FROM recommendations
+            WHERE adopting_run_id = ? AND status = 'selected'
+            ORDER BY id;
+            """,
+            (run_id,),
+        ).fetchall()
+        return [self._row(row) for row in rows]
+
+    def select(self, recommendation_ids: List[int], adopting_run_id: int) -> None:
+        ids = list(dict.fromkeys(recommendation_ids))
+        if not ids:
+            return
+        placeholders = ",".join("?" for _ in ids)
+        with self.conn:
+            rows = self.conn.execute(
+                f"SELECT id FROM recommendations WHERE id IN ({placeholders}) AND status = 'open';",
+                ids,
+            ).fetchall()
+            if {row[0] for row in rows} != set(ids):
+                raise ValueError("Only existing open recommendations can be selected.")
+            self.conn.execute(
+                f"""
+                UPDATE recommendations
+                SET status = 'selected', adopting_run_id = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE id IN ({placeholders});
+                """,
+                [adopting_run_id, *ids],
+            )
+
+    def resolve_for_adopting_run(self, run_id: int) -> None:
+        self.conn.execute(
+            """
+            UPDATE recommendations
+            SET status = 'resolved', updated_at = CURRENT_TIMESTAMP
+            WHERE adopting_run_id = ? AND status = 'selected';
+            """,
+            (run_id,),
+        )
+        self.conn.commit()
+
+
+class GoalDeliveryRepository:
+    def __init__(self, conn: sqlite3.Connection):
+        self.conn = conn
+
+    def upsert(
+        self,
+        run_id: int,
+        summary: str,
+        launch_command: Optional[str],
+        local_url: Optional[str],
+        verification: List[str],
+        known_limitations: List[str],
+        launch_evidence: Optional[str] = None,
+        investigation_conclusion: Optional[str] = None,
+    ) -> None:
+        self.conn.execute(
+            """
+            INSERT INTO goal_deliveries (
+                run_id, summary, launch_command, local_url, verification,
+                known_limitations, launch_evidence, investigation_conclusion
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(run_id) DO UPDATE SET
+                summary = excluded.summary,
+                launch_command = excluded.launch_command,
+                local_url = excluded.local_url,
+                verification = excluded.verification,
+                known_limitations = excluded.known_limitations,
+                launch_evidence = excluded.launch_evidence,
+                investigation_conclusion = excluded.investigation_conclusion,
+                updated_at = CURRENT_TIMESTAMP;
+            """,
+            (
+                run_id,
+                summary.strip(),
+                launch_command,
+                local_url,
+                json.dumps(verification),
+                json.dumps(known_limitations),
+                launch_evidence,
+                investigation_conclusion,
+            ),
+        )
+        self.conn.commit()
+
+    def get_by_run(self, run_id: int) -> Optional[Dict[str, Any]]:
+        row = self.conn.execute(
+            """
+            SELECT id, run_id, summary, launch_command, local_url, verification,
+                   known_limitations, launch_evidence, investigation_conclusion,
+                   created_at, updated_at
+            FROM goal_deliveries WHERE run_id = ?;
+            """,
+            (run_id,),
+        ).fetchone()
+        if not row:
+            return None
+        return {
+            "id": row[0],
+            "run_id": row[1],
+            "summary": row[2],
+            "launch_command": row[3],
+            "local_url": row[4],
+            "verification": json.loads(row[5]),
+            "known_limitations": json.loads(row[6]),
+            "launch_evidence": row[7],
+            "investigation_conclusion": row[8],
+            "created_at": row[9],
+            "updated_at": row[10],
+        }
 
 
 class FeatureRepository:
