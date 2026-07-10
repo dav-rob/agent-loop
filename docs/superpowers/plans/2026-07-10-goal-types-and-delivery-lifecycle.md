@@ -94,13 +94,13 @@
 - Modify: `src/agent_loop/views.py`
 - Create: `tests/test_recommendation_adoption.py`
 
-- [ ] Add failing tests for latest-completed-goal recommendation listing, interactive zero/multi-selection, `--recommendations` validation, and planning-context propagation.
-- [ ] Add failing lifecycle tests proving selection is atomic, successful completion resolves selected recommendations, and blocked/failed goals leave them selected.
-- [ ] Implement compact recommendation prompts and the non-interactive CLI option.
-- [ ] Mark selected recommendations only after the adopting goal is created, and include full persisted context in planner prompts and generated views.
-- [ ] Resolve selected recommendations in the successful-completion transaction path.
-- [ ] Run focused CLI/intake/orchestrator/view tests.
-- [ ] Commit as `feat: adopt recommendations in later goals`.
+- [x] Add failing tests for latest-completed-goal recommendation listing, interactive zero/multi-selection, `--recommendations` validation, and planning-context propagation.
+- [x] Add failing lifecycle tests proving selection is atomic, successful completion resolves selected recommendations, and blocked/failed goals leave them selected.
+- [x] Implement compact recommendation prompts and the non-interactive CLI option.
+- [x] Mark selected recommendations only after the adopting goal is created, and include full persisted context in planner prompts and generated views.
+- [x] Resolve selected recommendations in the successful-completion transaction path.
+- [x] Run focused CLI/intake/orchestrator/view tests.
+- [x] Commit as `feat: adopt recommendations in later goals`.
 
 ### Task 7: Documentation And Regression Verification
 

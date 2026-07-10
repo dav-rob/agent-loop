@@ -1,0 +1,73 @@
+# agent-loop project configuration
+# This file is committed project configuration. Runtime state lives in .agent-loop/.
+
+state_dir = ".agent-loop"
+db_path = ".agent-loop/agent-loop.db"
+logs_dir = ".agent-loop/logs"
+handoffs_dir = ".agent-loop/handoffs"
+worktrees_dir = "worktrees"
+plan_path = ".agent-loop/plan.md"
+progress_path = ".agent-loop/progress.md"
+delivery_report_path = ".agent-loop/delivery-report.md"
+learning_path = ".agent-loop/learning.md"
+max_workers = 4
+webhook_env_var = "AGENT_LOOP_WEBHOOK_URL"
+execution_mode = "trusted-host"
+
+[routes]
+# intake: model fallback order for this loop personality.
+intake = [
+    { provider = "codex", model = "gpt-5.6-sol", reasoning_level = "medium" },
+    { provider = "agy", model = "Claude Opus 4.6 (Thinking)", reasoning_level = "high" },
+    { provider = "agy", model = "Gemini 3.5 Flash (High)", reasoning_level = "high" },
+]
+
+# spec_reviewer: model fallback order for this loop personality.
+spec_reviewer = [
+    { provider = "codex", model = "gpt-5.6-sol", reasoning_level = "high" },
+    { provider = "agy", model = "Claude Opus 4.6 (Thinking)", reasoning_level = "high" },
+    { provider = "agy", model = "Gemini 3.1 Pro (High)", reasoning_level = "high" },
+]
+
+# planner: model fallback order for this loop personality.
+planner = [
+    { provider = "codex", model = "gpt-5.6-sol", reasoning_level = "xhigh" },
+    { provider = "agy", model = "Claude Opus 4.6 (Thinking)", reasoning_level = "high" },
+    { provider = "agy", model = "Gemini 3.1 Pro (High)", reasoning_level = "high" },
+]
+
+# executor: model fallback order for this loop personality.
+executor = [
+    { provider = "agy", model = "Gemini 3.1 Pro (High)", reasoning_level = "high" },
+    { provider = "agy", model = "Claude Sonnet 4.6 (Thinking)", reasoning_level = "high" },
+    { provider = "codex", model = "gpt-5.6-terra", reasoning_level = "high" },
+]
+
+# executor_escalated: model fallback order for this loop personality.
+executor_escalated = [
+    { provider = "codex", model = "gpt-5.6-sol", reasoning_level = "xhigh" },
+    { provider = "agy", model = "Claude Opus 4.6 (Thinking)", reasoning_level = "high" },
+    { provider = "agy", model = "Gemini 3.1 Pro (High)", reasoning_level = "high" },
+]
+
+# reviewer: model fallback order for this loop personality.
+reviewer = [
+    { provider = "codex", model = "gpt-5.6-sol", reasoning_level = "high" },
+    { provider = "agy", model = "Claude Opus 4.6 (Thinking)", reasoning_level = "high" },
+    { provider = "agy", model = "Gemini 3.1 Pro (High)", reasoning_level = "high" },
+]
+
+# escalation_reviewer: model fallback order for this loop personality.
+escalation_reviewer = [
+    { provider = "codex", model = "gpt-5.6-sol", reasoning_level = "xhigh" },
+    { provider = "agy", model = "Claude Opus 4.6 (Thinking)", reasoning_level = "high" },
+    { provider = "agy", model = "Gemini 3.1 Pro (High)", reasoning_level = "high" },
+]
+
+[retry_policy]
+max_attempts = 5
+escalation_threshold = 2
+
+[commands]
+narrow_test = "pytest {test_path}"
+regression_test = "pytest tests"

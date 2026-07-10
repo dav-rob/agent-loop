@@ -11,7 +11,8 @@ from agent_loop.repositories import (
     ProviderStateRepository,
     TestMigrationRepository,
     HandoverRepository,
-    LifecycleEventRepository
+    LifecycleEventRepository,
+    RecommendationRepository,
 )
 
 
@@ -131,6 +132,7 @@ def render_plan_md(conn: sqlite3.Connection, run_id: int, dest_path: Path) -> No
 
     features = FeatureRepository(conn).get_by_run(run_id)
     tasks = TaskRepository(conn).get_by_run(run_id)
+    selected_recommendations = RecommendationRepository(conn).get_selected_for_run(run_id)
 
     # Group tasks by feature
     tasks_by_feature = {}
@@ -151,6 +153,12 @@ def render_plan_md(conn: sqlite3.Connection, run_id: int, dest_path: Path) -> No
     lines.append("> [!NOTE]")
     lines.append("> This file is a human-readable summary. Full task metadata, dependencies, attempts, and evidence are stored in the agent-loop SQLite database. Run `agent-loop plan --details` to inspect them.")
     lines.append("")
+    if selected_recommendations:
+        lines.append("## Selected Recommendations")
+        lines.append("")
+        for item in selected_recommendations:
+            lines.append(f"- **#{item['id']} {item['title']}** ({item['priority']}/{item['category']}): {item['rationale']}")
+        lines.append("")
     
 
     

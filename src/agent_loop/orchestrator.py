@@ -887,6 +887,9 @@ Input:
 Operating goal type: {run.get('goal_type', 'prototype')}
 Why this type was chosen: {run.get('goal_type_rationale') or 'No rationale recorded.'}
 
+Selected recommendations from earlier goals:
+{self._selected_recommendations_context(run_id)}
+
 The input may be either:
 * a raw goal from none mode
 * an approved compact spec from spec mode
@@ -2880,6 +2883,16 @@ Reject only for blocking issues. If you recommend restart, explain why continuin
         decision = self.run_agent_review(run_id, "feature", feature_id, prompt)
         return decision
 
+    def _selected_recommendations_context(self, run_id: int) -> str:
+        selected = self.recommendation_repo.get_selected_for_run(run_id)
+        if not selected:
+            return "None selected."
+        return "\n".join(
+            f"- Recommendation {item['id']} [{item['priority']}/{item['category']}]: "
+            f"{item['title']} — {item['rationale']} Evidence: {item['evidence']}"
+            for item in selected
+        )
+
     def apply_feature_review_decision(self, run_id: int, feature_id: int, decision: str) -> None:
         feature = self.feature_repo.get(feature_id)
         run = self.run_repo.get(run_id)
@@ -2929,6 +2942,21 @@ Reject only for blocking issues. If you recommend restart, explain why continuin
         decision = self.run_agent_review(run_id, "final", run_id, prompt)
         confirmed_prototype = run.get("goal_type") == "prototype" and bool(run.get("goal_type_rationale"))
         return decision == "approved" or (decision == "follow_up" and confirmed_prototype)
+
+    def complete_goal(self, run_id: int) -> bool:
+        run = self.run_repo.get(run_id)
+        delivery = self.goal_delivery_repo.get_by_run(run_id)
+        if run.get("goal_type_rationale") and not delivery:
+            self.run_repo.update_status(run_id, "blocked")
+            self.notify(run_id, "blocked", "Confirmed goal is missing its delivery record.")
+            return False
+
+        self.run_repo.update_status(run_id, "complete")
+        self.recommendation_repo.resolve_for_adopting_run(run_id)
+        if delivery:
+            render_delivery_report(self.conn, run_id, self.config.delivery_report_path)
+        self.notify(run_id, "complete", "Run completed successfully.")
+        return True
 
     def create_integration_task(self, run_id: int, task: Dict[str, Any], branch_name: str, source_commit: Optional[str] = None, target_baseline: Optional[str] = None, conflicting_files: Optional[list] = None) -> None:
         task_scope = self._task_scope_data(task)
@@ -3527,16 +3555,7 @@ Reject only for blocking issues. If you recommend restart, explain why continuin
                                 self.run_repo.update_status(run_id, "complete_pending_test_review")
                                 self.notify(run_id, "pending_test_review", "Run is pending test migration reviews.")
                             else:
-                                completed_run = self.run_repo.get(run_id)
-                                delivery = self.goal_delivery_repo.get_by_run(run_id)
-                                if completed_run.get("goal_type_rationale") and not delivery:
-                                    self.run_repo.update_status(run_id, "blocked")
-                                    self.notify(run_id, "blocked", "Confirmed goal is missing its delivery record.")
-                                else:
-                                    self.run_repo.update_status(run_id, "complete")
-                                    if delivery:
-                                        render_delivery_report(self.conn, run_id, self.config.delivery_report_path)
-                                    self.notify(run_id, "complete", "Run completed successfully.")
+                                self.complete_goal(run_id)
                         else:
                             self.run_repo.update_status(run_id, "failed")
                             self.notify(run_id, "failed", "Regression test verification failed. Run is failed.")

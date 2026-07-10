@@ -18,7 +18,8 @@ from agent_loop.repositories import (
     AttemptRepository,
     DecisionRepository,
     TestMigrationRepository,
-    ProviderStateRepository
+    ProviderStateRepository,
+    RecommendationRepository,
 )
 from agent_loop.views import render_plan_md, render_progress_md
 from agent_loop.orchestrator import Orchestrator
@@ -100,6 +101,40 @@ def _display_start_mode(intake_mode: str) -> str:
     if intake_mode == "spec":
         return "brainstorm"
     return intake_mode
+
+
+def parse_recommendation_ids(value: Optional[str]) -> List[int]:
+    normalized = (value or "").strip().lower()
+    if not normalized or normalized in {"none", "no", "skip"}:
+        return []
+    try:
+        ids = [int(part.strip()) for part in normalized.split(",") if part.strip()]
+    except ValueError as exc:
+        raise ValueError("Recommendation IDs must be comma-separated integers.") from exc
+    return list(dict.fromkeys(ids))
+
+
+def choose_recommendation_ids(
+    available: List[Dict[str, Any]],
+    input_func=None,
+    supplied: Optional[str] = None,
+) -> List[int]:
+    input_func = input_func or input
+    if not available:
+        requested = parse_recommendation_ids(supplied)
+        if requested:
+            raise ValueError("No open recommendations exist on the latest completed goal.")
+        return []
+    if supplied is None:
+        print("\nOpen recommendations from the latest completed goal:")
+        for item in available:
+            print(f"{item['id']}) [{item['priority'].upper()}] {item['title']} ({item['category']})")
+        supplied = input_func("Adopt recommendation IDs (comma-separated, or none): ")
+    selected = parse_recommendation_ids(supplied)
+    available_ids = {item["id"] for item in available}
+    if not set(selected).issubset(available_ids):
+        raise ValueError("Only open recommendations from the latest completed goal may be selected.")
+    return selected
 
 def _bundled_skills_dir() -> Path:
     return Path(__file__).resolve().parents[2] / "skills"
@@ -266,11 +301,18 @@ def handle_default(args: argparse.Namespace, config: Config) -> None:
 def handle_start(args: argparse.Namespace, config: Config) -> None:
     conn = get_db(config)
     run_repo = RunRepository(conn)
+    recommendation_repo = RecommendationRepository(conn)
     from agent_loop.goal_intake import confirm_goal_type
     from agent_loop.intake import infer_goal_type, run_spec_intake
 
     existing_runs = run_repo.list_all()
     is_first_goal = not existing_runs if isinstance(existing_runs, list) else True
+    latest_completed = run_repo.get_latest_completed()
+    available_recommendations = (
+        recommendation_repo.get_open_by_run(latest_completed["id"])
+        if latest_completed
+        else []
+    )
 
     if args.non_interactive:
         if not args.goal:
@@ -312,7 +354,17 @@ def handle_start(args: argparse.Namespace, config: Config) -> None:
         cfg_snap = config.data.copy()
         cfg_snap["unattended_policy"] = args.unattended_policy
 
-        goal_type = infer_goal_type(goal, config, is_first_goal=is_first_goal)
+        selected_recommendation_ids = choose_recommendation_ids(
+            available_recommendations,
+            supplied=getattr(args, "recommendations", None),
+        )
+        inference_goal = goal
+        if selected_recommendation_ids:
+            selected_titles = [
+                item["title"] for item in available_recommendations if item["id"] in selected_recommendation_ids
+            ]
+            inference_goal += "\n\nSelected recommendations: " + "; ".join(selected_titles)
+        goal_type = infer_goal_type(inference_goal, config, is_first_goal=is_first_goal)
         print(f"Inferred goal type: {goal_type.goal_type} - {goal_type.rationale}")
         run_id = run_repo.create(
             goal=goal,
@@ -321,6 +373,7 @@ def handle_start(args: argparse.Namespace, config: Config) -> None:
             goal_type=goal_type.goal_type,
             goal_type_rationale=goal_type.rationale,
         )
+        recommendation_repo.select(selected_recommendation_ids, run_id)
         print(
             f'Started goal "{describe_goal(goal, 50)}" in {_display_start_mode(intake_mode)} mode '
             f"(unattended policy: {args.unattended_policy})."
@@ -366,7 +419,14 @@ def handle_start(args: argparse.Namespace, config: Config) -> None:
                 sys.exit(1)
             goal = approved_spec
 
-        goal_type = confirm_goal_type(infer_goal_type(goal, config, is_first_goal=is_first_goal))
+        selected_recommendation_ids = choose_recommendation_ids(available_recommendations)
+        inference_goal = goal
+        if selected_recommendation_ids:
+            selected_titles = [
+                item["title"] for item in available_recommendations if item["id"] in selected_recommendation_ids
+            ]
+            inference_goal += "\n\nSelected recommendations: " + "; ".join(selected_titles)
+        goal_type = confirm_goal_type(infer_goal_type(inference_goal, config, is_first_goal=is_first_goal))
 
         cfg_snap = config.data.copy()
         cfg_snap["unattended_policy"] = "ask"
@@ -378,6 +438,7 @@ def handle_start(args: argparse.Namespace, config: Config) -> None:
             goal_type=goal_type.goal_type,
             goal_type_rationale=goal_type.rationale,
         )
+        recommendation_repo.select(selected_recommendation_ids, run_id)
         print(f'\nStarted goal "{describe_goal(goal, 50)}" in {_display_start_mode(intake_mode)} mode.')
 
     # Render initial Markdown views
@@ -683,8 +744,8 @@ def handle_migration(args: argparse.Namespace, config: Config) -> None:
                 run_repo.update_status(run_id, "blocked")
                 print(f"Goal {run_id} is now blocked due to rejected migration(s).")
             elif not has_pending:
-                run_repo.update_status(run_id, "complete")
-                print(f"Goal {run_id} completed successfully (all migrations approved).")
+                if Orchestrator(conn, config).complete_goal(run_id):
+                    print(f"Goal {run_id} completed successfully (all migrations approved).")
                 
     elif args.action == "reject":
         migration_repo.update_approval(args.migration_id, "rejected")
@@ -718,6 +779,7 @@ def main() -> None:
     start_parser.add_argument("--ui", action="store_true", help="Accepted for compatibility; UI brainstorming is currently deferred")
     start_parser.add_argument("--no-ui", action="store_true", help="Accepted for compatibility; UI brainstorming is currently deferred")
     start_parser.add_argument("--no-spec-review", action="store_true", help="Skip internal spec review")
+    start_parser.add_argument("--recommendations", help="Comma-separated open recommendation IDs to adopt in unattended mode")
 
     # resume
     resume_parser = subparsers.add_parser("resume", help="Resume an existing goal")
