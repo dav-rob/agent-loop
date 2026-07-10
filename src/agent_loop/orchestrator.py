@@ -22,6 +22,7 @@ from agent_loop.git_utils import (
     merge_branch
 )
 from agent_loop.lifecycle import TaskLifecycleRecorder
+from agent_loop.review_policy import goal_review_policy
 from agent_loop.repositories import (
     RunRepository,
     FeatureRepository,
@@ -2541,6 +2542,10 @@ Only return the raw JSON object. Do not include markdown wrappers.
         model = None
         review_task_id = subject_id if subject_type in {"task", "task_escalation"} and self.task_repo.get(subject_id) else None
         review_workspace_path = Path(workspace_path).resolve() if workspace_path else Path.cwd().resolve()
+        run = self.run_repo.get(run_id)
+        run_goal_type = run.get("goal_type", "prototype") if run else "prototype"
+        run_goal_type_rationale = run.get("goal_type_rationale") if run else None
+        operating_policy = goal_review_policy(run_goal_type)
         self.lifecycle.review_started(
             run_id=run_id,
             task_id=review_task_id,
@@ -2552,11 +2557,11 @@ Only return the raw JSON object. Do not include markdown wrappers.
 You are the Agent Loop Reviewer.
 {review_prompt}
 
-Analyze the changes skeptically. Check for correctness, safety, regressions, and complexity.
-Apply a blocking severity threshold:
-- Reject only for issues that block the current task now: correctness, security, data loss, regressions, missing required verification, or clear violation of task scope.
-- Use "follow_up" for useful work that should happen later but should not block this task from proceeding.
-- In findings, explain why each blocking issue blocks this task now, or say that remaining issues are non-blocking.
+Confirmed operating mode rationale: {run_goal_type_rationale or 'No rationale recorded.'}
+
+{operating_policy}
+
+Analyze the work against this operating mode. Reject only when its policy says the finding blocks the current scope. Explain why any rejection blocks now; otherwise identify the finding as non-blocking.
 Output a JSON response in the following format:
 {{
   "decision": "approved",

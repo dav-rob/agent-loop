@@ -230,6 +230,7 @@ No further executor handoff is required for this request.
 - Task-escalation review worktree fix: the new regression first failed because escalation reviews inherited the repository-root default; after passing the durable task worktree explicitly, the focused review/retry slice passed with 54 tests and the full suite passed with 183 tests in 23.73s.
 - Goal lifecycle storage: migration 8 adds validated goal types, structured recommendations, and one delivery record per goal. New storage regressions and the existing database suite pass with 14 tests.
 - Goal type intake: first goals default to prototype, later goals use structured inference with a deterministic fallback, interactive users can confirm or correct the type before planning, and unattended starts persist the inference automatically. Intake/CLI/view coverage passes with 41 tests.
+- Goal-type review policy: a central policy formatter now supplies prototype, extend, refine, repair, harden, and investigate blocking standards to every reviewer. Policy/orchestrator/retry coverage passes with 63 tests.
 
 ## Blockers
 

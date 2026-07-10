@@ -49,12 +49,12 @@
 - Modify: `src/agent_loop/orchestrator.py`
 - Create: `tests/test_goal_review_policy.py`
 
-- [ ] Add failing tests for each type’s blocking policy, propagation to task/feature/final/escalation prompts, and `investigate` evidence-oriented completion wording.
-- [ ] Run the new tests and confirm failures.
-- [ ] Add a pure policy formatter and inject it centrally in `run_agent_review()` plus executor/planner context where required.
-- [ ] Keep task-escalation follow-up semantics unchanged.
-- [ ] Run focused and orchestrator regression tests.
-- [ ] Commit as `feat: apply goal-type review standards`.
+- [x] Add failing tests for each type’s blocking policy, propagation to task/feature/final/escalation prompts, and `investigate` evidence-oriented completion wording.
+- [x] Run the new tests and confirm failures.
+- [x] Add a pure policy formatter and inject it centrally in `run_agent_review()` plus executor/planner context where required.
+- [x] Keep task-escalation follow-up semantics unchanged.
+- [x] Run focused and orchestrator regression tests.
+- [x] Commit as `feat: apply goal-type review standards`.
 
 ### Task 4: Structured Non-Blocking Recommendations
 
