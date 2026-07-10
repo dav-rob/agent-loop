@@ -102,6 +102,7 @@ def test_default_agent_loop_toml_contains_all_defaults(tmp_path):
     assert data["state_dir"] == ".agent-loop"
     assert data["worktrees_dir"] == "worktrees"
     assert data["retry_policy"]["max_attempts"] == 5
+    assert "commands" not in data
     assert data["routes"]["intake"][0] == {
         "provider": "codex",
         "model": "gpt-5.6-sol",

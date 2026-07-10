@@ -126,10 +126,17 @@ escalation_threshold = 2
 profiles. Older `planning` and `implementation` route buckets are still accepted
 as compatibility aliases.
 
+Planning records declarative verification outcomes, never executable shell
+commands. Executors establish their task environment and report checks they ran;
+reviewers independently inspect the same worktree, establish or reuse a local
+environment, and run appropriate checks before approval. The orchestrator stores
+that evidence and enforces the review decision, but never executes project
+commands originating in a plan, model response, config value, or database row.
+
 ## Goal Lifecycle
 
 Review standards follow the confirmed goal type. Prototype reviews block only
-functional delivery failures such as an app that cannot run, failed required
+functional delivery failures such as an app that cannot run, failed reviewer
 verification, material regressions, or a missing central function. Other useful
 security, architecture, reliability, testing, usability, and maintenance work
 is stored as recommendations rather than silently extending the goal.

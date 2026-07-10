@@ -128,9 +128,10 @@ The orchestrator automatically sends work to review after this sequence:
 
 ```text
 executor run succeeds
-verification command passes
 orchestrator commits the work
-orchestrator sends the commit diff to reviewer
+orchestrator sends the worktree, diff, declarative outcomes, and executor evidence to reviewer
+reviewer independently establishes the environment and runs appropriate checks
+reviewer returns a decision with structured verification evidence
 ```
 
 The orchestrator asks the reviewer for a JSON response:

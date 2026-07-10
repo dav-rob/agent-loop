@@ -107,10 +107,6 @@ escalation_reviewer = [
 [retry_policy]
 max_attempts = 5
 escalation_threshold = 2
-
-[commands]
-narrow_test = "pytest {test_path}"
-regression_test = "pytest tests"
 ```
 
 `agent-loop start` writes a complete default `agent-loop.toml` when one does not
@@ -123,6 +119,13 @@ Runtime files are written under the current repository:
 - `.agent-loop/plan.md`: current objective, features, tasks, dependencies, and status
 - `.agent-loop/progress.md`: current goal state, blockers, tests, and next action
 - `.agent-loop/delivery-report.md`: completed delivery, launch instructions, verification, limitations, and recommendations
+
+The Planner writes declarative verification outcomes rather than commands.
+Executor and reviewer agents establish the project environment and run checks.
+SQLite stores their structured evidence. Agent-loop orchestration never executes
+a project command read from planning output, configuration, model output, or the
+database. Legacy `[commands]` values are accepted as inert compatibility input
+but are not executed.
 - `.agent-loop/learning.md`: durable notes for this repository's goals
 - `.agent-loop/logs/`: provider prompts, stdout/stderr, patches, reviews, and test output
 - `worktrees/`: isolated task worktrees used during execution; kept visible so CLI agents can open them as workspaces

@@ -192,6 +192,14 @@ reparented escalation reviewer that required a separate cleanup pass. The
 framework-focused report is
 `tmp/test-loop-worktree-continuity1-monitor-20260710-165016-concerns.md`.
 
+The verification boundary has now been repaired. New plans contain declarative
+verification outcomes rather than shell commands. Executors establish their own
+task environments, task reviewers independently run checks in the durable
+worktree, and SQLite stores structured evidence. The orchestrator no longer
+contains `shell=True`, no longer installs project dependencies, and no longer
+executes task or final regression commands from planning/config/database data.
+Legacy command rows remain inert audit history.
+
 ## Tests run
 
 - Route-profile config and centralized model routing: focused routing/config/intake/quota/orchestrator slices passed with 36 tests; full suite initially exposed stale tests that were still patching old adapter paths or expecting legacy intake modes. Those were reconciled to the central router and current spec/none intake menu. Final verification: `PYTHONPATH=src ../agent-loop/.venv/bin/python -m pytest -q` passed with 134 tests in 19.84s.

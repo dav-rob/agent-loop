@@ -169,3 +169,11 @@ def test_configured_regression_command_is_inert_after_final_review(db_conn, tmp_
 
     assert runs.get(run_id)["status"] == "complete"
     assert not sentinel.exists()
+
+
+def test_orchestrator_has_no_dynamic_project_shell_runner():
+    source = (Path(__file__).parents[1] / "src" / "agent_loop" / "orchestrator.py").read_text()
+
+    assert "shell=True" not in source
+    assert "def run_verification" not in source
+    assert "def run_regression_test" not in source

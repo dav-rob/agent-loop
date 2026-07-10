@@ -504,6 +504,20 @@ class Orchestrator:
         return facts[:12]
 
     def _attempt_verification_summary(self, run_id: int, task_id: int, attempt_id: int) -> Optional[str]:
+        evidence = [
+            item
+            for item in self.verification_evidence_repo.get_by_run(run_id)
+            if item.get("task_id") == task_id and item.get("attempt_id") == attempt_id
+        ]
+        if evidence:
+            latest_evidence = evidence[-1]
+            return (
+                f"Agent verification evidence: {latest_evidence['requirement']} "
+                f"was {latest_evidence['status']}. {latest_evidence['summary']}"
+            )
+
+        # Historical databases may still contain orchestrator-run checks. They
+        # remain inert audit evidence and are never used as executable input.
         test_runs = [
             test_run
             for test_run in self.test_run_repo.get_by_run(run_id)
@@ -525,7 +539,7 @@ class Orchestrator:
                 stderr = self._read_text_tail(Path(paths.get("stderr", "")), max_chars=1200) if paths.get("stderr") else ""
                 stdout = self._read_text_tail(Path(paths.get("stdout", "")), max_chars=1200) if paths.get("stdout") else ""
                 details = stderr or stdout
-        summary = f"Verification observed: {command} exited {status}."
+        summary = f"Legacy orchestrator verification observed: {command} exited {status}."
         if details:
             summary += f" Output tail: {self._shorten_log_text(details, max_chars=420)}"
         return summary

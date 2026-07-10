@@ -61,9 +61,10 @@ Core records:
 
 - `runs`: goal, intake mode, status, configuration snapshot, timestamps.
 - `features`: outcome, acceptance criteria, dependencies, risk, review status.
-- `tasks`: feature, role, dependencies, scope, risk, required verification, status.
+- `tasks`: feature, role, dependencies, scope, risk, declarative verification requirements, status.
 - `attempts`: route, provider, model, reasoning level, worktree, commit, logs, outcome.
-- `test_runs`: command, scope, exit status, duration, output path.
+- `verification_evidence`: executor/reviewer requirement, status, inert command text, summary, and evidence paths.
+- `test_runs`: legacy deterministic command history retained for audit only.
 - `reviews`: subject, reviewer route, findings, decision, evidence paths.
 - `provider_state`: capability snapshot, availability, quota windows, resets, probes.
 - `notifications`: event, destination, attempts, delivery status.
@@ -132,7 +133,7 @@ The planner creates:
 - task and feature dependencies forming a directed acyclic graph
 - expected scope and likely files when known
 - execution role and risk per task
-- required tests and review gates
+- declarative verification outcomes and review gates, never shell commands
 
 Planning detail should be sufficient for execution and verification without becoming an implementation diary. The full graph and metadata live in SQLite; `.agent-loop/plan.md` remains a compact summary.
 
@@ -197,7 +198,7 @@ The scheduler launches any ready tasks whose dependencies are satisfied and whos
 
 Each worker uses an isolated Git worktree. The orchestrator integrates reviewed task commits into the run branch in dependency order.
 
-When reviewed task commits conflict, the orchestrator creates a dedicated integration task using the high-reasoning route. That task resolves the conflict in a fresh worktree, reruns verification required by both source tasks, and creates its own auditable commit.
+When reviewed task commits conflict, the orchestrator creates a dedicated integration task using the high-reasoning route. That task resolves the conflict in a fresh worktree, demonstrates the verification outcomes inherited from the source task, and creates its own auditable commit.
 
 ## Review Model
 
@@ -206,6 +207,17 @@ Review occurs at three levels:
 - Task review checks scope, correctness, regression risk, required tests, and unnecessary complexity before integration.
 - Feature review checks acceptance criteria and interactions after all feature tasks integrate.
 - Final review runs broader regression tests and checks the complete result against the original goal and decisions.
+
+Executors and reviewers own project command execution. The executor discovers or
+creates the task-local environment and reports its evidence. The task reviewer
+independently uses the authoritative task worktree and must verify every declared
+outcome before approval. Environment, credential, provider, or safety failures
+block and notify instead of consuming another implementation attempt.
+
+The deterministic orchestrator is plumbing: it schedules agents, launches fixed
+Git/provider commands owned by agent-loop source, persists evidence, and enforces
+decisions. It never passes Planner output, model handovers, config strings, or
+database values to a project shell.
 
 Review findings are structured records. A review can approve, request a follow-up task, require architectural assessment, or block for a stop condition.
 
