@@ -9,4 +9,4 @@ Detailed plan: `docs/superpowers/plans/2026-07-10-goal-types-and-delivery-lifecy
 - [x] SQLite-backed delivery report
 - [x] Recommendation adoption by later goals
 - [x] Documentation and full regression verification
-- [ ] Thirty-minute continuity experiment
+- [x] Thirty-minute continuity experiment

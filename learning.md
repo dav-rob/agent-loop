@@ -83,3 +83,6 @@ Use this file to record learnings, so that agents do not have to repeat work alr
 - Goal types are flat operating modes (`prototype`, `extend`, `refine`, `repair`, `harden`, `investigate`), not maturity stages. New interactive and unattended intake persists a confirmed type and rationale before planning.
 - Non-blocking review findings belong in SQLite `recommendations` records. Only selected recommendations are planning inputs for a later goal, and they resolve only when that adopting goal completes.
 - `.agent-loop/delivery-report.md` is a rendered view of `goal_deliveries` plus recommendations; SQLite remains authoritative.
+- Planner verification commands must be validated against the orchestration host, not only checked for executable-looking syntax. A task retry cannot repair an immutable command such as `python -m pytest` when the host provides only `python3`, so otherwise valid work can exhaust every attempt before review.
+- Goal-type policy must reach executors as well as planners and reviewers. Review-only prototype standards cannot prevent an escalated executor from expanding scope before the first user-assessable delivery.
+- Deadline shutdown must own reviewer and provider process groups independently of current ancestry. A reviewer can be reparented to PID 1 while the main loop is stopping and survive a recursive parent-tree kill.

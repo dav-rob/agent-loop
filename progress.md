@@ -181,6 +181,17 @@ task handover markdown now expose strategy metadata for monitoring.
 
 No further executor handoff is required for this request.
 
+The 30-minute goal-lifecycle continuity experiment is complete. A fresh target
+captured the full broad idea, inferred and explicitly confirmed `prototype`,
+and began execution in about 2m35s. Durable task continuity preserved ten useful
+commits and recovered a timed-out executor through a useful handover. The goal
+did not deliver: all five attempts were rejected by the same immutable
+plain-`python` verification command on a host with only `python3`, so task 1
+never reached review or merge. Deadline shutdown also exposed an orphaned,
+reparented escalation reviewer that required a separate cleanup pass. The
+framework-focused report is
+`tmp/test-loop-worktree-continuity1-monitor-20260710-165016-concerns.md`.
+
 ## Tests run
 
 - Route-profile config and centralized model routing: focused routing/config/intake/quota/orchestrator slices passed with 36 tests; full suite initially exposed stale tests that were still patching old adapter paths or expecting legacy intake modes. Those were reconciled to the central router and current spec/none intake menu. Final verification: `PYTHONPATH=src ../agent-loop/.venv/bin/python -m pytest -q` passed with 134 tests in 19.84s.
@@ -235,6 +246,8 @@ No further executor handoff is required for this request.
 - Delivery reports: confirmed final reviews now persist structured delivery evidence; web goals require a launch command, local URL, and launch evidence, and successful goals render `.agent-loop/delivery-report.md` from SQLite with grouped recommendations. Delivery/config/orchestrator coverage passes with 58 tests.
 - Recommendation adoption: intake can select open recommendations from the latest completed goal, unattended starts accept `--recommendations`, planning receives complete recommendation context, and successful completion resolves selected items. CLI/intake/view/orchestrator coverage passes with 77 tests.
 - Goal lifecycle integration: documentation now covers the flat goal-type model, recommendation adoption, and delivery reports. Final full-suite verification passed with 220 tests in 21.41s and `git diff --check` passed.
+- Goal lifecycle continuity experiment: the scripted intake selected immediate planning, approved inferred `prototype`, and approved the plan. SQLite was polled every 150 seconds for 30 minutes. No runnable app appeared; five attempts failed the same unavailable plain-`python` verification before review, while durable branch and timeout handover continuity preserved ten task commits. The main loop and a separately reparented escalation reviewer were stopped at the deadline.
+- Final post-experiment verification: `.venv/bin/python -m pytest -q` passed with 220 tests in 28.95s; `git diff --check` passed.
 
 ## Blockers
 

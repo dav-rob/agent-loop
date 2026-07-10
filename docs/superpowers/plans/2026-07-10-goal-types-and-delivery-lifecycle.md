@@ -123,10 +123,10 @@
 - Create: `tmp/<timestamp>-goal-lifecycle-actions.txt`
 - Create: `tmp/<timestamp>-goal-lifecycle-monitor.md`
 
-- [ ] Record the installed branch/CLI identity and baseline database state.
-- [ ] Delete the authorized contents of `/Users/davidroberts/projects/quick-scripts/test-loop-worktree-continuity1` and initialize a fresh target.
-- [ ] Drive only broad-idea submission, no-dialogue planning, inferred-type approval, and plan approval through scripted input/actions.
-- [ ] Poll SQLite every 150 seconds for 30 minutes, recording first runnable evidence and lifecycle counts.
-- [ ] Terminate agent-loop and all attributable descendants at the deadline.
-- [ ] Write a framework-focused comparison covering time to runnable app, reviewer behavior, recommendations, and handover/delivery quality.
-- [ ] Commit only durable source/docs changes; leave timestamped experiment artifacts under ignored `tmp/`.
+- [x] Record the installed branch/CLI identity and baseline database state.
+- [x] Delete the authorized contents of `/Users/davidroberts/projects/quick-scripts/test-loop-worktree-continuity1` and initialize a fresh target.
+- [x] Drive only broad-idea submission, no-dialogue planning, inferred-type approval, and plan approval through scripted input/actions.
+- [x] Poll SQLite every 150 seconds for 30 minutes, recording first runnable evidence and lifecycle counts.
+- [x] Terminate agent-loop and all attributable descendants at the deadline.
+- [x] Write a framework-focused comparison covering time to runnable app, reviewer behavior, recommendations, and handover/delivery quality.
+- [x] Commit only durable source/docs changes; leave timestamped experiment artifacts under ignored `tmp/`.
