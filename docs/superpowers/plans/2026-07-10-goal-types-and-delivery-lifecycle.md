@@ -110,10 +110,10 @@
 - Modify: `progress.md`
 - Modify: `learning.md` only for reusable architectural facts
 
-- [ ] Document goal types, intake confirmation, recommendations, delivery reports, and unattended selection.
-- [ ] Run `uv run pytest -q` and `git diff --check`.
-- [ ] Review schema/API compatibility and confirm no existing protected tests were edited.
-- [ ] Commit as `docs: explain goal lifecycle and delivery reports`.
+- [x] Document goal types, intake confirmation, recommendations, delivery reports, and unattended selection.
+- [x] Run `uv run pytest -q` and `git diff --check`.
+- [x] Review schema/API compatibility and confirm no existing protected tests were edited.
+- [x] Commit as `docs: explain goal lifecycle and delivery reports`.
 
 ### Task 8: Thirty-Minute Continuity Experiment
 

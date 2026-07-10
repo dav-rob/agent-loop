@@ -234,6 +234,7 @@ No further executor handoff is required for this request.
 - Structured recommendations: reviewer JSON now carries validated recommendation records linked to its review and subject. Confirmed feature follow-ups complete without spawning tasks, prototype final follow-ups can deliver with known limits, and legacy unconfirmed goals retain prior behavior. Review/orchestrator/retry coverage passes with 64 tests.
 - Delivery reports: confirmed final reviews now persist structured delivery evidence; web goals require a launch command, local URL, and launch evidence, and successful goals render `.agent-loop/delivery-report.md` from SQLite with grouped recommendations. Delivery/config/orchestrator coverage passes with 58 tests.
 - Recommendation adoption: intake can select open recommendations from the latest completed goal, unattended starts accept `--recommendations`, planning receives complete recommendation context, and successful completion resolves selected items. CLI/intake/view/orchestrator coverage passes with 77 tests.
+- Goal lifecycle integration: documentation now covers the flat goal-type model, recommendation adoption, and delivery reports. Final full-suite verification passed with 220 tests in 21.41s and `git diff --check` passed.
 
 ## Blockers
 
