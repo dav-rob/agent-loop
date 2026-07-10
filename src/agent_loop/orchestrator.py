@@ -2397,7 +2397,13 @@ Please evaluate if this task is experiencing a HARD BLOCKER (e.g. missing creden
 
 If it's a hard blocker that requires human operator intervention, return "block" with findings explaining why.
 If the executor just needs another try or a specific hint to fix its mistake, return "follow_up" with findings explaining the hint.'''
-        return self.run_agent_review(run_id, "task_escalation", task_id, prompt)
+        return self.run_agent_review(
+            run_id,
+            "task_escalation",
+            task_id,
+            prompt,
+            workspace_path=self._task_worktree_dir(run_id, task_id),
+        )
 
     def run_timeout_review(self, run_id: int, task_id: int, attempt_id: int, timeout_handover: str) -> str:
         review_logs_dir = self.config.logs_dir / str(run_id) / "reviews" / f"timeout_{attempt_id}"

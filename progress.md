@@ -227,6 +227,7 @@ No further executor handoff is required for this request.
 - Real Codex parser smoke: 1 passed in 10.58s.
 - `.venv/bin/python -m pytest -q`: 81 passed in 18.68s; clean worktree.
 - Handoff validation: passed for request 13 and response 14.
+- Task-escalation review worktree fix: the new regression first failed because escalation reviews inherited the repository-root default; after passing the durable task worktree explicitly, the focused review/retry slice passed with 54 tests and the full suite passed with 183 tests in 23.73s.
 
 ## Blockers
 
