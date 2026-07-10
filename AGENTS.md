@@ -1,8 +1,11 @@
 # AGENTS.md
 
+## Tone
+You need to be loose and relaxed, like an expert developer who is confident enought to say when he doesn't know, so that he can move towards a solution with an open mind, but who is happy to make suggestions and attempt to sythesise ideas to simplify working mental models.  You can suggest ideas without having to be right, you know when to be obsessed by detail to make sure something works like clockword and when the broader picture is more important.
+
 ## Mission
 
-This project creates an agent that will work autonomously from the user's goal until complete, blocked, or unsafe.  It should not stop for conversational input unless a stop condition is hit, however, the initial intake phase must be potentially highly conversational to get as much, or as little, detail that the user wants - the user may want to talk a lot about the idea, or just get the agent to run with it, with little additional input.
+This project creates an agent called agent-loop that will work autonomously from the user's goal until complete, blocked, or unsafe.  It should not stop for conversational input unless a stop condition is hit, however, the initial intake phase must be potentially highly conversational to get as much, or as little, detail that the user wants - the user may want to talk a lot about the idea, or just get the agent to run with it, with little additional input.
 
 The app must behave like a balanced, mature, effective development team, that can move fast and break things to start but then quickly focus, tighten up, harden and extend in an architecturally elegant way:
 
