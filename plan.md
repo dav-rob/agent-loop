@@ -1,17 +1,12 @@
-# Agent Loop Implementation Plan
+# Goal Types And Delivery Lifecycle
 
-## Objective
+Detailed plan: `docs/superpowers/plans/2026-07-10-goal-types-and-delivery-lifecycle.md`
 
-Build engine
-
-> [!NOTE]
-> This file is a human-readable summary. Full task metadata, dependencies, attempts, and evidence are stored in the agent-loop SQLite database. Run `agent-loop plan --details` to inspect them.
-
-## Features
-
-### Core (Risk: LOW, Status: pending)
-- [x] Init DB
-  - **Role:** implementation | **Status:** complete | **Risk:** low
-- [x] Queries (depends on Init DB)
-  - **Role:** implementation | **Status:** complete | **Risk:** low
-
+- [ ] Goal type, recommendation, and delivery persistence
+- [ ] Goal type inference and intake confirmation
+- [ ] Goal-type-aware reviewer standards
+- [ ] Non-blocking recommendation handling
+- [ ] SQLite-backed delivery report
+- [ ] Recommendation adoption by later goals
+- [ ] Documentation and full regression verification
+- [ ] Thirty-minute continuity experiment
