@@ -8,7 +8,7 @@ from agent_loop.adapters import AttemptResult
 from agent_loop.config import Config
 from agent_loop.database import get_connection, migrate
 from agent_loop.orchestrator import Orchestrator
-from agent_loop.repositories import FeatureRepository, RunRepository, TaskRepository
+from agent_loop.repositories import AttemptRepository, FeatureRepository, RunRepository, TaskRepository
 
 
 @pytest.fixture
@@ -177,3 +177,47 @@ def test_orchestrator_has_no_dynamic_project_shell_runner():
     assert "shell=True" not in source
     assert "def run_verification" not in source
     assert "def run_regression_test" not in source
+
+
+def test_resume_grants_one_recovery_after_repeated_legacy_exit_127(db_conn, tmp_path):
+    runs = RunRepository(db_conn)
+    features = FeatureRepository(db_conn)
+    tasks = TaskRepository(db_conn)
+    attempts = AttemptRepository(db_conn)
+    run_id = runs.create("Build dashboard", "autonomous")
+    runs.update_status(run_id, "planning")
+    runs.update_status(run_id, "running")
+    feature_id = features.create(run_id, "Dashboard", "low")
+    task_id = tasks.create(run_id, feature_id, "Build dashboard", "implementation", "low")
+    tasks.update_status(task_id, "ready")
+    tasks.update_status(task_id, "running")
+    orch = Orchestrator(
+        db_conn,
+        Config(
+            {
+                "db_path": ":memory:",
+                "logs_dir": str(tmp_path / "logs"),
+                "retry_policy": {"max_attempts": 5, "escalation_threshold": 2},
+            }
+        ),
+        plan_path=tmp_path / "plan.md",
+        progress_path=tmp_path / "progress.md",
+    )
+
+    for _ in range(5):
+        attempt_id = attempts.create(run_id, task_id, route="executor")
+        attempts.update_outcome(attempt_id, "failed")
+        orch.test_run_repo.create(
+            run_id,
+            task_id,
+            attempt_id,
+            "python -m pytest",
+            None,
+            127,
+            0.01,
+            None,
+        )
+
+    assert orch.reconcile_interrupted_run(run_id) == 0
+    assert tasks.get(task_id)["status"] == "ready"
+    assert {attempt["outcome"] for attempt in attempts.get_by_run(run_id)} == {"escalated"}

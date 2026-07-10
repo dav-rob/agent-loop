@@ -1495,7 +1495,33 @@ Rules:
                 )
                 attempt_count = cursor.fetchone()[0]
                 max_attempts = self.config.retry_policy["max_attempts"]
-                next_status = "blocked" if attempt_count >= max_attempts else "ready"
+                cursor.execute(
+                    """
+                    SELECT count(*),
+                           sum(CASE WHEN exit_status = 127 THEN 1 ELSE 0 END)
+                    FROM test_runs
+                    WHERE task_id = ?;
+                    """,
+                    (task_id,),
+                )
+                legacy_count, legacy_exit_127_count = cursor.fetchone()
+                legacy_exit_127_failure = (
+                    attempt_count >= max_attempts
+                    and legacy_count >= attempt_count
+                    and legacy_exit_127_count == legacy_count
+                )
+                if legacy_exit_127_failure:
+                    cursor.execute(
+                        """
+                        UPDATE attempts
+                        SET outcome = 'escalated', updated_at = CURRENT_TIMESTAMP
+                        WHERE task_id = ? AND outcome IN ('failed', 'abandoned');
+                        """,
+                        (task_id,),
+                    )
+                    next_status = "ready"
+                else:
+                    next_status = "blocked" if attempt_count >= max_attempts else "ready"
                 cursor.execute(
                     "UPDATE tasks SET status = ? WHERE id = ?;",
                     (next_status, task_id)

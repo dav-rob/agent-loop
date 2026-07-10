@@ -499,7 +499,7 @@ class TaskRepository:
             "dependencies": json.loads(row[5]) if row[5] else [],
             "scope": json.loads(row[6]) if row[6] else None,
             "risk": row[7],
-            "required_verification": row[8],
+            "legacy_required_verification": row[8],
             "verification_requirements": json.loads(row[9]) if row[9] else [],
             "status": row[10]
         }
@@ -524,7 +524,7 @@ class TaskRepository:
                 "dependencies": json.loads(row[5]) if row[5] else [],
                 "scope": json.loads(row[6]) if row[6] else None,
                 "risk": row[7],
-                "required_verification": row[8],
+                "legacy_required_verification": row[8],
                 "verification_requirements": json.loads(row[9]) if row[9] else [],
                 "status": row[10]
             }
